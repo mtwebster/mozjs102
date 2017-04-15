@@ -1,0 +1,46 @@
+Source: mozjs38
+Section: libs
+Priority: optional
+Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
+Uploaders: @GNOME_TEAM@
+Build-Depends: debhelper (>= 10),
+               gnome-pkg-tools,
+               autoconf2.13,
+               libicu-dev,
+               libffi-dev,
+               libnspr4-dev (>= 2:4.9.2),
+               libreadline-dev,
+               zlib1g-dev (>= 1:1.2.3),
+               pkg-config,
+               pkg-kde-tools,
+               python-dev,
+               zip
+Standards-Version: 3.9.8
+Vcs-Git: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
+Vcs-Browser: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
+Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey/Releases/38
+
+Package: libmozjs-38-0
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: SpiderMonkey JavaScript library
+ SpiderMonkey is the code-name for Mozilla Firefox's C++ implementation of
+ JavaScript. It is intended to be embedded in other applications
+ that provide host environments for JavaScript.
+
+Package: libmozjs-38-dev
+Architecture: any
+Section: libdevel
+Depends: libmozjs-38-0 (= ${binary:Version}),
+         libffi-dev,
+         libnspr4-dev (>= 2:4.9.2),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: SpiderMonkey JavaScript library - development headers
+ SpiderMonkey is the code-name for Mozilla Firefox's C++ implementation of
+ JavaScript. It is intended to be embedded in other applications
+ that provide host environments for JavaScript.
+ .
+ This package contains the header files which are
+ needed for developing SpiderMonkey embedders.
