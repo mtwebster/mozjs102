@@ -1,2 +1,3 @@
 version=3
-https://archive.mozilla.org/pub/firefox/releases/38([\d\.]+)esr/source/firefox-([\d\.]+)esr.source\.tar\.bz2
+https://archive.mozilla.org/pub/firefox/releases/38([\d\.]+)esr/source/firefox-([\d\.]+)esr.source\.tar\.bz2 \
+	debian sh debian/repack.stub

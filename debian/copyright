@@ -1,12 +1,7 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: SpiderMonkey
 Source: http://ftp.mozilla.org/pub/mozilla.org/js/
-Files-Excluded:
- js/src/jit-test/tests/sunspider/check-string-unpack-code.js
- js/src/metrics/jint/sunspider/string-unpack-code.js
- js/src/t/string-unpack-code.js
- js/src/js.mdp
- js/src/ctypes/libffi/doc/libffi.info
+ Repacked latest Firefox 38 ESR to more closely match mozjs38 tarball
 
 License: MPL-2.0
  This Source Code Form is subject to the terms of the Mozilla Public
