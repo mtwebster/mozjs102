@@ -43,6 +43,8 @@ mozjs38 (38.2.1~rc0-1) UNRELEASED; urgency=medium
   * Don't install .a file
   * Bump dh compat to 10 but disable autoreconf until it can be made to work
   * Migrate to automatic -dbgsym packages
+  * Use Files-Excluded in debian/copyright instead of listing them
+    in debian/README.source
   * Add debian/patches/disable-strict-aliasing.patch (LP: #1682631):
     - Patch from Brian Vincent to enable ~50 build tests to pass by
       using -fno-strict-aliasing, might reduce GNOME Shell crashes
