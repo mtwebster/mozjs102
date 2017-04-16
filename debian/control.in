@@ -18,7 +18,7 @@ Build-Depends: debhelper (>= 10),
 Standards-Version: 3.9.8
 Vcs-Git: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
 Vcs-Browser: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
-Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey/Releases/38
+Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey
 
 Package: libmozjs-38-0
 Architecture: any
