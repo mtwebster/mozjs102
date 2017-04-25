@@ -80,6 +80,9 @@ override_dh_fixperms:
 	dh_fixperms
 	chmod a-x $(CURDIR)/debian/libmozjs-38-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-38.pc
 
+override_dh_gnome:
+	dh_gnome --no-gnome-versions
+
 override_dh_strip:
 	dh_strip -p libmozjs-38-0 --dbgsym-migration=libmozjs-38-0-dbg
 	dh_strip
