@@ -1,4 +1,4 @@
-mozjs38 (38.8.0~repack1-1) UNRELEASED; urgency=medium
+mozjs52 (52.2.1-1) UNRELEASED; urgency=medium
 
   [ Rico Tzschichholz]
   * New upstream release (Closes: #860396) (LP: #1662094)

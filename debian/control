@@ -2,7 +2,7 @@
 # 
 # Modifications should be made to debian/control.in instead.
 # This file is regenerated automatically in the clean target.
-Source: mozjs38
+Source: mozjs52
 Section: libs
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
@@ -20,11 +20,11 @@ Build-Depends: debhelper (>= 10),
                python-dev,
                zip
 Standards-Version: 3.9.8
-Vcs-Git: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
-Vcs-Browser: https://anonscm.debian.org/git/pkg-gnome/mozjs38.git
+Vcs-Git: https://anonscm.debian.org/git/pkg-gnome/mozjs52.git
+Vcs-Browser: https://anonscm.debian.org/git/pkg-gnome/mozjs52.git
 Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey
 
-Package: libmozjs-38-0
+Package: libmozjs-52-0
 Architecture: any
 Multi-Arch: same
 Depends: ${misc:Depends}, ${shlibs:Depends}
@@ -33,10 +33,10 @@ Description: SpiderMonkey JavaScript library
  JavaScript. It is intended to be embedded in other applications
  that provide host environments for JavaScript.
 
-Package: libmozjs-38-dev
+Package: libmozjs-52-dev
 Architecture: any
 Section: libdevel
-Depends: libmozjs-38-0 (= ${binary:Version}),
+Depends: libmozjs-52-0 (= ${binary:Version}),
          libffi-dev,
          libnspr4-dev (>= 2:4.9.2),
          ${misc:Depends},
