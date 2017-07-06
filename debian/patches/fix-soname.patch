@@ -1,15 +1,19 @@
-Description: fix soname to Debian package name
- Add soname switch to linker, regardless of Operating System.
-Author: Rico Tzschichholz <ricotz@ubuntu.com>
-Last-Update: 2015-05-04
+From: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Date: Fri, 02 May 2014 22:20:45 +0200
+Subject: fix soname
 
+Add soname switch to linker, regardless of Operating System
+
+Bug-Debian: http://bugs.debian.org/746705
 ---
+ config/rules.mk | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
 
-Index: b/config/rules.mk
-===================================================================
+diff --git a/config/rules.mk b/config/rules.mk
+index a21128c..4b40fa0 100644
 --- a/config/rules.mk
 +++ b/config/rules.mk
-@@ -457,7 +457,7 @@
+@@ -418,15 +418,16 @@ endif # AIX
  #
  # Linux: add -Bsymbolic flag for components
  #
@@ -18,13 +22,13 @@ Index: b/config/rules.mk
  ifdef IS_COMPONENT
  EXTRA_DSO_LDOPTS += -Wl,-Bsymbolic
  endif
-@@ -465,7 +465,8 @@
+ ifdef LD_VERSION_SCRIPT
  EXTRA_DSO_LDOPTS += -Wl,--version-script,$(LD_VERSION_SCRIPT)
++EXTRA_DSO_LDOPTS += -Wl,-soname,lib$(LIBRARY_NAME).so.0
  EXTRA_DEPS += $(LD_VERSION_SCRIPT)
  endif
 -endif
-+EXTRA_DSO_LDOPTS += -Wl,-soname,lib$(LIBRARY_NAME).so.0
 +#endif
  
- #
- # GNU doesn't have path length limitation
+ ifdef SYMBOLS_FILE
+ ifeq ($(OS_TARGET),WINNT)

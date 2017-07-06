@@ -4,8 +4,6 @@
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
 
-export AUTOCONF = autoconf2.13
-
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
@@ -37,18 +35,18 @@ override_dh_clean:
 	rm -f  $(CURDIR)/js/src/js52-config $(CURDIR)/js/src/mozjs-52.pc \
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
-	rm -f $(CURDIR)/js/src/configure
+	# rm -f $(CURDIR)/js/src/configure
 
 # dh_auto_configure does not properly handle autoconf2.13 generated configure
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 override_dh_auto_configure:
-	cd $(SRCDIR) && SHELL=/bin/sh && autoconf2.13 && PYTHON=python ./configure \
+	cd $(SRCDIR) && SHELL=/bin/sh && PYTHON=python && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--build=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \
 		--libdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
-		--with-system-icu \
+		--without-system-icu \
 		--with-system-nspr \
 		--with-system-zlib \
 		--enable-tests \
