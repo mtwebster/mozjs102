@@ -28,6 +28,8 @@ class CodeGenerator;
 class CallInfo;
 class BaselineFrameInspector;
 
+enum class InlinableNative : uint16_t;
+
 // Records information about a baseline frame for compilation that is stable
 // when later used off thread.
 BaselineFrameInspector*
@@ -44,16 +46,6 @@ class IonBuilder
         ControlStatus_Joined,       // Created a join node.
         ControlStatus_Jumped,       // Parsing another branch at the same level.
         ControlStatus_None          // No control flow.
-    };
-
-    enum SetElemSafety {
-        // Normal write like a[b] = c.
-        SetElem_Normal,
-
-        // Write due to UnsafePutElements:
-        // - assumed to be in bounds,
-        // - not checked for data races
-        SetElem_Unsafe,
     };
 
     struct DeferredEdge : public TempObject
@@ -206,7 +198,7 @@ class IonBuilder
 
         static CFGState If(jsbytecode* join, MTest* test);
         static CFGState IfElse(jsbytecode* trueEnd, jsbytecode* falseEnd, MTest* test);
-        static CFGState AndOr(jsbytecode* join, MBasicBlock* joinStart);
+        static CFGState AndOr(jsbytecode* join, MBasicBlock* lhs);
         static CFGState TableSwitch(jsbytecode* exitpc, MTableSwitch* ins);
         static CFGState CondSwitch(IonBuilder* builder, jsbytecode* exitpc, jsbytecode* defaultTarget);
         static CFGState Label(jsbytecode* exitpc);
@@ -223,30 +215,31 @@ class IonBuilder
                const OptimizationInfo* optimizationInfo, BaselineFrameInspector* baselineFrame,
                size_t inliningDepth = 0, uint32_t loopDepth = 0);
 
-    bool build();
-    bool buildInline(IonBuilder* callerBuilder, MResumePoint* callerResumePoint,
-                     CallInfo& callInfo);
+    // Callers of build() and buildInline() should always check whether the
+    // call overrecursed, if false is returned.  Overrecursion is not
+    // signaled as OOM and will not in general be caught by OOM paths.
+    MOZ_MUST_USE bool build();
+    MOZ_MUST_USE bool buildInline(IonBuilder* callerBuilder, MResumePoint* callerResumePoint,
+                                  CallInfo& callInfo);
 
   private:
-    bool traverseBytecode();
+    MOZ_MUST_USE bool traverseBytecode();
     ControlStatus snoopControlFlow(JSOp op);
-    bool processIterators();
-    bool inspectOpcode(JSOp op);
+    MOZ_MUST_USE bool processIterators();
+    MOZ_MUST_USE bool inspectOpcode(JSOp op);
     uint32_t readIndex(jsbytecode* pc);
     JSAtom* readAtom(jsbytecode* pc);
-    bool abort(const char* message, ...);
+    bool abort(const char* message, ...) MOZ_FORMAT_PRINTF(2, 3);
     void trackActionableAbort(const char* message);
     void spew(const char* message);
 
-    MInstruction* constantMaybeNursery(JSObject* obj);
-
     JSFunction* getSingleCallTarget(TemporaryTypeSet* calleeTypes);
-    bool getPolyCallTargets(TemporaryTypeSet* calleeTypes, bool constructing,
-                            ObjectVector& targets, uint32_t maxTargets);
+    MOZ_MUST_USE bool getPolyCallTargets(TemporaryTypeSet* calleeTypes, bool constructing,
+                                         ObjectVector& targets, uint32_t maxTargets);
 
     void popCfgStack();
     DeferredEdge* filterDeadDeferredEdges(DeferredEdge* edge);
-    bool processDeferredContinues(CFGState& state);
+    MOZ_MUST_USE bool processDeferredContinues(CFGState& state);
     ControlStatus processControlEnd();
     ControlStatus processCfgStack();
     ControlStatus processCfgEntry(CFGState& state);
@@ -273,11 +266,11 @@ class IonBuilder
     ControlStatus processContinue(JSOp op);
     ControlStatus processBreak(JSOp op, jssrcnote* sn);
     ControlStatus maybeLoop(JSOp op, jssrcnote* sn);
-    bool pushLoop(CFGState::State state, jsbytecode* stopAt, MBasicBlock* entry, bool osr,
-                  jsbytecode* loopHead, jsbytecode* initialPc,
-                  jsbytecode* bodyStart, jsbytecode* bodyEnd, jsbytecode* exitpc,
-                  jsbytecode* continuepc = nullptr);
-    bool analyzeNewLoopTypes(MBasicBlock* entry, jsbytecode* start, jsbytecode* end);
+    MOZ_MUST_USE bool pushLoop(CFGState::State state, jsbytecode* stopAt, MBasicBlock* entry,
+                               bool osr, jsbytecode* loopHead, jsbytecode* initialPc,
+                               jsbytecode* bodyStart, jsbytecode* bodyEnd,
+                               jsbytecode* exitpc, jsbytecode* continuepc);
+    MOZ_MUST_USE bool analyzeNewLoopTypes(MBasicBlock* entry, jsbytecode* start, jsbytecode* end);
 
     MBasicBlock* addBlock(MBasicBlock* block, uint32_t loopDepth);
     MBasicBlock* newBlock(MBasicBlock* predecessor, jsbytecode* pc);
@@ -285,7 +278,8 @@ class IonBuilder
     MBasicBlock* newBlock(MBasicBlock* predecessor, jsbytecode* pc, MResumePoint* priorResumePoint);
     MBasicBlock* newBlockPopN(MBasicBlock* predecessor, jsbytecode* pc, uint32_t popped);
     MBasicBlock* newBlockAfter(MBasicBlock* at, MBasicBlock* predecessor, jsbytecode* pc);
-    MBasicBlock* newOsrPreheader(MBasicBlock* header, jsbytecode* loopEntry);
+    MBasicBlock* newOsrPreheader(MBasicBlock* header, jsbytecode* loopEntry,
+                                 jsbytecode* beforeLoopEntry);
     MBasicBlock* newPendingLoopHeader(MBasicBlock* predecessor, jsbytecode* pc, bool osr, bool canOsr,
                                       unsigned stackPhiCount);
     MBasicBlock* newBlock(jsbytecode* pc) {
@@ -317,13 +311,13 @@ class IonBuilder
 
     // Incorporates a type/typeSet into an OSR value for a loop, after the loop
     // body has been processed.
-    bool addOsrValueTypeBarrier(uint32_t slot, MInstruction** def,
-                                MIRType type, TemporaryTypeSet* typeSet);
-    bool maybeAddOsrTypeBarriers();
+    MOZ_MUST_USE bool addOsrValueTypeBarrier(uint32_t slot, MInstruction** def,
+                                             MIRType type, TemporaryTypeSet* typeSet);
+    MOZ_MUST_USE bool maybeAddOsrTypeBarriers();
 
     // Restarts processing of a loop if the type information at its header was
     // incomplete.
-    ControlStatus restartLoop(CFGState state);
+    ControlStatus restartLoop(const CFGState& state);
 
     void assertValidLoopHeadOp(jsbytecode* pc);
 
@@ -335,41 +329,50 @@ class IonBuilder
 
     // Please see the Big Honkin' Comment about how resume points work in
     // IonBuilder.cpp, near the definition for this function.
-    bool resume(MInstruction* ins, jsbytecode* pc, MResumePoint::Mode mode);
-    bool resumeAt(MInstruction* ins, jsbytecode* pc);
-    bool resumeAfter(MInstruction* ins);
-    bool maybeInsertResume();
+    MOZ_MUST_USE bool resume(MInstruction* ins, jsbytecode* pc, MResumePoint::Mode mode);
+    MOZ_MUST_USE bool resumeAt(MInstruction* ins, jsbytecode* pc);
+    MOZ_MUST_USE bool resumeAfter(MInstruction* ins);
+    MOZ_MUST_USE bool maybeInsertResume();
 
     void insertRecompileCheck();
 
-    void initParameters();
+    MOZ_MUST_USE bool initParameters();
     void initLocals();
     void rewriteParameter(uint32_t slotIdx, MDefinition* param, int32_t argIndex);
-    void rewriteParameters();
-    bool initScopeChain(MDefinition* callee = nullptr);
-    bool initArgumentsObject();
-    bool pushConstant(const Value& v);
+    MOZ_MUST_USE bool rewriteParameters();
+    MOZ_MUST_USE bool initEnvironmentChain(MDefinition* callee = nullptr);
+    MOZ_MUST_USE bool initArgumentsObject();
+    void pushConstant(const Value& v);
 
     MConstant* constant(const Value& v);
     MConstant* constantInt(int32_t i);
+    MInstruction* initializedLength(MDefinition* obj, MDefinition* elements,
+                                    JSValueType unboxedType);
+    MInstruction* setInitializedLength(MDefinition* obj, JSValueType unboxedType, size_t count);
 
     // Improve the type information at tests
-    bool improveTypesAtTest(MDefinition* ins, bool trueBranch, MTest* test);
-    bool improveTypesAtCompare(MCompare* ins, bool trueBranch, MTest* test);
+    MOZ_MUST_USE bool improveTypesAtTest(MDefinition* ins, bool trueBranch, MTest* test);
+    MOZ_MUST_USE bool improveTypesAtCompare(MCompare* ins, bool trueBranch, MTest* test);
+    MOZ_MUST_USE bool improveTypesAtNullOrUndefinedCompare(MCompare* ins, bool trueBranch,
+                                                           MTest* test);
+    MOZ_MUST_USE bool improveTypesAtTypeOfCompare(MCompare* ins, bool trueBranch, MTest* test);
+
     // Used to detect triangular structure at test.
-    bool detectAndOrStructure(MPhi* ins, bool* branchIsTrue);
-    bool replaceTypeSet(MDefinition* subject, TemporaryTypeSet* type, MTest* test);
+    MOZ_MUST_USE bool detectAndOrStructure(MPhi* ins, bool* branchIsTrue);
+    MOZ_MUST_USE bool replaceTypeSet(MDefinition* subject, TemporaryTypeSet* type, MTest* test);
 
     // Add a guard which ensure that the set of type which goes through this
     // generated code correspond to the observed types for the bytecode.
     MDefinition* addTypeBarrier(MDefinition* def, TemporaryTypeSet* observed,
                                 BarrierKind kind, MTypeBarrier** pbarrier = nullptr);
-    bool pushTypeBarrier(MDefinition* def, TemporaryTypeSet* observed, BarrierKind kind);
+    MOZ_MUST_USE bool pushTypeBarrier(MDefinition* def, TemporaryTypeSet* observed,
+                                      BarrierKind kind);
 
     // As pushTypeBarrier, but will compute the needBarrier boolean itself based
     // on observed and the JSFunction that we're planning to call. The
     // JSFunction must be a DOM method or getter.
-    bool pushDOMTypeBarrier(MInstruction* ins, TemporaryTypeSet* observed, JSFunction* func);
+    MOZ_MUST_USE bool pushDOMTypeBarrier(MInstruction* ins, TemporaryTypeSet* observed,
+                                         JSFunction* func);
 
     // If definiteType is not known or def already has the right type, just
     // returns def.  Otherwise, returns an MInstruction that has that definite
@@ -380,213 +383,276 @@ class IonBuilder
     // Creates a MDefinition based on the given def improved with type as TypeSet.
     MDefinition* ensureDefiniteTypeSet(MDefinition* def, TemporaryTypeSet* types);
 
+    void maybeMarkEmpty(MDefinition* ins);
+
     JSObject* getSingletonPrototype(JSFunction* target);
 
-    MDefinition* createThisScripted(MDefinition* callee);
+    MDefinition* createThisScripted(MDefinition* callee, MDefinition* newTarget);
     MDefinition* createThisScriptedSingleton(JSFunction* target, MDefinition* callee);
     MDefinition* createThisScriptedBaseline(MDefinition* callee);
-    MDefinition* createThis(JSFunction* target, MDefinition* callee);
-    MInstruction* createDeclEnvObject(MDefinition* callee, MDefinition* scopeObj);
-    MInstruction* createCallObject(MDefinition* callee, MDefinition* scopeObj);
+    MDefinition* createThis(JSFunction* target, MDefinition* callee, MDefinition* newTarget);
+    MInstruction* createNamedLambdaObject(MDefinition* callee, MDefinition* envObj);
+    MInstruction* createCallObject(MDefinition* callee, MDefinition* envObj);
 
-    MDefinition* walkScopeChain(unsigned hops);
+    MDefinition* walkEnvironmentChain(unsigned hops);
 
     MInstruction* addConvertElementsToDoubles(MDefinition* elements);
-    MDefinition* addMaybeCopyElementsForWrite(MDefinition* object);
+    MDefinition* addMaybeCopyElementsForWrite(MDefinition* object, bool checkNative);
     MInstruction* addBoundsCheck(MDefinition* index, MDefinition* length);
     MInstruction* addShapeGuard(MDefinition* obj, Shape* const shape, BailoutKind bailoutKind);
-    MInstruction* addShapeGuardPolymorphic(MDefinition* obj,
-                                           const BaselineInspector::ShapeVector& shapes);
+    MInstruction* addGroupGuard(MDefinition* obj, ObjectGroup* group, BailoutKind bailoutKind);
+    MInstruction* addUnboxedExpandoGuard(MDefinition* obj, bool hasExpando, BailoutKind bailoutKind);
+    MInstruction* addSharedTypedArrayGuard(MDefinition* obj);
+
+    MInstruction*
+    addGuardReceiverPolymorphic(MDefinition* obj, const BaselineInspector::ReceiverVector& receivers);
 
     MDefinition* convertShiftToMaskForStaticTypedArray(MDefinition* id,
                                                        Scalar::Type viewType);
 
     bool invalidatedIdempotentCache();
 
-    bool hasStaticScopeObject(ScopeCoordinate sc, JSObject** pcall);
-    bool loadSlot(MDefinition* obj, size_t slot, size_t nfixed, MIRType rvalType,
-                  BarrierKind barrier, TemporaryTypeSet* types);
-    bool loadSlot(MDefinition* obj, Shape* shape, MIRType rvalType,
-                  BarrierKind barrier, TemporaryTypeSet* types);
-    bool storeSlot(MDefinition* obj, size_t slot, size_t nfixed,
-                   MDefinition* value, bool needsBarrier,
-                   MIRType slotType = MIRType_None);
-    bool storeSlot(MDefinition* obj, Shape* shape, MDefinition* value, bool needsBarrier,
-                   MIRType slotType = MIRType_None);
+    bool hasStaticEnvironmentObject(EnvironmentCoordinate ec, JSObject** pcall);
+    MOZ_MUST_USE bool loadSlot(MDefinition* obj, size_t slot, size_t nfixed, MIRType rvalType,
+                               BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool loadSlot(MDefinition* obj, Shape* shape, MIRType rvalType,
+                               BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool storeSlot(MDefinition* obj, size_t slot, size_t nfixed, MDefinition* value,
+                                bool needsBarrier, MIRType slotType = MIRType::None);
+    MOZ_MUST_USE bool storeSlot(MDefinition* obj, Shape* shape, MDefinition* value,
+                                bool needsBarrier, MIRType slotType = MIRType::None);
+    bool shouldAbortOnPreliminaryGroups(MDefinition *obj);
 
     MDefinition* tryInnerizeWindow(MDefinition* obj);
+    MDefinition* maybeUnboxForPropertyAccess(MDefinition* def);
 
     // jsop_getprop() helpers.
-    bool checkIsDefinitelyOptimizedArguments(MDefinition* obj, bool* isOptimizedArgs);
-    bool getPropTryInferredConstant(bool* emitted, MDefinition* obj, PropertyName* name,
-                                    TemporaryTypeSet* types);
-    bool getPropTryArgumentsLength(bool* emitted, MDefinition* obj);
-    bool getPropTryArgumentsCallee(bool* emitted, MDefinition* obj, PropertyName* name);
-    bool getPropTryConstant(bool* emitted, MDefinition* obj, PropertyName* name,
-                            TemporaryTypeSet* types);
-    bool getPropTryDefiniteSlot(bool* emitted, MDefinition* obj, PropertyName* name,
-                                BarrierKind barrier, TemporaryTypeSet* types);
-    bool getPropTryUnboxed(bool* emitted, MDefinition* obj, PropertyName* name,
-                           BarrierKind barrier, TemporaryTypeSet* types);
-    bool getPropTryCommonGetter(bool* emitted, MDefinition* obj, PropertyName* name,
-                                TemporaryTypeSet* types);
-    bool getPropTryInlineAccess(bool* emitted, MDefinition* obj, PropertyName* name,
-                                BarrierKind barrier, TemporaryTypeSet* types);
-    bool getPropTryTypedObject(bool* emitted, MDefinition* obj, PropertyName* name);
-    bool getPropTryScalarPropOfTypedObject(bool* emitted, MDefinition* typedObj,
-                                           int32_t fieldOffset,
-                                           TypedObjectPrediction fieldTypeReprs);
-    bool getPropTryReferencePropOfTypedObject(bool* emitted, MDefinition* typedObj,
-                                              int32_t fieldOffset,
-                                              TypedObjectPrediction fieldPrediction,
-                                              PropertyName* name);
-    bool getPropTryComplexPropOfTypedObject(bool* emitted, MDefinition* typedObj,
-                                            int32_t fieldOffset,
-                                            TypedObjectPrediction fieldTypeReprs,
-                                            size_t fieldIndex);
-    bool getPropTryInnerize(bool* emitted, MDefinition* obj, PropertyName* name,
-                            TemporaryTypeSet* types);
-    bool getPropTryCache(bool* emitted, MDefinition* obj, PropertyName* name,
-                         BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool checkIsDefinitelyOptimizedArguments(MDefinition* obj, bool* isOptimizedArgs);
+    MOZ_MUST_USE bool getPropTryInferredConstant(bool* emitted, MDefinition* obj,
+                                                 PropertyName* name, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryArgumentsLength(bool* emitted, MDefinition* obj);
+    MOZ_MUST_USE bool getPropTryArgumentsCallee(bool* emitted, MDefinition* obj,
+                                                PropertyName* name);
+    MOZ_MUST_USE bool getPropTryConstant(bool* emitted, MDefinition* obj, jsid id,
+                                         TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryNotDefined(bool* emitted, MDefinition* obj, jsid id,
+                                           TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryDefiniteSlot(bool* emitted, MDefinition* obj, PropertyName* name,
+                                             BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryModuleNamespace(bool* emitted, MDefinition* obj, PropertyName* name,
+                                                BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryUnboxed(bool* emitted, MDefinition* obj, PropertyName* name,
+                                        BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryCommonGetter(bool* emitted, MDefinition* obj, PropertyName* name,
+                                             TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryInlineAccess(bool* emitted, MDefinition* obj, PropertyName* name,
+                                             BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryTypedObject(bool* emitted, MDefinition* obj, PropertyName* name);
+    MOZ_MUST_USE bool getPropTryScalarPropOfTypedObject(bool* emitted, MDefinition* typedObj,
+                                                        int32_t fieldOffset,
+                                                        TypedObjectPrediction fieldTypeReprs);
+    MOZ_MUST_USE bool getPropTryReferencePropOfTypedObject(bool* emitted, MDefinition* typedObj,
+                                                           int32_t fieldOffset,
+                                                           TypedObjectPrediction fieldPrediction,
+                                                           PropertyName* name);
+    MOZ_MUST_USE bool getPropTryComplexPropOfTypedObject(bool* emitted, MDefinition* typedObj,
+                                                         int32_t fieldOffset,
+                                                         TypedObjectPrediction fieldTypeReprs,
+                                                         size_t fieldIndex);
+    MOZ_MUST_USE bool getPropTryInnerize(bool* emitted, MDefinition* obj, PropertyName* name,
+                                         TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTryCache(bool* emitted, MDefinition* obj, PropertyName* name,
+                                      BarrierKind barrier, TemporaryTypeSet* types);
+    MOZ_MUST_USE bool getPropTrySharedStub(bool* emitted, MDefinition* obj,
+                                           TemporaryTypeSet* types);
 
     // jsop_setprop() helpers.
-    bool setPropTryCommonSetter(bool* emitted, MDefinition* obj,
-                                PropertyName* name, MDefinition* value);
-    bool setPropTryCommonDOMSetter(bool* emitted, MDefinition* obj,
-                                   MDefinition* value, JSFunction* setter,
-                                   TemporaryTypeSet* objTypes);
-    bool setPropTryDefiniteSlot(bool* emitted, MDefinition* obj,
-                                PropertyName* name, MDefinition* value,
-                                bool barrier, TemporaryTypeSet* objTypes);
-    bool setPropTryUnboxed(bool* emitted, MDefinition* obj,
-                           PropertyName* name, MDefinition* value,
-                           bool barrier, TemporaryTypeSet* objTypes);
-    bool setPropTryInlineAccess(bool* emitted, MDefinition* obj,
-                                PropertyName* name, MDefinition* value,
-                                bool barrier, TemporaryTypeSet* objTypes);
-    bool setPropTryTypedObject(bool* emitted, MDefinition* obj,
-                               PropertyName* name, MDefinition* value);
-    bool setPropTryReferencePropOfTypedObject(bool* emitted,
-                                              MDefinition* obj,
-                                              int32_t fieldOffset,
-                                              MDefinition* value,
-                                              TypedObjectPrediction fieldPrediction,
-                                              PropertyName* name);
-    bool setPropTryScalarPropOfTypedObject(bool* emitted,
-                                           MDefinition* obj,
-                                           int32_t fieldOffset,
-                                           MDefinition* value,
-                                           TypedObjectPrediction fieldTypeReprs);
-    bool setPropTryCache(bool* emitted, MDefinition* obj,
-                         PropertyName* name, MDefinition* value,
-                         bool barrier, TemporaryTypeSet* objTypes);
+    MOZ_MUST_USE bool setPropTryCommonSetter(bool* emitted, MDefinition* obj,
+                                             PropertyName* name, MDefinition* value);
+    MOZ_MUST_USE bool setPropTryCommonDOMSetter(bool* emitted, MDefinition* obj,
+                                                MDefinition* value, JSFunction* setter,
+                                                TemporaryTypeSet* objTypes);
+    MOZ_MUST_USE bool setPropTryDefiniteSlot(bool* emitted, MDefinition* obj,
+                                             PropertyName* name, MDefinition* value,
+                                             bool barrier, TemporaryTypeSet* objTypes);
+    MOZ_MUST_USE bool setPropTryUnboxed(bool* emitted, MDefinition* obj,
+                                        PropertyName* name, MDefinition* value,
+                                        bool barrier, TemporaryTypeSet* objTypes);
+    MOZ_MUST_USE bool setPropTryInlineAccess(bool* emitted, MDefinition* obj,
+                                             PropertyName* name, MDefinition* value,
+                                             bool barrier, TemporaryTypeSet* objTypes);
+    MOZ_MUST_USE bool setPropTryTypedObject(bool* emitted, MDefinition* obj,
+                                            PropertyName* name, MDefinition* value);
+    MOZ_MUST_USE bool setPropTryReferencePropOfTypedObject(bool* emitted, MDefinition* obj,
+                                                           int32_t fieldOffset, MDefinition* value,
+                                                           TypedObjectPrediction fieldPrediction,
+                                                           PropertyName* name);
+    MOZ_MUST_USE bool setPropTryScalarPropOfTypedObject(bool* emitted,
+                                                        MDefinition* obj,
+                                                        int32_t fieldOffset,
+                                                        MDefinition* value,
+                                                        TypedObjectPrediction fieldTypeReprs);
+    MOZ_MUST_USE bool setPropTryCache(bool* emitted, MDefinition* obj,
+                                      PropertyName* name, MDefinition* value,
+                                      bool barrier, TemporaryTypeSet* objTypes);
+
+    // jsop_binary_arith helpers.
+    MBinaryArithInstruction* binaryArithInstruction(JSOp op, MDefinition* left, MDefinition* right);
+    MOZ_MUST_USE bool binaryArithTryConcat(bool* emitted, JSOp op, MDefinition* left,
+                                           MDefinition* right);
+    MOZ_MUST_USE bool binaryArithTrySpecialized(bool* emitted, JSOp op, MDefinition* left,
+                                                MDefinition* right);
+    MOZ_MUST_USE bool binaryArithTrySpecializedOnBaselineInspector(bool* emitted, JSOp op,
+                                                                   MDefinition* left,
+                                                                   MDefinition* right);
+    MOZ_MUST_USE bool arithTrySharedStub(bool* emitted, JSOp op, MDefinition* left,
+                                         MDefinition* right);
+
+    // jsop_bitnot helpers.
+    MOZ_MUST_USE bool bitnotTrySpecialized(bool* emitted, MDefinition* input);
+
+    // jsop_pow helpers.
+    MOZ_MUST_USE bool powTrySpecialized(bool* emitted, MDefinition* base, MDefinition* power,
+                                        MIRType outputType);
+
+    // jsop_compare helpers.
+    MOZ_MUST_USE bool compareTrySpecialized(bool* emitted, JSOp op, MDefinition* left,
+                                            MDefinition* right);
+    MOZ_MUST_USE bool compareTryBitwise(bool* emitted, JSOp op, MDefinition* left,
+                                        MDefinition* right);
+    MOZ_MUST_USE bool compareTrySpecializedOnBaselineInspector(bool* emitted, JSOp op,
+                                                               MDefinition* left,
+                                                               MDefinition* right);
+    MOZ_MUST_USE bool compareTrySharedStub(bool* emitted, JSOp op, MDefinition* left,
+                                           MDefinition* right);
+
+    // jsop_newarray helpers.
+    MOZ_MUST_USE bool newArrayTrySharedStub(bool* emitted);
+    MOZ_MUST_USE bool newArrayTryTemplateObject(bool* emitted, JSObject* templateObject,
+                                                uint32_t length);
+    MOZ_MUST_USE bool newArrayTryVM(bool* emitted, JSObject* templateObject, uint32_t length);
+
+    // jsop_newobject helpers.
+    MOZ_MUST_USE bool newObjectTrySharedStub(bool* emitted);
+    MOZ_MUST_USE bool newObjectTryTemplateObject(bool* emitted, JSObject* templateObject);
+    MOZ_MUST_USE bool newObjectTryVM(bool* emitted, JSObject* templateObject);
+
+    // jsop_in helpers.
+    MOZ_MUST_USE bool inTryDense(bool* emitted, MDefinition* obj, MDefinition* id);
+    MOZ_MUST_USE bool inTryFold(bool* emitted, MDefinition* obj, MDefinition* id);
 
     // binary data lookup helpers.
     TypedObjectPrediction typedObjectPrediction(MDefinition* typedObj);
     TypedObjectPrediction typedObjectPrediction(TemporaryTypeSet* types);
-    bool typedObjectHasField(MDefinition* typedObj,
-                             PropertyName* name,
-                             size_t* fieldOffset,
-                             TypedObjectPrediction* fieldTypeReprs,
-                             size_t* fieldIndex);
+    MOZ_MUST_USE bool typedObjectHasField(MDefinition* typedObj,
+                                          PropertyName* name,
+                                          size_t* fieldOffset,
+                                          TypedObjectPrediction* fieldTypeReprs,
+                                          size_t* fieldIndex);
     MDefinition* loadTypedObjectType(MDefinition* value);
     void loadTypedObjectData(MDefinition* typedObj,
                              MDefinition** owner,
                              LinearSum* ownerOffset);
     void loadTypedObjectElements(MDefinition* typedObj,
                                  const LinearSum& byteOffset,
-                                 int32_t scale,
+                                 uint32_t scale,
                                  MDefinition** ownerElements,
                                  MDefinition** ownerScaledOffset,
                                  int32_t* ownerByteAdjustment);
     MDefinition* typeObjectForElementFromArrayStructType(MDefinition* typedObj);
     MDefinition* typeObjectForFieldFromStructType(MDefinition* type,
                                                   size_t fieldIndex);
-    bool storeReferenceTypedObjectValue(MDefinition* typedObj,
-                                        const LinearSum& byteOffset,
-                                        ReferenceTypeDescr::Type type,
-                                        MDefinition* value,
-                                        PropertyName* name);
-    bool storeScalarTypedObjectValue(MDefinition* typedObj,
-                                     const LinearSum& byteOffset,
-                                     ScalarTypeDescr::Type type,
-                                     bool racy,
-                                     MDefinition* value);
-    bool checkTypedObjectIndexInBounds(int32_t elemSize,
-                                       MDefinition* obj,
-                                       MDefinition* index,
-                                       TypedObjectPrediction objTypeDescrs,
-                                       LinearSum* indexAsByteOffset);
-    bool pushDerivedTypedObject(bool* emitted,
-                                MDefinition* obj,
-                                const LinearSum& byteOffset,
-                                TypedObjectPrediction derivedTypeDescrs,
-                                MDefinition* derivedTypeObj);
-    bool pushScalarLoadFromTypedObject(MDefinition* obj,
-                                       const LinearSum& byteoffset,
-                                       ScalarTypeDescr::Type type);
-    bool pushReferenceLoadFromTypedObject(MDefinition* typedObj,
-                                          const LinearSum& byteOffset,
-                                          ReferenceTypeDescr::Type type,
-                                          PropertyName* name);
-    MDefinition* neuterCheck(MDefinition* obj);
+    MOZ_MUST_USE bool storeReferenceTypedObjectValue(MDefinition* typedObj,
+                                                     const LinearSum& byteOffset,
+                                                     ReferenceTypeDescr::Type type,
+                                                     MDefinition* value,
+                                                     PropertyName* name);
+    MOZ_MUST_USE bool storeScalarTypedObjectValue(MDefinition* typedObj,
+                                                  const LinearSum& byteOffset,
+                                                  ScalarTypeDescr::Type type,
+                                                  MDefinition* value);
+    MOZ_MUST_USE bool checkTypedObjectIndexInBounds(uint32_t elemSize,
+                                                    MDefinition* obj,
+                                                    MDefinition* index,
+                                                    TypedObjectPrediction objTypeDescrs,
+                                                    LinearSum* indexAsByteOffset);
+    MOZ_MUST_USE bool pushDerivedTypedObject(bool* emitted,
+                                             MDefinition* obj,
+                                             const LinearSum& byteOffset,
+                                             TypedObjectPrediction derivedTypeDescrs,
+                                             MDefinition* derivedTypeObj);
+    MOZ_MUST_USE bool pushScalarLoadFromTypedObject(MDefinition* obj,
+                                                    const LinearSum& byteoffset,
+                                                    ScalarTypeDescr::Type type);
+    MOZ_MUST_USE bool pushReferenceLoadFromTypedObject(MDefinition* typedObj,
+                                                       const LinearSum& byteOffset,
+                                                       ReferenceTypeDescr::Type type,
+                                                       PropertyName* name);
     JSObject* getStaticTypedArrayObject(MDefinition* obj, MDefinition* index);
 
     // jsop_setelem() helpers.
-    bool setElemTryTypedArray(bool* emitted, MDefinition* object,
-                         MDefinition* index, MDefinition* value);
-    bool setElemTryTypedObject(bool* emitted, MDefinition* obj,
-                               MDefinition* index, MDefinition* value);
-    bool setElemTryTypedStatic(bool* emitted, MDefinition* object,
-                               MDefinition* index, MDefinition* value);
-    bool setElemTryDense(bool* emitted, MDefinition* object,
-                         MDefinition* index, MDefinition* value);
-    bool setElemTryArguments(bool* emitted, MDefinition* object,
-                             MDefinition* index, MDefinition* value);
-    bool setElemTryCache(bool* emitted, MDefinition* object,
-                         MDefinition* index, MDefinition* value);
-    bool setElemTryReferenceElemOfTypedObject(bool* emitted,
-                                              MDefinition* obj,
-                                              MDefinition* index,
-                                              TypedObjectPrediction objPrediction,
-                                              MDefinition* value,
-                                              TypedObjectPrediction elemPrediction);
-    bool setElemTryScalarElemOfTypedObject(bool* emitted,
-                                           MDefinition* obj,
-                                           MDefinition* index,
-                                           TypedObjectPrediction objTypeReprs,
-                                           MDefinition* value,
-                                           TypedObjectPrediction elemTypeReprs,
-                                           int32_t elemSize);
+    MOZ_MUST_USE bool setElemTryTypedArray(bool* emitted, MDefinition* object,
+                                           MDefinition* index, MDefinition* value);
+    MOZ_MUST_USE bool setElemTryTypedObject(bool* emitted, MDefinition* obj,
+                                            MDefinition* index, MDefinition* value);
+    MOZ_MUST_USE bool setElemTryTypedStatic(bool* emitted, MDefinition* object,
+                                            MDefinition* index, MDefinition* value);
+    MOZ_MUST_USE bool setElemTryDense(bool* emitted, MDefinition* object,
+                                      MDefinition* index, MDefinition* value, bool writeHole);
+    MOZ_MUST_USE bool setElemTryArguments(bool* emitted, MDefinition* object,
+                                          MDefinition* index, MDefinition* value);
+    MOZ_MUST_USE bool setElemTryCache(bool* emitted, MDefinition* object,
+                                      MDefinition* index, MDefinition* value);
+    MOZ_MUST_USE bool setElemTryReferenceElemOfTypedObject(bool* emitted,
+                                                           MDefinition* obj,
+                                                           MDefinition* index,
+                                                           TypedObjectPrediction objPrediction,
+                                                           MDefinition* value,
+                                                           TypedObjectPrediction elemPrediction);
+    MOZ_MUST_USE bool setElemTryScalarElemOfTypedObject(bool* emitted,
+                                                        MDefinition* obj,
+                                                        MDefinition* index,
+                                                        TypedObjectPrediction objTypeReprs,
+                                                        MDefinition* value,
+                                                        TypedObjectPrediction elemTypeReprs,
+                                                        uint32_t elemSize);
+    MOZ_MUST_USE bool initializeArrayElement(MDefinition* obj, size_t index, MDefinition* value,
+                                             JSValueType unboxedType,
+                                             bool addResumePointAndIncrementInitializedLength);
 
     // jsop_getelem() helpers.
-    bool getElemTryDense(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryTypedStatic(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryTypedArray(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryTypedObject(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryString(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryArguments(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryArgumentsInlined(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryCache(bool* emitted, MDefinition* obj, MDefinition* index);
-    bool getElemTryScalarElemOfTypedObject(bool* emitted,
-                                           MDefinition* obj,
-                                           MDefinition* index,
-                                           TypedObjectPrediction objTypeReprs,
-                                           TypedObjectPrediction elemTypeReprs,
-                                           int32_t elemSize);
-    bool getElemTryReferenceElemOfTypedObject(bool* emitted,
-                                              MDefinition* obj,
-                                              MDefinition* index,
-                                              TypedObjectPrediction objPrediction,
-                                              TypedObjectPrediction elemPrediction);
-    bool getElemTryComplexElemOfTypedObject(bool* emitted,
-                                            MDefinition* obj,
-                                            MDefinition* index,
-                                            TypedObjectPrediction objTypeReprs,
-                                            TypedObjectPrediction elemTypeReprs,
-                                            int32_t elemSize);
+    MOZ_MUST_USE bool getElemTryDense(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryGetProp(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryTypedStatic(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryTypedArray(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryTypedObject(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryString(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryArguments(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryArgumentsInlined(bool* emitted, MDefinition* obj,
+                                                 MDefinition* index);
+    MOZ_MUST_USE bool getElemTryCache(bool* emitted, MDefinition* obj, MDefinition* index);
+    MOZ_MUST_USE bool getElemTryScalarElemOfTypedObject(bool* emitted,
+                                                        MDefinition* obj,
+                                                        MDefinition* index,
+                                                        TypedObjectPrediction objTypeReprs,
+                                                        TypedObjectPrediction elemTypeReprs,
+                                                        uint32_t elemSize);
+    MOZ_MUST_USE bool getElemTryReferenceElemOfTypedObject(bool* emitted,
+                                                           MDefinition* obj,
+                                                           MDefinition* index,
+                                                           TypedObjectPrediction objPrediction,
+                                                           TypedObjectPrediction elemPrediction);
+    MOZ_MUST_USE bool getElemTryComplexElemOfTypedObject(bool* emitted,
+                                                         MDefinition* obj,
+                                                         MDefinition* index,
+                                                         TypedObjectPrediction objTypeReprs,
+                                                         TypedObjectPrediction elemTypeReprs,
+                                                         uint32_t elemSize);
+    TemporaryTypeSet* computeHeapType(const TemporaryTypeSet* objTypes, const jsid id);
 
     enum BoundsChecking { DoBoundsCheck, SkipBoundsCheck };
+
+    MInstruction* addArrayBufferByteLength(MDefinition* obj);
 
     // Add instructions to compute a typed array's length and data.  Also
     // optionally convert |*index| into a bounds-checked definition, if
@@ -607,96 +673,117 @@ class IonBuilder
         return length;
     }
 
+    MOZ_MUST_USE bool improveThisTypesForCall();
 
     MDefinition* getCallee();
-    MDefinition* getAliasedVar(ScopeCoordinate sc);
+    MDefinition* getAliasedVar(EnvironmentCoordinate ec);
     MDefinition* addLexicalCheck(MDefinition* input);
 
-    bool tryFoldInstanceOf(MDefinition* lhs, JSObject* protoObject);
+    MDefinition* convertToBoolean(MDefinition* input);
 
-    bool jsop_add(MDefinition* left, MDefinition* right);
-    bool jsop_bitnot();
-    bool jsop_bitop(JSOp op);
-    bool jsop_binary(JSOp op);
-    bool jsop_binary(JSOp op, MDefinition* left, MDefinition* right);
-    bool jsop_pos();
-    bool jsop_neg();
-    bool jsop_setarg(uint32_t arg);
-    bool jsop_defvar(uint32_t index);
-    bool jsop_deffun(uint32_t index);
-    bool jsop_notearg();
-    bool jsop_checklexical();
-    bool jsop_checkaliasedlet(ScopeCoordinate sc);
-    bool jsop_funcall(uint32_t argc);
-    bool jsop_funapply(uint32_t argc);
-    bool jsop_funapplyarguments(uint32_t argc);
-    bool jsop_call(uint32_t argc, bool constructing);
-    bool jsop_eval(uint32_t argc);
-    bool jsop_ifeq(JSOp op);
-    bool jsop_try();
-    bool jsop_label();
-    bool jsop_condswitch();
-    bool jsop_andor(JSOp op);
-    bool jsop_dup2();
-    bool jsop_loophead(jsbytecode* pc);
-    bool jsop_compare(JSOp op);
-    bool getStaticName(JSObject* staticObject, PropertyName* name, bool* psucceeded,
-                       MDefinition* lexicalCheck = nullptr);
-    bool setStaticName(JSObject* staticObject, PropertyName* name);
-    bool jsop_getgname(PropertyName* name);
-    bool jsop_getname(PropertyName* name);
-    bool jsop_intrinsic(PropertyName* name);
-    bool jsop_bindname(PropertyName* name);
-    bool jsop_getelem();
-    bool jsop_getelem_dense(MDefinition* obj, MDefinition* index);
-    bool jsop_getelem_typed(MDefinition* obj, MDefinition* index, ScalarTypeDescr::Type arrayType);
-    bool jsop_setelem();
-    bool jsop_setelem_dense(TemporaryTypeSet::DoubleConversion conversion,
-                            SetElemSafety safety,
-                            MDefinition* object, MDefinition* index, MDefinition* value);
-    bool jsop_setelem_typed(ScalarTypeDescr::Type arrayType,
-                            SetElemSafety safety,
-                            MDefinition* object, MDefinition* index, MDefinition* value);
-    bool jsop_setelem_typed_object(ScalarTypeDescr::Type arrayType,
-                                   SetElemSafety safety, bool racy,
-                                   MDefinition* object, MDefinition* index, MDefinition* value);
-    bool jsop_length();
-    bool jsop_length_fastPath();
-    bool jsop_arguments();
-    bool jsop_arguments_getelem();
-    bool jsop_runonce();
-    bool jsop_rest();
-    bool jsop_not();
-    bool jsop_getprop(PropertyName* name);
-    bool jsop_setprop(PropertyName* name);
-    bool jsop_delprop(PropertyName* name);
-    bool jsop_delelem();
-    bool jsop_newarray(uint32_t count);
-    bool jsop_newarray_copyonwrite();
-    bool jsop_newobject();
-    bool jsop_initelem();
-    bool jsop_initelem_array();
-    bool jsop_initelem_getter_setter();
-    bool jsop_mutateproto();
-    bool jsop_initprop(PropertyName* name);
-    bool jsop_initprop_getter_setter(PropertyName* name);
-    bool jsop_regexp(RegExpObject* reobj);
-    bool jsop_object(JSObject* obj);
-    bool jsop_lambda(JSFunction* fun);
-    bool jsop_lambda_arrow(JSFunction* fun);
-    bool jsop_this();
-    bool jsop_typeof();
-    bool jsop_toid();
-    bool jsop_iter(uint8_t flags);
-    bool jsop_itermore();
-    bool jsop_isnoiter();
-    bool jsop_iterend();
-    bool jsop_in();
-    bool jsop_in_dense();
-    bool jsop_instanceof();
-    bool jsop_getaliasedvar(ScopeCoordinate sc);
-    bool jsop_setaliasedvar(ScopeCoordinate sc);
-    bool jsop_debugger();
+    MOZ_MUST_USE bool tryFoldInstanceOf(MDefinition* lhs, JSObject* protoObject);
+    MOZ_MUST_USE bool hasOnProtoChain(TypeSet::ObjectKey* key, JSObject* protoObject,
+                                      bool* hasOnProto);
+
+    MOZ_MUST_USE bool jsop_add(MDefinition* left, MDefinition* right);
+    MOZ_MUST_USE bool jsop_bitnot();
+    MOZ_MUST_USE bool jsop_bitop(JSOp op);
+    MOZ_MUST_USE bool jsop_binary_arith(JSOp op);
+    MOZ_MUST_USE bool jsop_binary_arith(JSOp op, MDefinition* left, MDefinition* right);
+    MOZ_MUST_USE bool jsop_pow();
+    MOZ_MUST_USE bool jsop_pos();
+    MOZ_MUST_USE bool jsop_neg();
+    MOZ_MUST_USE bool jsop_tostring();
+    MOZ_MUST_USE bool jsop_setarg(uint32_t arg);
+    MOZ_MUST_USE bool jsop_defvar(uint32_t index);
+    MOZ_MUST_USE bool jsop_deflexical(uint32_t index);
+    MOZ_MUST_USE bool jsop_deffun(uint32_t index);
+    MOZ_MUST_USE bool jsop_notearg();
+    MOZ_MUST_USE bool jsop_throwsetconst();
+    MOZ_MUST_USE bool jsop_checklexical();
+    MOZ_MUST_USE bool jsop_checkaliasedlexical(EnvironmentCoordinate ec);
+    MOZ_MUST_USE bool jsop_funcall(uint32_t argc);
+    MOZ_MUST_USE bool jsop_funapply(uint32_t argc);
+    MOZ_MUST_USE bool jsop_funapplyarguments(uint32_t argc);
+    MOZ_MUST_USE bool jsop_funapplyarray(uint32_t argc);
+    MOZ_MUST_USE bool jsop_call(uint32_t argc, bool constructing);
+    MOZ_MUST_USE bool jsop_eval(uint32_t argc);
+    MOZ_MUST_USE bool jsop_ifeq(JSOp op);
+    MOZ_MUST_USE bool jsop_try();
+    MOZ_MUST_USE bool jsop_label();
+    MOZ_MUST_USE bool jsop_condswitch();
+    MOZ_MUST_USE bool jsop_andor(JSOp op);
+    MOZ_MUST_USE bool jsop_dup2();
+    MOZ_MUST_USE bool jsop_loophead(jsbytecode* pc);
+    MOZ_MUST_USE bool jsop_compare(JSOp op);
+    MOZ_MUST_USE bool jsop_compare(JSOp op, MDefinition* left, MDefinition* right);
+    MOZ_MUST_USE bool getStaticName(JSObject* staticObject, PropertyName* name, bool* psucceeded,
+                                    MDefinition* lexicalCheck = nullptr);
+    MOZ_MUST_USE bool loadStaticSlot(JSObject* staticObject, BarrierKind barrier,
+                                     TemporaryTypeSet* types, uint32_t slot);
+    MOZ_MUST_USE bool setStaticName(JSObject* staticObject, PropertyName* name);
+    MOZ_MUST_USE bool jsop_getgname(PropertyName* name);
+    MOZ_MUST_USE bool jsop_getname(PropertyName* name);
+    MOZ_MUST_USE bool jsop_intrinsic(PropertyName* name);
+    MOZ_MUST_USE bool jsop_getimport(PropertyName* name);
+    MOZ_MUST_USE bool jsop_bindname(PropertyName* name);
+    MOZ_MUST_USE bool jsop_bindvar();
+    MOZ_MUST_USE bool jsop_getelem();
+    MOZ_MUST_USE bool jsop_getelem_dense(MDefinition* obj, MDefinition* index,
+                                         JSValueType unboxedType);
+    MOZ_MUST_USE bool jsop_getelem_typed(MDefinition* obj, MDefinition* index,
+                                         ScalarTypeDescr::Type arrayType);
+    MOZ_MUST_USE bool jsop_setelem();
+    MOZ_MUST_USE bool jsop_setelem_dense(TemporaryTypeSet::DoubleConversion conversion,
+                                         MDefinition* object, MDefinition* index,
+                                         MDefinition* value, JSValueType unboxedType,
+                                         bool writeHole, bool* emitted);
+    MOZ_MUST_USE bool jsop_setelem_typed(ScalarTypeDescr::Type arrayType,
+                                         MDefinition* object, MDefinition* index,
+                                         MDefinition* value);
+    MOZ_MUST_USE bool jsop_length();
+    MOZ_MUST_USE bool jsop_length_fastPath();
+    MOZ_MUST_USE bool jsop_arguments();
+    MOZ_MUST_USE bool jsop_arguments_getelem();
+    MOZ_MUST_USE bool jsop_runonce();
+    MOZ_MUST_USE bool jsop_rest();
+    MOZ_MUST_USE bool jsop_not();
+    MOZ_MUST_USE bool jsop_getprop(PropertyName* name);
+    MOZ_MUST_USE bool jsop_setprop(PropertyName* name);
+    MOZ_MUST_USE bool jsop_delprop(PropertyName* name);
+    MOZ_MUST_USE bool jsop_delelem();
+    MOZ_MUST_USE bool jsop_newarray(uint32_t length);
+    MOZ_MUST_USE bool jsop_newarray(JSObject* templateObject, uint32_t length);
+    MOZ_MUST_USE bool jsop_newarray_copyonwrite();
+    MOZ_MUST_USE bool jsop_newobject();
+    MOZ_MUST_USE bool jsop_initelem();
+    MOZ_MUST_USE bool jsop_initelem_array();
+    MOZ_MUST_USE bool jsop_initelem_getter_setter();
+    MOZ_MUST_USE bool jsop_mutateproto();
+    MOZ_MUST_USE bool jsop_initprop(PropertyName* name);
+    MOZ_MUST_USE bool jsop_initprop_getter_setter(PropertyName* name);
+    MOZ_MUST_USE bool jsop_regexp(RegExpObject* reobj);
+    MOZ_MUST_USE bool jsop_object(JSObject* obj);
+    MOZ_MUST_USE bool jsop_lambda(JSFunction* fun);
+    MOZ_MUST_USE bool jsop_lambda_arrow(JSFunction* fun);
+    MOZ_MUST_USE bool jsop_functionthis();
+    MOZ_MUST_USE bool jsop_globalthis();
+    MOZ_MUST_USE bool jsop_typeof();
+    MOZ_MUST_USE bool jsop_toasync();
+    MOZ_MUST_USE bool jsop_toid();
+    MOZ_MUST_USE bool jsop_iter(uint8_t flags);
+    MOZ_MUST_USE bool jsop_itermore();
+    MOZ_MUST_USE bool jsop_isnoiter();
+    MOZ_MUST_USE bool jsop_iterend();
+    MOZ_MUST_USE bool jsop_in();
+    MOZ_MUST_USE bool jsop_instanceof();
+    MOZ_MUST_USE bool jsop_getaliasedvar(EnvironmentCoordinate ec);
+    MOZ_MUST_USE bool jsop_setaliasedvar(EnvironmentCoordinate ec);
+    MOZ_MUST_USE bool jsop_debugger();
+    MOZ_MUST_USE bool jsop_newtarget();
+    MOZ_MUST_USE bool jsop_checkisobj(uint8_t kind);
+    MOZ_MUST_USE bool jsop_checkobjcoercible();
+    MOZ_MUST_USE bool jsop_pushcallobj();
 
     /* Inlining. */
 
@@ -718,11 +805,14 @@ class IonBuilder
 
     static InliningDecision DontInline(JSScript* targetScript, const char* reason);
 
+    // Helper function for canInlineTarget
+    bool hasCommonInliningPath(const JSScript* scriptToInline);
+
     // Oracles.
     InliningDecision canInlineTarget(JSFunction* target, CallInfo& callInfo);
     InliningDecision makeInliningDecision(JSObject* target, CallInfo& callInfo);
-    bool selectInliningTargets(const ObjectVector& targets, CallInfo& callInfo,
-                               BoolVector& choiceSet, uint32_t* numInlineable);
+    MOZ_MUST_USE bool selectInliningTargets(const ObjectVector& targets, CallInfo& callInfo,
+                                            BoolVector& choiceSet, uint32_t* numInlineable);
 
     // Native inlining helpers.
     // The typeset for the return value of our function.  These are
@@ -733,9 +823,10 @@ class IonBuilder
 
     // Array natives.
     InliningStatus inlineArray(CallInfo& callInfo);
+    InliningStatus inlineArrayIsArray(CallInfo& callInfo);
     InliningStatus inlineArrayPopShift(CallInfo& callInfo, MArrayPopShift::Mode mode);
     InliningStatus inlineArrayPush(CallInfo& callInfo);
-    InliningStatus inlineArrayConcat(CallInfo& callInfo);
+    InliningStatus inlineArraySlice(CallInfo& callInfo);
     InliningStatus inlineArrayJoin(CallInfo& callInfo);
     InliningStatus inlineArraySplice(CallInfo& callInfo);
 
@@ -757,63 +848,118 @@ class IonBuilder
 
     // String natives.
     InliningStatus inlineStringObject(CallInfo& callInfo);
-    InliningStatus inlineConstantStringSplit(CallInfo& callInfo);
-    InliningStatus inlineStringSplit(CallInfo& callInfo);
     InliningStatus inlineStrCharCodeAt(CallInfo& callInfo);
     InliningStatus inlineConstantCharCodeAt(CallInfo& callInfo);
     InliningStatus inlineStrFromCharCode(CallInfo& callInfo);
+    InliningStatus inlineStrFromCodePoint(CallInfo& callInfo);
     InliningStatus inlineStrCharAt(CallInfo& callInfo);
-    InliningStatus inlineStrReplace(CallInfo& callInfo);
 
-    // RegExp natives.
-    InliningStatus inlineRegExpExec(CallInfo& callInfo);
-    InliningStatus inlineRegExpTest(CallInfo& callInfo);
+    // String intrinsics.
+    InliningStatus inlineStringReplaceString(CallInfo& callInfo);
+    InliningStatus inlineConstantStringSplitString(CallInfo& callInfo);
+    InliningStatus inlineStringSplitString(CallInfo& callInfo);
 
-    // Object natives.
+    // RegExp intrinsics.
+    InliningStatus inlineRegExpMatcher(CallInfo& callInfo);
+    InliningStatus inlineRegExpSearcher(CallInfo& callInfo);
+    InliningStatus inlineRegExpTester(CallInfo& callInfo);
+    InliningStatus inlineIsRegExpObject(CallInfo& callInfo);
+    InliningStatus inlineRegExpPrototypeOptimizable(CallInfo& callInfo);
+    InliningStatus inlineRegExpInstanceOptimizable(CallInfo& callInfo);
+    InliningStatus inlineGetFirstDollarIndex(CallInfo& callInfo);
+
+    // Object natives and intrinsics.
     InliningStatus inlineObjectCreate(CallInfo& callInfo);
+    InliningStatus inlineDefineDataProperty(CallInfo& callInfo);
 
     // Atomics natives.
     InliningStatus inlineAtomicsCompareExchange(CallInfo& callInfo);
+    InliningStatus inlineAtomicsExchange(CallInfo& callInfo);
     InliningStatus inlineAtomicsLoad(CallInfo& callInfo);
     InliningStatus inlineAtomicsStore(CallInfo& callInfo);
-    InliningStatus inlineAtomicsFence(CallInfo& callInfo);
-    InliningStatus inlineAtomicsBinop(CallInfo& callInfo, JSFunction* target);
-
-    // Array intrinsics.
-    InliningStatus inlineUnsafePutElements(CallInfo& callInfo);
-    bool inlineUnsafeSetDenseArrayElement(CallInfo& callInfo, uint32_t base);
-    bool inlineUnsafeSetTypedArrayElement(CallInfo& callInfo, uint32_t base,
-                                          ScalarTypeDescr::Type arrayType);
-    bool inlineUnsafeSetTypedObjectArrayElement(CallInfo& callInfo, uint32_t base,
-                                                ScalarTypeDescr::Type arrayType);
+    InliningStatus inlineAtomicsBinop(CallInfo& callInfo, InlinableNative target);
+    InliningStatus inlineAtomicsIsLockFree(CallInfo& callInfo);
 
     // Slot intrinsics.
     InliningStatus inlineUnsafeSetReservedSlot(CallInfo& callInfo);
     InliningStatus inlineUnsafeGetReservedSlot(CallInfo& callInfo,
                                                MIRType knownValueType);
 
+    // Map and Set intrinsics.
+    InliningStatus inlineGetNextEntryForIterator(CallInfo& callInfo,
+                                                 MGetNextEntryForIterator::Mode mode);
+
+    // ArrayBuffer intrinsics.
+    InliningStatus inlineArrayBufferByteLength(CallInfo& callInfo);
+    InliningStatus inlinePossiblyWrappedArrayBufferByteLength(CallInfo& callInfo);
+
     // TypedArray intrinsics.
+    enum WrappingBehavior { AllowWrappedTypedArrays, RejectWrappedTypedArrays };
+    InliningStatus inlineTypedArray(CallInfo& callInfo, Native native);
+    InliningStatus inlineIsTypedArrayHelper(CallInfo& callInfo, WrappingBehavior wrappingBehavior);
     InliningStatus inlineIsTypedArray(CallInfo& callInfo);
+    InliningStatus inlineIsPossiblyWrappedTypedArray(CallInfo& callInfo);
     InliningStatus inlineTypedArrayLength(CallInfo& callInfo);
+    InliningStatus inlinePossiblyWrappedTypedArrayLength(CallInfo& callInfo);
+    InliningStatus inlineSetDisjointTypedElements(CallInfo& callInfo);
 
     // TypedObject intrinsics and natives.
     InliningStatus inlineObjectIsTypeDescr(CallInfo& callInfo);
     InliningStatus inlineSetTypedObjectOffset(CallInfo& callInfo);
-    bool elementAccessIsTypedObjectArrayOfScalarType(MDefinition* obj, MDefinition* id,
-                                                     ScalarTypeDescr::Type* arrayType);
     InliningStatus inlineConstructTypedObject(CallInfo& callInfo, TypeDescr* target);
 
     // SIMD intrinsics and natives.
     InliningStatus inlineConstructSimdObject(CallInfo& callInfo, SimdTypeDescr* target);
-    InliningStatus inlineSimdInt32x4BinaryArith(CallInfo& callInfo, JSNative native,
-                                                MSimdBinaryArith::Operation op);
-    InliningStatus inlineSimdInt32x4BinaryBitwise(CallInfo& callInfo, JSNative native,
-                                                  MSimdBinaryBitwise::Operation op);
+
+    // SIMD helpers.
+    bool canInlineSimd(CallInfo& callInfo, JSNative native, unsigned numArgs,
+                       InlineTypedObject** templateObj);
+    MDefinition* unboxSimd(MDefinition* ins, SimdType type);
+    IonBuilder::InliningStatus boxSimd(CallInfo& callInfo, MDefinition* ins,
+                                       InlineTypedObject* templateObj);
+    MDefinition* convertToBooleanSimdLane(MDefinition* scalar);
+
+    InliningStatus inlineSimd(CallInfo& callInfo, JSFunction* target, SimdType type);
+
+    InliningStatus inlineSimdBinaryArith(CallInfo& callInfo, JSNative native,
+                                         MSimdBinaryArith::Operation op, SimdType type);
+    InliningStatus inlineSimdBinaryBitwise(CallInfo& callInfo, JSNative native,
+                                           MSimdBinaryBitwise::Operation op, SimdType type);
+    InliningStatus inlineSimdBinarySaturating(CallInfo& callInfo, JSNative native,
+                                              MSimdBinarySaturating::Operation op, SimdType type);
+    InliningStatus inlineSimdShift(CallInfo& callInfo, JSNative native, MSimdShift::Operation op,
+                                   SimdType type);
+    InliningStatus inlineSimdComp(CallInfo& callInfo, JSNative native,
+                                  MSimdBinaryComp::Operation op, SimdType type);
+    InliningStatus inlineSimdUnary(CallInfo& callInfo, JSNative native,
+                                   MSimdUnaryArith::Operation op, SimdType type);
+    InliningStatus inlineSimdExtractLane(CallInfo& callInfo, JSNative native, SimdType type);
+    InliningStatus inlineSimdReplaceLane(CallInfo& callInfo, JSNative native, SimdType type);
+    InliningStatus inlineSimdSplat(CallInfo& callInfo, JSNative native, SimdType type);
+    InliningStatus inlineSimdShuffle(CallInfo& callInfo, JSNative native, SimdType type,
+                                     unsigned numVectors);
+    InliningStatus inlineSimdCheck(CallInfo& callInfo, JSNative native, SimdType type);
+    InliningStatus inlineSimdConvert(CallInfo& callInfo, JSNative native, bool isCast,
+                                     SimdType from, SimdType to);
+    InliningStatus inlineSimdSelect(CallInfo& callInfo, JSNative native, SimdType type);
+
+    MOZ_MUST_USE bool prepareForSimdLoadStore(CallInfo& callInfo, Scalar::Type simdType,
+                                              MInstruction** elements, MDefinition** index,
+                                              Scalar::Type* arrayType);
+    InliningStatus inlineSimdLoad(CallInfo& callInfo, JSNative native, SimdType type,
+                                  unsigned numElems);
+    InliningStatus inlineSimdStore(CallInfo& callInfo, JSNative native, SimdType type,
+                                   unsigned numElems);
+
+    InliningStatus inlineSimdAnyAllTrue(CallInfo& callInfo, bool IsAllTrue, JSNative native,
+                                        SimdType type);
 
     // Utility intrinsics.
     InliningStatus inlineIsCallable(CallInfo& callInfo);
+    InliningStatus inlineIsConstructor(CallInfo& callInfo);
     InliningStatus inlineIsObject(CallInfo& callInfo);
     InliningStatus inlineToObject(CallInfo& callInfo);
+    InliningStatus inlineIsWrappedArrayConstructor(CallInfo& callInfo);
     InliningStatus inlineToInteger(CallInfo& callInfo);
     InliningStatus inlineToString(CallInfo& callInfo);
     InliningStatus inlineDump(CallInfo& callInfo);
@@ -823,10 +969,12 @@ class IonBuilder
                                   const Class* clasp4 = nullptr);
     InliningStatus inlineIsConstructing(CallInfo& callInfo);
     InliningStatus inlineSubstringKernel(CallInfo& callInfo);
+    InliningStatus inlineObjectHasPrototype(CallInfo& callInfo);
 
     // Testing functions.
     InliningStatus inlineBailout(CallInfo& callInfo);
     InliningStatus inlineAssertFloat32(CallInfo& callInfo);
+    InliningStatus inlineAssertRecoveredOnBailout(CallInfo& callInfo);
 
     // Bind function.
     InliningStatus inlineBoundFunction(CallInfo& callInfo, JSFunction* target);
@@ -835,75 +983,99 @@ class IonBuilder
     InliningStatus inlineNativeCall(CallInfo& callInfo, JSFunction* target);
     InliningStatus inlineNativeGetter(CallInfo& callInfo, JSFunction* target);
     InliningStatus inlineNonFunctionCall(CallInfo& callInfo, JSObject* target);
-    bool inlineScriptedCall(CallInfo& callInfo, JSFunction* target);
+    InliningStatus inlineScriptedCall(CallInfo& callInfo, JSFunction* target);
     InliningStatus inlineSingleCall(CallInfo& callInfo, JSObject* target);
 
     // Call functions
     InliningStatus inlineCallsite(const ObjectVector& targets, CallInfo& callInfo);
-    bool inlineCalls(CallInfo& callInfo, const ObjectVector& targets, BoolVector& choiceSet,
-                     MGetPropertyCache* maybeCache);
+    MOZ_MUST_USE bool inlineCalls(CallInfo& callInfo, const ObjectVector& targets,
+                                  BoolVector& choiceSet, MGetPropertyCache* maybeCache);
 
     // Inlining helpers.
-    bool inlineGenericFallback(JSFunction* target, CallInfo& callInfo, MBasicBlock* dispatchBlock);
-    bool inlineObjectGroupFallback(CallInfo& callInfo, MBasicBlock* dispatchBlock,
-                                   MObjectGroupDispatch* dispatch, MGetPropertyCache* cache,
-                                   MBasicBlock** fallbackTarget);
+    MOZ_MUST_USE bool inlineGenericFallback(JSFunction* target, CallInfo& callInfo,
+                                            MBasicBlock* dispatchBlock);
+    MOZ_MUST_USE bool inlineObjectGroupFallback(CallInfo& callInfo, MBasicBlock* dispatchBlock,
+                                                MObjectGroupDispatch* dispatch,
+                                                MGetPropertyCache* cache,
+                                                MBasicBlock** fallbackTarget);
 
-    bool atomicsMeetsPreconditions(CallInfo& callInfo, Scalar::Type* arrayElementType);
+    enum AtomicCheckResult {
+        DontCheckAtomicResult,
+        DoCheckAtomicResult
+    };
+
+    MOZ_MUST_USE bool atomicsMeetsPreconditions(CallInfo& callInfo, Scalar::Type* arrayElementType,
+                                                bool* requiresDynamicCheck,
+                                                AtomicCheckResult checkResult=DoCheckAtomicResult);
     void atomicsCheckBounds(CallInfo& callInfo, MInstruction** elements, MDefinition** index);
 
-    bool testNeedsArgumentCheck(JSFunction* target, CallInfo& callInfo);
+    MOZ_MUST_USE bool testNeedsArgumentCheck(JSFunction* target, CallInfo& callInfo);
 
     MCall* makeCallHelper(JSFunction* target, CallInfo& callInfo);
-    bool makeCall(JSFunction* target, CallInfo& callInfo);
+    MOZ_MUST_USE bool makeCall(JSFunction* target, CallInfo& callInfo);
 
     MDefinition* patchInlinedReturn(CallInfo& callInfo, MBasicBlock* exit, MBasicBlock* bottom);
     MDefinition* patchInlinedReturns(CallInfo& callInfo, MIRGraphReturns& returns,
                                      MBasicBlock* bottom);
     MDefinition* specializeInlinedReturn(MDefinition* rdef, MBasicBlock* exit);
 
-    bool objectsHaveCommonPrototype(TemporaryTypeSet* types, PropertyName* name,
-                                    bool isGetter, JSObject* foundProto, bool* guardGlobal);
+    MOZ_MUST_USE bool objectsHaveCommonPrototype(TemporaryTypeSet* types, PropertyName* name,
+                                                 bool isGetter, JSObject* foundProto,
+                                                 bool* guardGlobal);
     void freezePropertiesForCommonPrototype(TemporaryTypeSet* types, PropertyName* name,
                                             JSObject* foundProto, bool allowEmptyTypesForGlobal = false);
     /*
      * Callers must pass a non-null globalGuard if they pass a non-null globalShape.
      */
-    bool testCommonGetterSetter(TemporaryTypeSet* types, PropertyName* name,
-                                bool isGetter, JSObject* foundProto, Shape* lastProperty,
-                                JSFunction* getterOrSetter,
-                                MDefinition** guard, Shape* globalShape = nullptr,
-                                MDefinition** globalGuard = nullptr);
-    bool testShouldDOMCall(TypeSet* inTypes,
-                           JSFunction* func, JSJitInfo::OpType opType);
+    MOZ_MUST_USE bool testCommonGetterSetter(TemporaryTypeSet* types, PropertyName* name,
+                                             bool isGetter, JSObject* foundProto,
+                                             Shape* lastProperty, JSFunction* getterOrSetter,
+                                             MDefinition** guard, Shape* globalShape = nullptr,
+                                             MDefinition** globalGuard = nullptr);
+    MOZ_MUST_USE bool testShouldDOMCall(TypeSet* inTypes,
+                                        JSFunction* func, JSJitInfo::OpType opType);
 
-    MDefinition* addShapeGuardsForGetterSetter(MDefinition* obj, JSObject* holder, Shape* holderShape,
-                                               const BaselineInspector::ShapeVector& receiverShapes,
-                                               bool isOwnProperty);
+    MDefinition*
+    addShapeGuardsForGetterSetter(MDefinition* obj, JSObject* holder, Shape* holderShape,
+                                  const BaselineInspector::ReceiverVector& receivers,
+                                  const BaselineInspector::ObjectGroupVector& convertUnboxedGroups,
+                                  bool isOwnProperty);
 
-    bool annotateGetPropertyCache(MDefinition* obj, MGetPropertyCache* getPropCache,
-                                  TemporaryTypeSet* objTypes,
-                                  TemporaryTypeSet* pushedTypes);
+    MOZ_MUST_USE bool annotateGetPropertyCache(MDefinition* obj, PropertyName* name,
+                                               MGetPropertyCache* getPropCache,
+                                               TemporaryTypeSet* objTypes,
+                                               TemporaryTypeSet* pushedTypes);
 
     MGetPropertyCache* getInlineableGetPropertyCache(CallInfo& callInfo);
 
-    JSObject* testSingletonProperty(JSObject* obj, PropertyName* name);
-    bool testSingletonPropertyTypes(MDefinition* obj, JSObject* singleton, PropertyName* name,
-                                    bool* testObject, bool* testString);
-    uint32_t getDefiniteSlot(TemporaryTypeSet* types, PropertyName* name, uint32_t* pnfixed,
-                             BaselineInspector::ObjectGroupVector& convertUnboxedGroups);
+    JSObject* testGlobalLexicalBinding(PropertyName* name);
+
+    JSObject* testSingletonProperty(JSObject* obj, jsid id);
+    JSObject* testSingletonPropertyTypes(MDefinition* obj, jsid id);
+
+    ResultWithOOM<bool> testNotDefinedProperty(MDefinition* obj, jsid id);
+
+    uint32_t getDefiniteSlot(TemporaryTypeSet* types, PropertyName* name, uint32_t* pnfixed);
+    MDefinition* convertUnboxedObjects(MDefinition* obj);
     MDefinition* convertUnboxedObjects(MDefinition* obj,
                                        const BaselineInspector::ObjectGroupVector& list);
     uint32_t getUnboxedOffset(TemporaryTypeSet* types, PropertyName* name,
                               JSValueType* punboxedType);
     MInstruction* loadUnboxedProperty(MDefinition* obj, size_t offset, JSValueType unboxedType,
                                       BarrierKind barrier, TemporaryTypeSet* types);
+    MInstruction* loadUnboxedValue(MDefinition* elements, size_t elementsOffset,
+                                   MDefinition* scaledOffset, JSValueType unboxedType,
+                                   BarrierKind barrier, TemporaryTypeSet* types);
     MInstruction* storeUnboxedProperty(MDefinition* obj, size_t offset, JSValueType unboxedType,
                                        MDefinition* value);
-    bool freezePropTypeSets(TemporaryTypeSet* types,
-                            JSObject* foundProto, PropertyName* name);
-    bool canInlinePropertyOpShapes(const BaselineInspector::ShapeVector& nativeShapes,
-                                   const BaselineInspector::ObjectGroupVector& unboxedGroups);
+    MInstruction* storeUnboxedValue(MDefinition* obj,
+                                    MDefinition* elements, int32_t elementsOffset,
+                                    MDefinition* scaledOffset, JSValueType unboxedType,
+                                    MDefinition* value, bool preBarrier = true);
+    MOZ_MUST_USE bool checkPreliminaryGroups(MDefinition *obj);
+    MOZ_MUST_USE bool freezePropTypeSets(TemporaryTypeSet* types,
+                                         JSObject* foundProto, PropertyName* name);
+    bool canInlinePropertyOpShapes(const BaselineInspector::ReceiverVector& receivers);
 
     TemporaryTypeSet* bytecodeTypes(jsbytecode* pc);
 
@@ -911,9 +1083,9 @@ class IonBuilder
     // updating |current| directly. setCurrent() should only be used in cases
     // where the block cannot have phis whose type needs to be computed.
 
-    bool setCurrentAndSpecializePhis(MBasicBlock* block) {
+    MOZ_MUST_USE bool setCurrentAndSpecializePhis(MBasicBlock* block) {
         if (block) {
-            if (!block->specializePhis())
+            if (!block->specializePhis(alloc()))
                 return false;
         }
         setCurrent(block);
@@ -926,6 +1098,10 @@ class IonBuilder
 
     // A builder is inextricably tied to a particular script.
     JSScript* script_;
+
+    // script->hasIonScript() at the start of the compilation. Used to avoid
+    // calling hasIonScript() from background compilation threads.
+    bool scriptHasIonScript_;
 
     // If off thread compilation is successful, the final code generator is
     // attached here. Code has been generated, but not linked (there is not yet
@@ -941,10 +1117,18 @@ class IonBuilder
     jsbytecode* actionableAbortPc_;
     const char* actionableAbortMessage_;
 
+    MRootList* rootList_;
+
   public:
+    void setRootList(MRootList& rootList) {
+        MOZ_ASSERT(!rootList_);
+        rootList_ = &rootList;
+    }
     void clearForBackEnd();
+    JSObject* checkNurseryObject(JSObject* obj);
 
     JSScript* script() const { return script_; }
+    bool scriptHasIonScript() const { return scriptHasIonScript_; }
 
     CodeGenerator* backgroundCodegen() const { return backgroundCodegen_; }
     void setBackgroundCodegen(CodeGenerator* codegen) { backgroundCodegen_ = codegen; }
@@ -965,6 +1149,11 @@ class IonBuilder
         return actionableAbortScript_ != nullptr;
     }
 
+    TraceLoggerThread *traceLogger() {
+        // Currently ionbuilder only runs on the main thread.
+        return TraceLoggerForMainThread(compartment->runtime()->mainThread()->runtimeFromMainThread());
+    }
+
     void actionableAbortLocationAndMessage(JSScript** abortScript, jsbytecode** abortPc,
                                            const char** abortMessage)
     {
@@ -974,8 +1163,10 @@ class IonBuilder
         *abortMessage = actionableAbortMessage_;
     }
 
+    void trace(JSTracer* trc);
+
   private:
-    bool init();
+    MOZ_MUST_USE bool init();
 
     JSContext* analysisContext;
     BaselineFrameInspector* baselineFrame_;
@@ -989,12 +1180,14 @@ class IonBuilder
         return analysis_;
     }
 
-    TemporaryTypeSet* thisTypes, *argTypes, *typeArray;
+    TemporaryTypeSet* thisTypes;
+    TemporaryTypeSet* argTypes;
+    TemporaryTypeSet* typeArray;
     uint32_t typeArrayHint;
     uint32_t* bytecodeTypeMap;
 
     GSNCache gsn;
-    ScopeCoordinateNameCache scopeCoordinateNameCache;
+    EnvironmentCoordinateNameCache envCoordinateNameCache;
 
     jsbytecode* pc;
     MBasicBlock* current;
@@ -1035,11 +1228,6 @@ class IonBuilder
 
     IonBuilder* outermostBuilder();
 
-    bool oom() {
-        abortReason_ = AbortReason_Alloc;
-        return false;
-    }
-
     struct LoopHeader {
         jsbytecode* pc;
         MBasicBlock* header;
@@ -1059,6 +1247,10 @@ class IonBuilder
 
     size_t inliningDepth_;
 
+    // Total bytecode length of all inlined scripts. Only tracked for the
+    // outermost builder.
+    size_t inlinedBytecodeLength_;
+
     // Cutoff to disable compilation if excessive time is spent reanalyzing
     // loop bodies to compute a fixpoint of the types for loop variables.
     static const size_t MAX_LOOP_RESTARTS = 40;
@@ -1071,6 +1263,10 @@ class IonBuilder
     // True if script->failedShapeGuard is set for the current script or
     // an outer script.
     bool failedShapeGuard_;
+
+    // True if script->failedLexicalCheck_ is set for the current script or
+    // an outer script.
+    bool failedLexicalCheck_;
 
     // Has an iterator other than 'for in'.
     bool nonStringIteration_;
@@ -1156,6 +1352,10 @@ class IonBuilder
             trackInlineSuccessUnchecked(status);
     }
 
+    bool forceInlineCaches() {
+        return MOZ_UNLIKELY(JitOptions.forceInlineCaches);
+    }
+
     // Out-of-line variants that don't check if optimization tracking is
     // enabled.
     void trackTypeInfoUnchecked(JS::TrackedTypeSite site, MIRType mirType,
@@ -1173,6 +1373,7 @@ class CallInfo
 {
     MDefinition* fun_;
     MDefinition* thisArg_;
+    MDefinition* newTargetArg_;
     MDefinitionVector args_;
 
     bool constructing_;
@@ -1182,16 +1383,20 @@ class CallInfo
     CallInfo(TempAllocator& alloc, bool constructing)
       : fun_(nullptr),
         thisArg_(nullptr),
+        newTargetArg_(nullptr),
         args_(alloc),
         constructing_(constructing),
         setter_(false)
     { }
 
-    bool init(CallInfo& callInfo) {
+    MOZ_MUST_USE bool init(CallInfo& callInfo) {
         MOZ_ASSERT(constructing_ == callInfo.constructing());
 
         fun_ = callInfo.fun();
         thisArg_ = callInfo.thisArg();
+
+        if (constructing())
+            newTargetArg_ = callInfo.getNewTarget();
 
         if (!args_.appendAll(callInfo.argv()))
             return false;
@@ -1199,12 +1404,16 @@ class CallInfo
         return true;
     }
 
-    bool init(MBasicBlock* current, uint32_t argc) {
+    MOZ_MUST_USE bool init(MBasicBlock* current, uint32_t argc) {
         MOZ_ASSERT(args_.empty());
 
         // Get the arguments in the right order
         if (!args_.reserve(argc))
             return false;
+
+        if (constructing())
+            setNewTarget(current->pop());
+
         for (int32_t i = argc; i > 0; i--)
             args_.infallibleAppend(current->peek(-i));
         current->popn(argc);
@@ -1226,16 +1435,19 @@ class CallInfo
 
         for (uint32_t i = 0; i < argc(); i++)
             current->push(getArg(i));
+
+        if (constructing())
+            current->push(getNewTarget());
     }
 
     uint32_t argc() const {
         return args_.length();
     }
     uint32_t numFormals() const {
-        return argc() + 2;
+        return argc() + 2 + constructing();
     }
 
-    bool setArgs(const MDefinitionVector& args) {
+    MOZ_MUST_USE bool setArgs(const MDefinitionVector& args) {
         MOZ_ASSERT(args_.empty());
         return args_.appendAll(args);
     }
@@ -1251,6 +1463,13 @@ class CallInfo
     MDefinition* getArg(uint32_t i) const {
         MOZ_ASSERT(i < argc());
         return args_[i];
+    }
+
+    MDefinition* getArgWithDefault(uint32_t i, MDefinition* defaultValue) const {
+        if (i < argc())
+            return args_[i];
+
+        return defaultValue;
     }
 
     void setArg(uint32_t i, MDefinition* def) {
@@ -1269,6 +1488,15 @@ class CallInfo
 
     bool constructing() const {
         return constructing_;
+    }
+
+    void setNewTarget(MDefinition* newTarget) {
+        MOZ_ASSERT(constructing());
+        newTargetArg_ = newTarget;
+    }
+    MDefinition* getNewTarget() const {
+        MOZ_ASSERT(newTargetArg_);
+        return newTargetArg_;
     }
 
     bool isSetter() const {
@@ -1290,14 +1518,14 @@ class CallInfo
     void setImplicitlyUsedUnchecked() {
         fun_->setImplicitlyUsedUnchecked();
         thisArg_->setImplicitlyUsedUnchecked();
+        if (newTargetArg_)
+            newTargetArg_->setImplicitlyUsedUnchecked();
         for (uint32_t i = 0; i < argc(); i++)
             getArg(i)->setImplicitlyUsedUnchecked();
     }
 };
 
-bool TypeSetIncludes(TypeSet* types, MIRType input, TypeSet* inputTypes);
-
-bool NeedsPostBarrier(CompileInfo& info, MDefinition* value);
+bool NeedsPostBarrier(MDefinition* value);
 
 } // namespace jit
 } // namespace js

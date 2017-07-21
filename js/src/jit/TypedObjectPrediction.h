@@ -159,16 +159,16 @@ class TypedObjectPrediction {
     // The size may not be statically known if (1) the object is
     // an array whose dimensions are unknown or (2) only a prefix
     // of its type is known.
-    bool hasKnownSize(int32_t* out) const;
+    bool hasKnownSize(uint32_t* out) const;
 
     //////////////////////////////////////////////////////////////////////
     // Simple operations
     //
-    // Only valid when |kind()| is Scalar, Reference, or x4 (as appropriate).
+    // Only valid when |kind()| is Scalar, Reference, or Simd (as appropriate).
 
     ScalarTypeDescr::Type scalarType() const;
     ReferenceTypeDescr::Type referenceType() const;
-    SimdTypeDescr::Type simdType() const;
+    SimdType simdType() const;
 
     ///////////////////////////////////////////////////////////////////////////
     // Queries valid only for arrays.

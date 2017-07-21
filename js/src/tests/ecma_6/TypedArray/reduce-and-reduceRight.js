@@ -1,17 +1,5 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
 // Tests for TypedArray#reduce.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.reduce.length, 1);
 
     // Basic tests.
@@ -104,7 +92,7 @@ for (var constructor of constructors) {
 }
 
 // Tests for TypedArray#reduceRight.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.reduceRight.length, 1);
 
     // Basic tests.

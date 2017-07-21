@@ -10,14 +10,20 @@
 # include "jit/BytecodeAnalysis.h"
 #endif
 
+#include "jit/BaselineFrameInfo-inl.h"
+#include "jit/MacroAssembler-inl.h"
+
 using namespace js;
 using namespace js::jit;
 
 bool
 FrameInfo::init(TempAllocator& alloc)
 {
-    // One slot is always needed for this/arguments type checks.
-    size_t nstack = Max(script->nslots() - script->nfixed(), size_t(1));
+    // An extra slot is needed for global scopes because INITGLEXICAL (stack
+    // depth 1) is compiled as a SETPROP (stack depth 2) on the global lexical
+    // scope.
+    size_t extra = script->isGlobalCode() ? 1 : 0;
+    size_t nstack = Max(script->nslots() - script->nfixed(), size_t(MinJITStackSize)) + extra;
     if (!stack.init(alloc, nstack))
         return false;
 
@@ -38,6 +44,10 @@ FrameInfo::sync(StackValue* val)
         break;
       case StackValue::ThisSlot:
         masm.pushValue(addressOfThis());
+        break;
+      case StackValue::EvalNewTargetSlot:
+        MOZ_ASSERT(script->isForEval());
+        masm.pushValue(addressOfEvalNewTarget());
         break;
       case StackValue::Register:
         masm.pushValue(val->reg());
@@ -94,6 +104,9 @@ FrameInfo::popValue(ValueOperand dest)
         break;
       case StackValue::ThisSlot:
         masm.loadValue(addressOfThis(), dest);
+        break;
+      case StackValue::EvalNewTargetSlot:
+        masm.loadValue(addressOfEvalNewTarget(), dest);
         break;
       case StackValue::Stack:
         masm.popValue(dest);

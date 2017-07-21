@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const ASM_OK_STRING = "successfully compiled asm.js code";
 const ASM_TYPE_FAIL_STRING = "asm.js type error:";
 const ASM_DIRECTIVE_FAIL_STRING = "\"use asm\" is only meaningful in the Directive Prologue of a function body";
 
@@ -77,9 +76,9 @@ function assertAsmTypeFail()
     // Verify no error is thrown with warnings off
     Function.apply(null, arguments);
 
-    // Turn on warnings-as-errors
-    var oldOpts = options("werror");
-    assertEq(oldOpts.indexOf("werror"), -1);
+    // Turn on throwing on validation errors
+    var oldOpts = options("throw_on_asmjs_validation_failure");
+    assertEq(oldOpts.indexOf("throw_on_asmjs_validation_failure"), -1);
 
     // Verify an error is thrown
     var caught = false;
@@ -94,7 +93,7 @@ function assertAsmTypeFail()
         throw new Error("Didn't catch the type failure error");
 
     // Turn warnings-as-errors back off
-    options("werror");
+    options("throw_on_asmjs_validation_failure");
 }
 
 function assertAsmLinkFail(f)

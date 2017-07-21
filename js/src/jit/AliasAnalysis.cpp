@@ -8,11 +8,14 @@
 
 #include <stdio.h>
 
+#include "jit/AliasAnalysisShared.h"
 #include "jit/Ion.h"
 #include "jit/IonBuilder.h"
 #include "jit/JitSpewer.h"
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
+
+#include "vm/Printer.h"
 
 using namespace js;
 using namespace js::jit;
@@ -54,45 +57,8 @@ class LoopAliasInfo : public TempObject
 } // namespace jit
 } // namespace js
 
-namespace {
-
-// Iterates over the flags in an AliasSet.
-class AliasSetIterator
-{
-  private:
-    uint32_t flags;
-    unsigned pos;
-
-  public:
-    explicit AliasSetIterator(AliasSet set)
-      : flags(set.flags()), pos(0)
-    {
-        while (flags && (flags & 1) == 0) {
-            flags >>= 1;
-            pos++;
-        }
-    }
-    AliasSetIterator& operator ++(int) {
-        do {
-            flags >>= 1;
-            pos++;
-        } while (flags && (flags & 1) == 0);
-        return *this;
-    }
-    operator bool() const {
-        return !!flags;
-    }
-    unsigned operator*() const {
-        MOZ_ASSERT(pos < AliasSet::NumCategories);
-        return pos;
-    }
-};
-
-} /* anonymous namespace */
-
 AliasAnalysis::AliasAnalysis(MIRGenerator* mir, MIRGraph& graph)
-  : mir(mir),
-    graph_(graph),
+  : AliasAnalysisShared(mir, graph),
     loop_(nullptr)
 {
 }
@@ -128,11 +94,12 @@ IonSpewDependency(MInstruction* load, MInstruction* store, const char* verb, con
     if (!JitSpewEnabled(JitSpew_Alias))
         return;
 
-    fprintf(JitSpewFile, "Load ");
-    load->printName(JitSpewFile);
-    fprintf(JitSpewFile, " %s on store ", verb);
-    store->printName(JitSpewFile);
-    fprintf(JitSpewFile, " (%s)\n", reason);
+    Fprinter& out = JitSpewPrinter();
+    out.printf("Load ");
+    load->printName(out);
+    out.printf(" %s on store ", verb);
+    store->printName(out);
+    out.printf(" (%s)\n", reason);
 }
 
 static void
@@ -141,9 +108,10 @@ IonSpewAliasInfo(const char* pre, MInstruction* ins, const char* post)
     if (!JitSpewEnabled(JitSpew_Alias))
         return;
 
-    fprintf(JitSpewFile, "%s ", pre);
-    ins->printName(JitSpewFile);
-    fprintf(JitSpewFile, " %s\n", post);
+    Fprinter& out = JitSpewPrinter();
+    out.printf("%s ", pre);
+    ins->printName(out);
+    out.printf(" %s\n", post);
 }
 
 // This pass annotates every load instruction with the last store instruction
@@ -154,7 +122,7 @@ IonSpewAliasInfo(const char* pre, MInstruction* ins, const char* post)
 // loop header if no instruction inside the loop body aliases it. To calculate
 // this efficiently, we maintain a list of maybe-invariant loads and the combined
 // alias set for all stores inside the loop. When we see the loop's backedge, this
-// information is used to mark every load we wrongly assumed to be loop invaraint as
+// information is used to mark every load we wrongly assumed to be loop invariant as
 // having an implicit dependency on the last instruction of the loop header, so that
 // it's never moved before the loop header.
 //
@@ -201,6 +169,12 @@ AliasAnalysis::analyze()
             if (set.isNone())
                 continue;
 
+            // For the purposes of alias analysis, all recoverable operations
+            // are treated as effect free as the memory represented by these
+            // operations cannot be aliased by others.
+            if (def->canRecoverOnBailout())
+                continue;
+
             if (set.isStore()) {
                 for (AliasSetIterator iter(set); iter; iter++) {
                     if (!stores[*iter].append(*def))
@@ -208,9 +182,10 @@ AliasAnalysis::analyze()
                 }
 
                 if (JitSpewEnabled(JitSpew_Alias)) {
-                    fprintf(JitSpewFile, "Processing store ");
-                    def->printName(JitSpewFile);
-                    fprintf(JitSpewFile, " (flags %x)\n", set.flags());
+                    Fprinter& out = JitSpewPrinter();
+                    out.printf("Processing store ");
+                    def->printName(out);
+                    out.printf(" (flags %x)\n", set.flags());
                 }
             } else {
                 // Find the most recent store on which this instruction depends.
@@ -220,7 +195,10 @@ AliasAnalysis::analyze()
                     MInstructionVector& aliasedStores = stores[*iter];
                     for (int i = aliasedStores.length() - 1; i >= 0; i--) {
                         MInstruction* store = aliasedStores[i];
-                        if (def->mightAlias(store) && BlockMightReach(store->block(), *block)) {
+                        if (genericMightAlias(*def, store) != MDefinition::AliasType::NoAlias &&
+                            def->mightAlias(store) != MDefinition::AliasType::NoAlias &&
+                            BlockMightReach(store->block(), *block))
+                        {
                             if (lastStore->id() < store->id())
                                 lastStore = store;
                             break;
@@ -265,7 +243,9 @@ AliasAnalysis::analyze()
                         MInstruction* store = aliasedStores[i];
                         if (store->id() < firstLoopIns->id())
                             break;
-                        if (ins->mightAlias(store)) {
+                        if (genericMightAlias(ins, store) != MDefinition::AliasType::NoAlias &&
+                            ins->mightAlias(store) != MDefinition::AliasType::NoAlias)
+                        {
                             hasAlias = true;
                             IonSpewDependency(ins, store, "aliases", "store in loop body");
                             break;
@@ -295,6 +275,8 @@ AliasAnalysis::analyze()
             loop_ = loop_->outer();
         }
     }
+
+    spewDependencyList();
 
     MOZ_ASSERT(loop_ == nullptr);
     return true;

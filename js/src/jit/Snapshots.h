@@ -19,6 +19,8 @@
 #include "js/HashTable.h"
 
 namespace js {
+class GenericPrinter;
+
 namespace jit {
 
 class RValueAllocation;
@@ -43,8 +45,8 @@ class RValueAllocation
         CST_UNDEFINED       = 0x01,
         CST_NULL            = 0x02,
         DOUBLE_REG          = 0x03,
-        FLOAT32_REG         = 0x04,
-        FLOAT32_STACK       = 0x05,
+        ANY_FLOAT_REG       = 0x04,
+        ANY_FLOAT_STACK     = 0x05,
 #if defined(JS_NUNBOX32)
         UNTYPED_REG_REG     = 0x06,
         UNTYPED_REG_STACK   = 0x07,
@@ -78,7 +80,7 @@ class RValueAllocation
         // This mask represents the set of bits which can be used to encode a
         // value in a snapshot. The mode is used to determine how to interpret
         // the union of values and how to pack the value in memory.
-        MODE_MASK           = 0x17f,
+        MODE_BITS_MASK           = 0x17f,
 
         INVALID = 0x100,
     };
@@ -165,7 +167,7 @@ class RValueAllocation
     static void writePayload(CompactBufferWriter& writer, PayloadType t,
                              Payload p);
     static void writePadding(CompactBufferWriter& writer);
-    static void dumpPayload(FILE* fp, PayloadType t, Payload p);
+    static void dumpPayload(GenericPrinter& out, PayloadType t, Payload p);
     static bool equalPayloads(PayloadType t, Payload lhs, Payload rhs);
 
     RValueAllocation(Mode mode, Payload a1, Payload a2)
@@ -196,12 +198,12 @@ class RValueAllocation
         return RValueAllocation(DOUBLE_REG, payloadOfFloatRegister(reg));
     }
 
-    // FLOAT32_REG or FLOAT32_STACK
-    static RValueAllocation Float32(FloatRegister reg) {
-        return RValueAllocation(FLOAT32_REG, payloadOfFloatRegister(reg));
+    // ANY_FLOAT_REG or ANY_FLOAT_STACK
+    static RValueAllocation AnyFloat(FloatRegister reg) {
+        return RValueAllocation(ANY_FLOAT_REG, payloadOfFloatRegister(reg));
     }
-    static RValueAllocation Float32(int32_t offset) {
-        return RValueAllocation(FLOAT32_STACK, payloadOfStackOffset(offset));
+    static RValueAllocation AnyFloat(int32_t offset) {
+        return RValueAllocation(ANY_FLOAT_STACK, payloadOfStackOffset(offset));
     }
 
     // TYPED_REG or TYPED_STACK
@@ -292,7 +294,7 @@ class RValueAllocation
 
   public:
     Mode mode() const {
-        return Mode(mode_ & MODE_MASK);
+        return Mode(mode_ & MODE_BITS_MASK);
     }
     bool needSideEffect() const {
         return mode_ & RECOVER_SIDE_EFFECT_MASK;
@@ -334,7 +336,7 @@ class RValueAllocation
     }
 
   public:
-    void dump(FILE* fp) const;
+    void dump(GenericPrinter& out) const;
 
   public:
     bool operator==(const RValueAllocation& rhs) const {
@@ -383,14 +385,14 @@ class SnapshotWriter
     SnapshotOffset lastStart_;
 
   public:
-    bool init();
+    MOZ_MUST_USE bool init();
 
     SnapshotOffset startSnapshot(RecoverOffset recoverOffset, BailoutKind kind);
 #ifdef TRACK_SNAPSHOTS
     void trackSnapshot(uint32_t pcOpcode, uint32_t mirOpcode, uint32_t mirId,
                        uint32_t lirOpcode, uint32_t lirId);
 #endif
-    bool add(const RValueAllocation& slot);
+    MOZ_MUST_USE bool add(const RValueAllocation& slot);
 
     uint32_t allocWritten() const {
         return allocWritten_;
@@ -502,7 +504,25 @@ class SnapshotReader
     }
 };
 
-typedef mozilla::AlignedStorage<4 * sizeof(uint32_t)> RInstructionStorage;
+class RInstructionStorage
+{
+    static const size_t Size = 4 * sizeof(uint32_t);
+    mozilla::AlignedStorage<Size> mem;
+
+  public:
+    const void* addr() const { return mem.addr(); }
+    void* addr() { return mem.addr(); }
+
+    RInstructionStorage() = default;
+
+    RInstructionStorage(const RInstructionStorage& other) {
+        memcpy(addr(), other.addr(), Size);
+    }
+    void operator=(const RInstructionStorage& other) {
+        memcpy(addr(), other.addr(), Size);
+    }
+};
+
 class RInstruction;
 
 class RecoverReader
@@ -553,7 +573,7 @@ class RecoverReader
     }
 };
 
-}
-}
+} // namespace jit
+} // namespace js
 
 #endif /* jit_Snapshot_h */

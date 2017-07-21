@@ -24,22 +24,17 @@ struct BaselineDebugModeOSRInfo;
 //        locals
 //        stack values
 
-// Eval frames
-//
-// Like js::InterpreterFrame, every BaselineFrame is either a global frame
-// or a function frame. Both global and function frames can optionally
-// be "eval frames". The callee token for eval function frames is the
-// enclosing function. BaselineFrame::evalScript_ stores the eval script
-// itself.
 class BaselineFrame
 {
   public:
-    enum Flags {
+    enum Flags : uint32_t {
         // The frame has a valid return value. See also InterpreterFrame::HAS_RVAL.
         HAS_RVAL         = 1 << 0,
 
-        // A call object has been pushed on the scope chain.
-        HAS_CALL_OBJ     = 1 << 2,
+        // An initial environment has been pushed on the environment chain for
+        // function frames that need a CallObject or eval frames that need a
+        // VarEnvironmentObject.
+        HAS_INITIAL_ENV  = 1 << 2,
 
         // Frame has an arguments object, argsObj_.
         HAS_ARGS_OBJ     = 1 << 4,
@@ -49,12 +44,11 @@ class BaselineFrame
 
         // Frame has execution observed by a Debugger.
         //
-        // See comment above 'debugMode' in jscompartment.h for explanation of
+        // See comment above 'isDebuggee' in jscompartment.h for explanation of
         // invariants of debuggee compartments, scripts, and frames.
         DEBUGGEE         = 1 << 6,
 
-        // Eval frame, see the "eval frames" comment.
-        EVAL             = 1 << 7,
+        // (1 << 7 and 1 << 8 are unused)
 
         // Frame has over-recursed on an early check.
         OVER_RECURSED    = 1 << 9,
@@ -67,9 +61,9 @@ class BaselineFrame
         // native code address without a corresponding ICEntry. In this case,
         // the frame contains an explicit bytecode offset for frame iterators.
         //
-        // There can also be an override pc if the frame has had its scope chain
-        // unwound to a pc during exception handling that is different from its
-        // current pc.
+        // There can also be an override pc if the frame has had its
+        // environment chain unwound to a pc during exception handling that is
+        // different from its current pc.
         //
         // This flag should never be set when we're executing JIT code.
         HAS_OVERRIDE_PC = 1 << 11,
@@ -77,7 +71,12 @@ class BaselineFrame
         // If set, we're handling an exception for this frame. This is set for
         // debug mode OSR sanity checking when it handles corner cases which
         // only arise during exception handling.
-        HANDLING_EXCEPTION = 1 << 12
+        HANDLING_EXCEPTION = 1 << 12,
+
+        // If set, this frame has been on the stack when
+        // |js::SavedStacks::saveCurrentStack| was called, and so there is a
+        // |js::SavedFrame| object cached for this frame.
+        HAS_CACHED_SAVED_FRAME = 1 << 13
     };
 
   protected: // Silence Clang warning about unused private fields.
@@ -94,10 +93,8 @@ class BaselineFrame
     uint32_t loReturnValue_;              // If HAS_RVAL, the frame's return value.
     uint32_t hiReturnValue_;
     uint32_t frameSize_;
-    JSObject* scopeChain_;                // Scope chain (always initialized).
-    JSScript* evalScript_;                // If isEvalFrame(), the current eval script.
+    JSObject* envChain_;                  // Environment chain (always initialized).
     ArgumentsObject* argsObj_;            // If HAS_ARGS_OBJ, the arguments object.
-    void* unused;                         // See static assertion re: sizeof, below.
     uint32_t overrideOffset_;             // If HAS_OVERRIDE_PC, the bytecode offset.
     uint32_t flags_;
 
@@ -106,7 +103,7 @@ class BaselineFrame
     // This is the old frame pointer saved in the prologue.
     static const uint32_t FramePointerOffset = sizeof(void*);
 
-    bool initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
+    MOZ_MUST_USE bool initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
 
     uint32_t frameSize() const {
         return frameSize_;
@@ -117,24 +114,25 @@ class BaselineFrame
     inline uint32_t* addressOfFrameSize() {
         return &frameSize_;
     }
-    JSObject* scopeChain() const {
-        return scopeChain_;
+    JSObject* environmentChain() const {
+        return envChain_;
     }
-    void setScopeChain(JSObject* scopeChain) {
-        scopeChain_ = scopeChain;
+    void setEnvironmentChain(JSObject* envChain) {
+        envChain_ = envChain;
     }
-    inline JSObject** addressOfScopeChain() {
-        return &scopeChain_;
+    inline JSObject** addressOfEnvironmentChain() {
+        return &envChain_;
     }
 
     inline Value* addressOfScratchValue() {
         return reinterpret_cast<Value*>(&loScratchValue_);
     }
 
-    inline void pushOnScopeChain(ScopeObject& scope);
-    inline void popOffScopeChain();
-
-    inline void popWith(JSContext* cx);
+    template <typename SpecificEnvironment>
+    inline void pushOnEnvironmentChain(SpecificEnvironment& env);
+    template <typename SpecificEnvironment>
+    inline void popOffEnvironmentChain();
+    inline void replaceInnermostEnvironment(EnvironmentObject& env);
 
     CalleeToken calleeToken() const {
         uint8_t* pointer = (uint8_t*)this + Size() + offsetOfCalleeToken();
@@ -148,15 +146,7 @@ class BaselineFrame
         return CalleeTokenIsConstructing(calleeToken());
     }
     JSScript* script() const {
-        if (isEvalFrame())
-            return evalScript();
         return ScriptFromCalleeToken(calleeToken());
-    }
-    JSFunction* fun() const {
-        return CalleeTokenToFunction(calleeToken());
-    }
-    JSFunction* maybeFun() const {
-        return isFunctionFrame() ? fun() : nullptr;
     }
     JSFunction* callee() const {
         return CalleeTokenToFunction(calleeToken());
@@ -205,7 +195,8 @@ class BaselineFrame
     unsigned numFormalArgs() const {
         return script()->functionNonDelazifying()->nargs();
     }
-    Value& thisValue() const {
+    Value& thisArgument() const {
+        MOZ_ASSERT(isFunctionFrame());
         return *(Value*)(reinterpret_cast<const uint8_t*>(this) +
                          BaselineFrame::Size() +
                          offsetOfThis());
@@ -216,7 +207,29 @@ class BaselineFrame
                          offsetOfArg(0));
     }
 
-    bool copyRawFrameSlots(AutoValueVector* vec) const;
+  private:
+    Value* evalNewTargetAddress() const {
+        MOZ_ASSERT(isEvalFrame());
+        MOZ_ASSERT(script()->isDirectEvalInFunction());
+        return (Value*)(reinterpret_cast<const uint8_t*>(this) +
+                        BaselineFrame::Size() +
+                        offsetOfEvalNewTarget());
+    }
+
+  public:
+    Value newTarget() const {
+        if (isEvalFrame())
+            return *evalNewTargetAddress();
+        MOZ_ASSERT(isFunctionFrame());
+        if (callee()->isArrow())
+            return callee()->getExtendedSlot(FunctionExtended::ARROW_NEWTARGET_SLOT);
+        if (isConstructing()) {
+            return *(Value*)(reinterpret_cast<const uint8_t*>(this) +
+                             BaselineFrame::Size() +
+                             offsetOfArg(Max(numFormalArgs(), numActualArgs())));
+        }
+        return UndefinedValue();
+    }
 
     bool hasReturnValue() const {
         return flags_ & HAS_RVAL;
@@ -234,8 +247,8 @@ class BaselineFrame
         return reinterpret_cast<Value*>(&loReturnValue_);
     }
 
-    bool hasCallObj() const {
-        return flags_ & HAS_CALL_OBJ;
+    bool hasInitialEnvironment() const {
+        return flags_ & HAS_INITIAL_ENV;
     }
 
     inline CallObject& callObj() const;
@@ -247,12 +260,12 @@ class BaselineFrame
         return &flags_;
     }
 
-    inline bool pushBlock(JSContext* cx, Handle<StaticBlockObject*> block);
-    inline void popBlock(JSContext* cx);
+    inline MOZ_MUST_USE bool pushLexicalEnvironment(JSContext* cx, Handle<LexicalScope*> scope);
+    inline MOZ_MUST_USE bool freshenLexicalEnvironment(JSContext* cx);
+    inline MOZ_MUST_USE bool recreateLexicalEnvironment(JSContext* cx);
 
-    bool strictEvalPrologue(JSContext* cx);
-    bool heavyweightFunPrologue(JSContext* cx);
-    bool initFunctionScopeObjects(JSContext* cx);
+    MOZ_MUST_USE bool initFunctionEnvironmentObjects(JSContext* cx);
+    MOZ_MUST_USE bool pushVarEnvironment(JSContext* cx, HandleScope scope);
 
     void initArgsObjUnchecked(ArgumentsObject& argsobj) {
         flags_ |= HAS_ARGS_OBJ;
@@ -299,9 +312,11 @@ class BaselineFrame
         flags_ &= ~HANDLING_EXCEPTION;
     }
 
-    JSScript* evalScript() const {
-        MOZ_ASSERT(isEvalFrame());
-        return evalScript_;
+    bool hasCachedSavedFrame() const {
+        return flags_ & HAS_CACHED_SAVED_FRAME;
+    }
+    void setHasCachedSavedFrame() {
+        flags_ |= HAS_CACHED_SAVED_FRAME;
     }
 
     bool overRecursed() const {
@@ -357,14 +372,14 @@ class BaselineFrame
 
     void trace(JSTracer* trc, JitFrameIterator& frame);
 
-    bool isFunctionFrame() const {
-        return CalleeTokenIsFunction(calleeToken());
-    }
     bool isGlobalFrame() const {
-        return !CalleeTokenIsFunction(calleeToken());
+        return script()->isGlobalCode();
     }
-     bool isEvalFrame() const {
-        return flags_ & EVAL;
+    bool isModuleFrame() const {
+        return script()->module();
+    }
+    bool isEvalFrame() const {
+        return script()->isForEval();
     }
     bool isStrictEvalFrame() const {
         return isEvalFrame() && script()->strict();
@@ -372,14 +387,12 @@ class BaselineFrame
     bool isNonStrictEvalFrame() const {
         return isEvalFrame() && !script()->strict();
     }
-    bool isDirectEvalFrame() const {
-        return isEvalFrame() && script()->staticLevel() > 0;
-    }
+    bool isNonGlobalEvalFrame() const;
     bool isNonStrictDirectEvalFrame() const {
-        return isNonStrictEvalFrame() && isDirectEvalFrame();
+        return isNonStrictEvalFrame() && isNonGlobalEvalFrame();
     }
-    bool isNonEvalFunctionFrame() const {
-        return isFunctionFrame() && !isEvalFrame();
+    bool isFunctionFrame() const {
+        return CalleeTokenIsFunction(calleeToken());
     }
     bool isDebuggerEvalFrame() const {
         return false;
@@ -396,6 +409,9 @@ class BaselineFrame
     }
     static size_t offsetOfThis() {
         return FramePointerOffset + js::jit::JitFrameLayout::offsetOfThis();
+    }
+    static size_t offsetOfEvalNewTarget() {
+        return FramePointerOffset + js::jit::JitFrameLayout::offsetOfEvalNewTarget();
     }
     static size_t offsetOfArg(size_t index) {
         return FramePointerOffset + js::jit::JitFrameLayout::offsetOfActualArg(index);
@@ -416,17 +432,14 @@ class BaselineFrame
     static int reverseOffsetOfScratchValue() {
         return -int(Size()) + offsetof(BaselineFrame, loScratchValue_);
     }
-    static int reverseOffsetOfScopeChain() {
-        return -int(Size()) + offsetof(BaselineFrame, scopeChain_);
+    static int reverseOffsetOfEnvironmentChain() {
+        return -int(Size()) + offsetof(BaselineFrame, envChain_);
     }
     static int reverseOffsetOfArgsObj() {
         return -int(Size()) + offsetof(BaselineFrame, argsObj_);
     }
     static int reverseOffsetOfFlags() {
         return -int(Size()) + offsetof(BaselineFrame, flags_);
-    }
-    static int reverseOffsetOfEvalScript() {
-        return -int(Size()) + offsetof(BaselineFrame, evalScript_);
     }
     static int reverseOffsetOfReturnValue() {
         return -int(Size()) + offsetof(BaselineFrame, loReturnValue_);

@@ -134,7 +134,7 @@ BEGIN_TEST(testJitRangeAnalysis_MathSignBeta)
     // {
     //   return Math.sign(p + -0);
     // }
-    MAdd* thenAdd = MAdd::NewAsmJS(func.alloc, p, cm0, MIRType_Double);
+    MAdd* thenAdd = MAdd::New(func.alloc, p, cm0, MIRType::Double);
     thenBlock->add(thenAdd);
     MMathFunction* thenSign = MMathFunction::New(func.alloc, thenAdd, MMathFunction::Sign, &cache);
     thenBlock->add(thenSign);
@@ -152,7 +152,7 @@ BEGIN_TEST(testJitRangeAnalysis_MathSignBeta)
     //   {
     //     return Math.sign(p + -0);
     //   }
-    MAdd* elseThenAdd = MAdd::NewAsmJS(func.alloc, p, cm0, MIRType_Double);
+    MAdd* elseThenAdd = MAdd::New(func.alloc, p, cm0, MIRType::Double);
     elseThenBlock->add(elseThenAdd);
     MMathFunction* elseThenSign = MMathFunction::New(func.alloc, elseThenAdd, MMathFunction::Sign, &cache);
     elseThenBlock->add(elseThenSign);
@@ -164,7 +164,7 @@ BEGIN_TEST(testJitRangeAnalysis_MathSignBeta)
     //     return Math.sign(p + -0);
     //   }
     // }
-    MAdd* elseElseAdd = MAdd::NewAsmJS(func.alloc, p, cm0, MIRType_Double);
+    MAdd* elseElseAdd = MAdd::New(func.alloc, p, cm0, MIRType::Double);
     elseElseBlock->add(elseElseAdd);
     MMathFunction* elseElseSign = MMathFunction::New(func.alloc, elseElseAdd, MMathFunction::Sign, &cache);
     elseElseBlock->add(elseElseSign);
@@ -236,7 +236,7 @@ BEGIN_TEST(testJitRangeAnalysis_StrictCompareBeta)
     // }
     MConstant* cm0 = MConstant::New(func.alloc, DoubleValue(-0.0));
     thenBlock->add(cm0);
-    MAdd* thenAdd = MAdd::NewAsmJS(func.alloc, p, cm0, MIRType_Double);
+    MAdd* thenAdd = MAdd::New(func.alloc, p, cm0, MIRType::Double);
     thenBlock->add(thenAdd);
     MReturn* thenRet = MReturn::New(func.alloc, thenAdd);
     thenBlock->end(thenRet);
@@ -256,7 +256,7 @@ BEGIN_TEST(testJitRangeAnalysis_StrictCompareBeta)
     MCompare::CompareType nonNumerics[] = {
         MCompare::Compare_Unknown,
         MCompare::Compare_Object,
-        MCompare::Compare_Value,
+        MCompare::Compare_Bitwise,
         MCompare::Compare_String
     };
     for (size_t i = 0; i < mozilla::ArrayLength(nonNumerics); ++i) {
@@ -277,3 +277,62 @@ BEGIN_TEST(testJitRangeAnalysis_StrictCompareBeta)
     return true;
 }
 END_TEST(testJitRangeAnalysis_StrictCompareBeta)
+
+
+static void
+deriveShiftRightRange(int32_t lhsLower, int32_t lhsUpper,
+                      int32_t rhsLower, int32_t rhsUpper,
+                      int32_t* min, int32_t* max)
+{
+    // This is the reference algorithm and should be verifiable by inspection.
+    int64_t i, j;
+    *min = INT32_MAX; *max = INT32_MIN;
+    for (i = lhsLower; i <= lhsUpper; i++) {
+        for (j = rhsLower; j <= rhsUpper; j++) {
+            int32_t r = int32_t(i) >> (int32_t(j) & 0x1f);
+            if (r > *max) *max = r;
+            if (r < *min) *min = r;
+        }
+    }
+}
+
+static bool
+checkShiftRightRange(int32_t lhsLow, int32_t lhsHigh, int32_t lhsInc,
+                     int32_t rhsLow, int32_t rhsHigh, int32_t rhsInc)
+{
+    MinimalAlloc func;
+    int64_t lhsLower, lhsUpper, rhsLower, rhsUpper;
+
+    for (lhsLower = lhsLow; lhsLower <= lhsHigh; lhsLower += lhsInc) {
+        for (lhsUpper = lhsLower; lhsUpper <= lhsHigh; lhsUpper += lhsInc) {
+            Range* lhsRange = Range::NewInt32Range(func.alloc, lhsLower, lhsUpper);
+            for (rhsLower = rhsLow; rhsLower <= rhsHigh; rhsLower += rhsInc) {
+                for (rhsUpper = rhsLower; rhsUpper <= rhsHigh; rhsUpper += rhsInc) {
+                    if (!func.alloc.ensureBallast())
+                        return false;
+
+                    Range* rhsRange = Range::NewInt32Range(func.alloc, rhsLower, rhsUpper);
+                    Range* result = Range::rsh(func.alloc, lhsRange, rhsRange);
+                    int32_t min, max;
+                    deriveShiftRightRange(lhsLower, lhsUpper,
+                                          rhsLower, rhsUpper,
+                                          &min, &max);
+                    if (!result->isInt32() ||
+                        result->lower() != min ||
+                        result->upper() != max) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+BEGIN_TEST(testJitRangeAnalysis_shiftRight)
+{
+    CHECK(checkShiftRightRange(-16, 15, 1,   0, 31, 1));
+    CHECK(checkShiftRightRange( -8,  7, 1, -64, 63, 1));
+    return true;
+}
+END_TEST(testJitRangeAnalysis_shiftRight)

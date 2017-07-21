@@ -1,16 +1,4 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.join.length, 1);
 
     assertEq(new constructor([1, 2, 3]).join(), "1,2,3");
@@ -52,8 +40,9 @@ for (var constructor of constructors) {
     }).join("\0"), "1\0002\0003");
 }
 
-assertDeepEq(new Float32Array([null, , NaN]).join(), "0,NaN,NaN");
-assertDeepEq(new Float64Array([null, , NaN]).join(), "0,NaN,NaN");
+for (let constructor of anyTypedArrayConstructors.filter(isFloatConstructor)) {
+    assertDeepEq(new constructor([null, , NaN]).join(), "0,NaN,NaN");
+}
 
 if (typeof reportCompare === "function")
     reportCompare(true, true);

@@ -52,6 +52,7 @@ class OptimizationAttempt
 };
 
 typedef Vector<OptimizationAttempt, 4, JitAllocPolicy> TempOptimizationAttemptsVector;
+typedef Vector<TypeSet::Type, 1, JitAllocPolicy> TempTypeList;
 
 class UniqueTrackedTypes;
 
@@ -59,7 +60,7 @@ class OptimizationTypeInfo
 {
     JS::TrackedTypeSite site_;
     MIRType mirType_;
-    TypeSet::TypeList types_;
+    TempTypeList types_;
 
   public:
     OptimizationTypeInfo(OptimizationTypeInfo&& other)
@@ -68,24 +69,26 @@ class OptimizationTypeInfo
         types_(mozilla::Move(other.types_))
     { }
 
-    OptimizationTypeInfo(JS::TrackedTypeSite site, MIRType mirType)
+    OptimizationTypeInfo(TempAllocator& alloc, JS::TrackedTypeSite site, MIRType mirType)
       : site_(site),
-        mirType_(mirType)
+        mirType_(mirType),
+        types_(alloc)
     { }
 
-    bool trackTypeSet(TemporaryTypeSet* typeSet);
-    bool trackType(TypeSet::Type type);
+    MOZ_MUST_USE bool trackTypeSet(TemporaryTypeSet* typeSet);
+    MOZ_MUST_USE bool trackType(TypeSet::Type type);
 
     JS::TrackedTypeSite site() const { return site_; }
     MIRType mirType() const { return mirType_; }
-    const TypeSet::TypeList& types() const { return types_; }
+    const TempTypeList& types() const { return types_; }
 
     bool operator ==(const OptimizationTypeInfo& other) const;
     bool operator !=(const OptimizationTypeInfo& other) const;
 
     HashNumber hash() const;
 
-    bool writeCompact(CompactBufferWriter& writer, UniqueTrackedTypes& uniqueTypes) const;
+    MOZ_MUST_USE bool writeCompact(JSContext* cx, CompactBufferWriter& writer,
+                                   UniqueTrackedTypes& uniqueTypes) const;
 };
 
 typedef Vector<OptimizationTypeInfo, 1, JitAllocPolicy> TempOptimizationTypeInfoVector;
@@ -105,9 +108,15 @@ class TrackedOptimizations : public TempObject
         currentAttempt_(UINT32_MAX)
     { }
 
-    bool trackTypeInfo(OptimizationTypeInfo&& ty);
+    void clear() {
+        types_.clear();
+        attempts_.clear();
+        currentAttempt_ = UINT32_MAX;
+    }
 
-    bool trackAttempt(JS::TrackedStrategy strategy);
+    MOZ_MUST_USE bool trackTypeInfo(OptimizationTypeInfo&& ty);
+
+    MOZ_MUST_USE bool trackAttempt(JS::TrackedStrategy strategy);
     void amendAttempt(uint32_t index);
     void trackOutcome(JS::TrackedOutcome outcome);
     void trackSuccess();
@@ -165,10 +174,10 @@ class UniqueTrackedOptimizations
         sorted_(cx)
     { }
 
-    bool init() { return map_.init(); }
-    bool add(const TrackedOptimizations* optimizations);
+    MOZ_MUST_USE bool init() { return map_.init(); }
+    MOZ_MUST_USE bool add(const TrackedOptimizations* optimizations);
 
-    bool sortByFrequency(JSContext* cx);
+    MOZ_MUST_USE bool sortByFrequency(JSContext* cx);
     bool sorted() const { return !sorted_.empty(); }
     uint32_t count() const { MOZ_ASSERT(sorted()); return sorted_.length(); }
     const SortedVector& sortedVector() const { MOZ_ASSERT(sorted()); return sorted_; }
@@ -314,7 +323,7 @@ class IonTrackedOptimizationsRegion
 
     // Find the index of tracked optimization info (e.g., type info and
     // attempts) at a native code offset.
-    mozilla::Maybe<uint8_t> findIndex(uint32_t offset) const;
+    mozilla::Maybe<uint8_t> findIndex(uint32_t offset, uint32_t* entryOffsetOut) const;
 
     // For the variants below, S stands for startDelta, L for length, and I
     // for index. These were automatically generated from training on the
@@ -398,10 +407,10 @@ class IonTrackedOptimizationsRegion
                           uint8_t* index);
     static void WriteDelta(CompactBufferWriter& writer, uint32_t startDelta, uint32_t length,
                            uint8_t index);
-    static bool WriteRun(CompactBufferWriter& writer,
-                         const NativeToTrackedOptimizations* start,
-                         const NativeToTrackedOptimizations* end,
-                         const UniqueTrackedOptimizations& unique);
+    static MOZ_MUST_USE bool WriteRun(CompactBufferWriter& writer,
+                                      const NativeToTrackedOptimizations* start,
+                                      const NativeToTrackedOptimizations* end,
+                                      const UniqueTrackedOptimizations& unique);
 };
 
 class IonTrackedOptimizationsAttempts
@@ -481,13 +490,28 @@ class IonTrackedOptimizationsTypeInfo
     bool empty() const { return start_ == end_; }
 
     // Unlike IonTrackedOptimizationAttempts,
-    // JS::ForEachTrackedOptimizaitonTypeInfoOp cannot be used directly. The
+    // JS::ForEachTrackedOptimizationTypeInfoOp cannot be used directly. The
     // internal API needs to deal with engine-internal data structures (e.g.,
     // TypeSet::Type) directly.
+    //
+    // An adapter is provided below.
     struct ForEachOp
     {
         virtual void readType(const IonTrackedTypeWithAddendum& tracked) = 0;
         virtual void operator()(JS::TrackedTypeSite site, MIRType mirType) = 0;
+    };
+
+    class ForEachOpAdapter : public ForEachOp
+    {
+        JS::ForEachTrackedOptimizationTypeInfoOp& op_;
+
+      public:
+        explicit ForEachOpAdapter(JS::ForEachTrackedOptimizationTypeInfoOp& op)
+          : op_(op)
+        { }
+
+        void readType(const IonTrackedTypeWithAddendum& tracked) override;
+        void operator()(JS::TrackedTypeSite site, MIRType mirType) override;
     };
 
     void forEach(ForEachOp& op, const IonTrackedTypeVector* allTypes);
@@ -536,7 +560,7 @@ typedef IonTrackedOptimizationsOffsetsTable<IonTrackedOptimizationsAttempts>
 typedef IonTrackedOptimizationsOffsetsTable<IonTrackedOptimizationsTypeInfo>
     IonTrackedOptimizationsTypesTable;
 
-bool
+MOZ_MUST_USE bool
 WriteIonTrackedOptimizationsTable(JSContext* cx, CompactBufferWriter& writer,
                                   const NativeToTrackedOptimizations* start,
                                   const NativeToTrackedOptimizations* end,

@@ -15,7 +15,7 @@
 
 using namespace js;
 
-namespace {
+namespace details {
 
 template<typename T>
 struct DataType
@@ -25,23 +25,25 @@ struct DataType
 template<>
 struct DataType<JSObject*>
 {
-    typedef PreBarrieredObject PreBarriered;
+    using BarrieredType = HeapPtr<JSObject*>;
+    using HasherType = MovableCellHasher<BarrieredType>;
     static JSObject* NullValue() { return nullptr; }
 };
 
 template<>
 struct DataType<JS::Value>
 {
-    typedef PreBarrieredValue PreBarriered;
+    using BarrieredType = HeapPtr<Value>;
     static JS::Value NullValue() { return JS::UndefinedValue(); }
 };
 
 template <typename K, typename V>
 struct Utils
 {
-    typedef typename DataType<K>::PreBarriered KeyType;
-    typedef typename DataType<V>::PreBarriered ValueType;
-    typedef WeakMap<KeyType, ValueType> Type;
+    typedef typename DataType<K>::BarrieredType KeyType;
+    typedef typename DataType<K>::HasherType HasherType;
+    typedef typename DataType<V>::BarrieredType ValueType;
+    typedef WeakMap<KeyType, ValueType, HasherType> Type;
     typedef Type* PtrType;
     static PtrType cast(void* ptr) { return static_cast<PtrType>(ptr); }
 };
@@ -53,12 +55,7 @@ void
 JS::WeakMapPtr<K, V>::destroy()
 {
     MOZ_ASSERT(initialized());
-    auto map = Utils<K, V>::cast(ptr);
-    // If this destruction happens mid-GC, we might be in the compartment's list
-    // of known live weakmaps. If we are, remove ourselves before deleting.
-    if (map->isInList())
-        WeakMapBase::removeWeakMapFromList(map);
-    js_delete(map);
+    js_delete(details::Utils<K, V>::cast(ptr));
     ptr = nullptr;
 }
 
@@ -67,7 +64,7 @@ bool
 JS::WeakMapPtr<K, V>::init(JSContext* cx)
 {
     MOZ_ASSERT(!initialized());
-    typename Utils<K, V>::PtrType map = cx->runtime()->new_<typename Utils<K,V>::Type>(cx);
+    typename details::Utils<K, V>::PtrType map = cx->runtime()->new_<typename details::Utils<K,V>::Type>(cx);
     if (!map || !map->init())
         return false;
     ptr = map;
@@ -79,7 +76,7 @@ void
 JS::WeakMapPtr<K, V>::trace(JSTracer* trc)
 {
     MOZ_ASSERT(initialized());
-    return Utils<K, V>::cast(ptr)->trace(trc);
+    return details::Utils<K, V>::cast(ptr)->trace(trc);
 }
 
 template <typename K, typename V>
@@ -87,20 +84,10 @@ V
 JS::WeakMapPtr<K, V>::lookup(const K& key)
 {
     MOZ_ASSERT(initialized());
-    typename Utils<K, V>::Type::Ptr result = Utils<K, V>::cast(ptr)->lookup(key);
+    typename details::Utils<K, V>::Type::Ptr result = details::Utils<K, V>::cast(ptr)->lookup(key);
     if (!result)
-        return DataType<V>::NullValue();
+        return details::DataType<V>::NullValue();
     return result->value();
-}
-
-template <typename K, typename V>
-/* static */ void
-JS::WeakMapPtr<K, V>::keyMarkCallback(JSTracer* trc, K key, void* data)
-{
-    auto map = static_cast< JS::WeakMapPtr<K, V>* >(data);
-    K prior = key;
-    JS_CallUnbarrieredObjectTracer(trc, &key, "WeakMapPtr key");
-    return Utils<K, V>::cast(map->ptr)->rekeyIfMoved(prior, key);
 }
 
 template <typename K, typename V>
@@ -108,12 +95,7 @@ bool
 JS::WeakMapPtr<K, V>::put(JSContext* cx, const K& key, const V& value)
 {
     MOZ_ASSERT(initialized());
-    if (!Utils<K, V>::cast(ptr)->put(key, value))
-        return false;
-    JS_StoreObjectPostBarrierCallback(cx, keyMarkCallback, key, this);
-    // Values do not need to be barriered because only put() is supported,
-    // which is always an initializing write.
-    return true;
+    return details::Utils<K, V>::cast(ptr)->put(key, value);
 }
 
 //

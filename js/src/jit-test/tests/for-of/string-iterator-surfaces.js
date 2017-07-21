@@ -31,14 +31,22 @@ function assertBuiltinFunction(o, name, arity) {
 
     assertEq(typeof fn, "function");
     assertEq(Object.getPrototypeOf(fn), Function.prototype);
-    // FIXME: Proxy should only have [[Construct]] if target has [[Construct]] (bug 929467)
-    // assertEq(isConstructor(fn), false);
+    assertEq(isConstructor(fn), false);
 
-    arraysEqual(Object.getOwnPropertyNames(fn).sort(), ["length", "name", "arguments", "caller"].sort());
+    assertEq(arraysEqual(Object.getOwnPropertyNames(fn).sort(), ["length", "name"].sort()), true);
 
-    // Also test "name", "arguments" and "caller" in addition to "length"?
     assertDataDescriptor(Object.getOwnPropertyDescriptor(fn, "length"), {
         value: arity,
+        writable: false,
+        enumerable: false,
+        configurable: true
+    });
+
+    var functionName = typeof name === "symbol"
+                       ? String(name).replace(/^Symbol\((.+)\)$/, "[$1]")
+                       : name;
+    assertDataDescriptor(Object.getOwnPropertyDescriptor(fn, "name"), {
+        value: functionName,
         writable: false,
         enumerable: false,
         configurable: true
@@ -53,15 +61,13 @@ assertBuiltinFunction(String.prototype, Symbol.iterator, 0);
 var iter = ""[Symbol.iterator]();
 var iterProto = Object.getPrototypeOf(iter);
 
-// StringIterator.prototype inherits from Object.prototype
-assertEq(Object.getPrototypeOf(iterProto), Object.prototype);
+// StringIterator.prototype inherits from %IteratorPrototype%. Check it's the
+// same object as %ArrayIteratorPrototype%'s proto.
+assertEq(Object.getPrototypeOf(iterProto),
+         Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())));
 
 // Own properties for StringIterator.prototype: "next"
-arraysEqual(Object.getOwnPropertyNames(iterProto).sort(), ["next"]);
-assertEq(iterProto.hasOwnProperty(Symbol.iterator), true);
-
-// StringIterator.prototype[@@iterator] is a built-in function
-assertBuiltinFunction(iterProto, Symbol.iterator, 0);
+assertEq(arraysEqual(Object.getOwnPropertyNames(iterProto).sort(), ["next"]), true);
 
 // StringIterator.prototype.next is a built-in function
 assertBuiltinFunction(iterProto, "next", 0);

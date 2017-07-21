@@ -7,7 +7,7 @@ assertEq(desc.writable, true);
 
 assertEq(typeof WeakSet, 'function');
 assertEq(Object.keys(WeakSet).length, 0);
-assertEq(WeakSet.length, 1);
+assertEq(WeakSet.length, 0);
 assertEq(WeakSet.name, "WeakSet");
 
 assertEq(Object.getPrototypeOf(WeakSet.prototype), Object.prototype);
@@ -29,4 +29,3 @@ function checkMethod(name, arity) {
 checkMethod("has", 1);
 checkMethod("add", 1);
 checkMethod("delete", 1);
-checkMethod("clear", 0);

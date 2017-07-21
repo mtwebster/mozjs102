@@ -6,15 +6,18 @@ FRAGMENT(JSObject, simple) {
   JS::Rooted<JSObject*> plain(cx, JS_NewPlainObject(cx));
   JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
   JS::Rooted<JSObject*> func(cx, (JSObject*) JS_NewFunction(cx, (JSNative) 1, 0, 0,
-                                                              global, "dys"));
-  JS::Rooted<JSObject*> anon(cx, (JSObject*) JS_NewFunction(cx, (JSNative) 1, 0, 0, global, 0));
+                                                              "dys"));
+  JS::Rooted<JSObject*> anon(cx, (JSObject*) JS_NewFunction(cx, (JSNative) 1, 0, 0, nullptr));
   JS::Rooted<JSFunction*> funcPtr(cx, JS_NewFunction(cx, (JSNative) 1, 0, 0,
-                                                      global, "formFollows"));
+                                                      "formFollows"));
 
   JSObject& plainRef = *plain;
   JSFunction& funcRef = *funcPtr;
   JSObject* plainRaw = plain;
   JSObject* funcRaw = func;
+
+  static const JSClass cls = { "\xc7X" };
+  JS::RootedObject badClassName(cx, JS_NewObject(cx, &cls));
 
   breakpoint();
 

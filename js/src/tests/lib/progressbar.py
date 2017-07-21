@@ -15,7 +15,8 @@ class NullProgressBar(object):
     def finish(self, complete=True): pass
     def beginline(self): pass
     def message(self, msg): sys.stdout.write(msg + '\n')
-    def update_granularity(self): return timedelta.max
+    @staticmethod
+    def update_granularity(): return timedelta.max
 
 class ProgressBar(object):
     def __init__(self, limit, fmt):
@@ -37,7 +38,8 @@ class ProgressBar(object):
 
         self.barlen = 64 - self.counters_width
 
-    def update_granularity(self):
+    @staticmethod
+    def update_granularity():
         return timedelta(seconds=0.1)
 
     def update(self, current, data):
@@ -80,6 +82,10 @@ class ProgressBar(object):
         self.update(*self.prior)
 
     def finish(self, complete=True):
+        if not self.prior:
+            sys.stdout.write('No test run... You can try adding'
+                            ' --run-slow-tests or --run-skipped to run more tests\n')
+            return
         final_count = self.limit if complete else self.prior[0]
         self.update(final_count, self.prior[1])
         sys.stdout.write('\n')

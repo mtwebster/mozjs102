@@ -10,16 +10,20 @@
 static int g_counter;
 
 static bool
-CounterAdd(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::MutableHandleValue vp)
+CounterAdd(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::HandleValue v)
 {
     g_counter++;
     return true;
 }
 
+static const JSClassOps CounterClassOps = {
+    CounterAdd
+};
+
 static const JSClass CounterClass = {
     "Counter",  /* name */
     0,  /* flags */
-    CounterAdd
+    &CounterClassOps
 };
 
 BEGIN_TEST(testPropCache_bug505798)

@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import errno
 import os
 import platform
@@ -33,6 +35,15 @@ from tempfile import (
     mkstemp,
     NamedTemporaryFile,
 )
+from tarfile import (
+    TarFile,
+    TarInfo,
+)
+try:
+    import hglib
+except ImportError:
+    hglib = None
+
 
 # For clean builds, copying files on win32 using CopyFile through ctypes is
 # ~2x as fast as using shutil.copyfile.
@@ -128,6 +139,22 @@ class BaseFile(object):
                 return True
         return False
 
+    @staticmethod
+    def normalize_mode(mode):
+        # Normalize file mode:
+        # - keep file type (e.g. S_IFREG)
+        ret = stat.S_IFMT(mode)
+        # - expand user read and execute permissions to everyone
+        if mode & 0400:
+            ret |= 0444
+        if mode & 0100:
+            ret |= 0111
+        # - keep user write permissions
+        if mode & 0200:
+            ret |= 0200
+        # - leave away sticky bit, setuid, setgid
+        return ret
+
     def copy(self, dest, skip_if_older=True):
         '''
         Copy the BaseFile content to the destination given as a string or a
@@ -189,6 +216,9 @@ class BaseFile(object):
         assert self.path is not None
         return open(self.path, 'rb')
 
+    def read(self):
+        raise NotImplementedError('BaseFile.read() not implemented. Bug 1170329.')
+
     @property
     def mode(self):
         '''
@@ -212,7 +242,14 @@ class File(BaseFile):
         if platform.system() == 'Windows':
             return None
         assert self.path is not None
-        return os.stat(self.path).st_mode
+        mode = os.stat(self.path).st_mode
+        return self.normalize_mode(mode)
+
+    def read(self):
+        '''Return the contents of the file.'''
+        with open(self.path, 'rb') as fh:
+            return fh.read()
+
 
 class ExecutableFile(File):
     '''
@@ -381,12 +418,15 @@ class PreprocessedFile(BaseFile):
     File class for a file that is preprocessed. PreprocessedFile.copy() runs
     the preprocessor on the file to create the output.
     '''
-    def __init__(self, path, depfile_path, marker, defines, extra_depends=None):
+    def __init__(self, path, depfile_path, marker, defines, extra_depends=None,
+                 silence_missing_directive_warnings=False):
         self.path = path
         self.depfile = depfile_path
         self.marker = marker
         self.defines = defines
         self.extra_depends = list(extra_depends or [])
+        self.silence_missing_directive_warnings = \
+            silence_missing_directive_warnings
 
     def copy(self, dest, skip_if_older=True):
         '''
@@ -435,6 +475,7 @@ class PreprocessedFile(BaseFile):
         if self.depfile:
             deps_out = FileAvoidWrite(self.depfile)
         pp = Preprocessor(defines=self.defines, marker=self.marker)
+        pp.setSilenceDirectiveWarnings(self.silence_missing_directive_warnings)
 
         with open(self.path, 'rU') as input:
             pp.processFile(input=input, output=dest, depfile=deps_out)
@@ -471,6 +512,23 @@ class DeflatedFile(BaseFile):
         self.file.seek(0)
         return self.file
 
+class ExtractedTarFile(GeneratedFile):
+    '''
+    File class for members of a tar archive. Contents of the underlying file
+    are extracted immediately and stored in memory.
+    '''
+    def __init__(self, tar, info):
+        assert isinstance(info, TarInfo)
+        assert isinstance(tar, TarFile)
+        GeneratedFile.__init__(self, tar.extractfile(info).read())
+        self._mode = self.normalize_mode(info.mode)
+
+    @property
+    def mode(self):
+        return self._mode
+
+    def read(self):
+        return self.content
 
 class XPTFile(GeneratedFile):
     '''
@@ -550,13 +608,13 @@ class ManifestFile(BaseFile):
     the add() and remove() member functions), and adjusts them to be relative
     to the base path for the manifest, given at creation.
     Example:
-        There is a manifest entry "content webapprt webapprt/content/" relative
-        to "webapprt/chrome". When packaging, the entry will be stored in
-        jar:webapprt/omni.ja!/chrome/chrome.manifest, which means the entry
-        will have to be relative to "chrome" instead of "webapprt/chrome". This
+        There is a manifest entry "content foobar foobar/content/" relative
+        to "foobar/chrome". When packaging, the entry will be stored in
+        jar:foobar/omni.ja!/chrome/chrome.manifest, which means the entry
+        will have to be relative to "chrome" instead of "foobar/chrome". This
         doesn't really matter when serializing the entry, since this base path
         is not written out, but it matters when moving the entry at the same
-        time, e.g. to jar:webapprt/omni.ja!/chrome.manifest, which we don't do
+        time, e.g. to jar:foobar/omni.ja!/chrome.manifest, which we don't do
         currently but could in the future.
     '''
     def __init__(self, base, entries=None):
@@ -700,6 +758,20 @@ class BaseFinder(object):
         for p, f in self._find(pattern):
             yield p, self._minify_file(p, f)
 
+    def get(self, path):
+        """Obtain a single file.
+
+        Where ``find`` is tailored towards matching multiple files, this method
+        is used for retrieving a single file. Use this method when performance
+        is critical.
+
+        Returns a ``BaseFile`` if at most one file exists or ``None`` otherwise.
+        """
+        files = list(self.find(path))
+        if len(files) != 1:
+            return None
+        return files[0][1]
+
     def __iter__(self):
         '''
         Iterates over all files under the base directory (excluding files
@@ -740,12 +812,37 @@ class BaseFinder(object):
 
         return file
 
+    def _find_helper(self, pattern, files, file_getter):
+        """Generic implementation of _find.
+
+        A few *Finder implementations share logic for returning results.
+        This function implements the custom logic.
+
+        The ``file_getter`` argument is a callable that receives a path
+        that is known to exist. The callable should return a ``BaseFile``
+        instance.
+        """
+        if '*' in pattern:
+            for p in files:
+                if mozpath.match(p, pattern):
+                    yield p, file_getter(p)
+        elif pattern == '':
+            for p in files:
+                yield p, file_getter(p)
+        elif pattern in files:
+            yield pattern, file_getter(pattern)
+        else:
+            for p in files:
+                if mozpath.basedir(p, [pattern]) == pattern:
+                    yield p, file_getter(p)
+
 
 class FileFinder(BaseFinder):
     '''
     Helper to get appropriate BaseFile instances from the file system.
     '''
-    def __init__(self, base, find_executables=True, ignore=(), **kargs):
+    def __init__(self, base, find_executables=True, ignore=(),
+                 find_dotfiles=False, **kargs):
         '''
         Create a FileFinder for files under the given base directory.
 
@@ -760,6 +857,7 @@ class FileFinder(BaseFinder):
         an entry corresponds to a file, that particular file will be ignored.
         '''
         BaseFinder.__init__(self, base, **kargs)
+        self.find_dotfiles = find_dotfiles
         self.find_executables = find_executables
         self.ignore = ignore
 
@@ -775,7 +873,8 @@ class FileFinder(BaseFinder):
         elif os.path.isdir(os.path.join(self.base, pattern)):
             return self._find_dir(pattern)
         else:
-            return self._find_file(pattern)
+            f = self.get(pattern)
+            return ((pattern, f),) if f else ()
 
     def _find_dir(self, path):
         '''
@@ -793,27 +892,26 @@ class FileFinder(BaseFinder):
         # inode ordering.
         for p in sorted(os.listdir(os.path.join(self.base, path))):
             if p.startswith('.'):
-                continue
+                if p in ('.', '..'):
+                    continue
+                if not self.find_dotfiles:
+                    continue
             for p_, f in self._find(mozpath.join(path, p)):
                 yield p_, f
 
-    def _find_file(self, path):
-        '''
-        Actual implementation of FileFinder.find() when the given pattern
-        corresponds to an existing file under the base directory.
-        '''
+    def get(self, path):
         srcpath = os.path.join(self.base, path)
         if not os.path.exists(srcpath):
-            return
+            return None
 
         for p in self.ignore:
             if mozpath.match(path, p):
-                return
+                return None
 
         if self.find_executables and is_executable(srcpath):
-            yield path, ExecutableFile(srcpath)
+            return ExecutableFile(srcpath)
         else:
-            yield path, File(srcpath)
+            return File(srcpath)
 
     def _find_glob(self, base, pattern):
         '''
@@ -872,19 +970,32 @@ class JarFinder(BaseFinder):
         Actual implementation of JarFinder.find(), dispatching to specialized
         member functions depending on what kind of pattern was given.
         '''
-        if '*' in pattern:
-            for p in self._files:
-                if mozpath.match(p, pattern):
-                    yield p, DeflatedFile(self._files[p])
-        elif pattern == '':
-            for p in self._files:
-                yield p, DeflatedFile(self._files[p])
-        elif pattern in self._files:
-            yield pattern, DeflatedFile(self._files[pattern])
-        else:
-            for p in self._files:
-                if mozpath.basedir(p, [pattern]) == pattern:
-                    yield p, DeflatedFile(self._files[p])
+        return self._find_helper(pattern, self._files,
+                                 lambda x: DeflatedFile(self._files[x]))
+
+
+class TarFinder(BaseFinder):
+    '''
+    Helper to get files from a TarFile.
+    '''
+    def __init__(self, base, tar, **kargs):
+        '''
+        Create a TarFinder for files in the given TarFile. The base argument
+        is used as an indication of the Tar file location.
+        '''
+        assert isinstance(tar, TarFile)
+        self._tar = tar
+        BaseFinder.__init__(self, base, **kargs)
+        self._files = OrderedDict((f.name, f) for f in tar if f.isfile())
+
+    def _find(self, pattern):
+        '''
+        Actual implementation of TarFinder.find(), dispatching to specialized
+        member functions depending on what kind of pattern was given.
+        '''
+        return self._find_helper(pattern, self._files,
+                                 lambda x: ExtractedTarFile(self._tar,
+                                                            self._files[x]))
 
 
 class ComposedFinder(BaseFinder):
@@ -912,3 +1023,84 @@ class ComposedFinder(BaseFinder):
     def find(self, pattern):
         for p in self.files.match(pattern):
             yield p, self.files[p]
+
+
+class MercurialFile(BaseFile):
+    """File class for holding data from Mercurial."""
+    def __init__(self, client, rev, path):
+        self._content = client.cat([path], rev=rev)
+
+    def read(self):
+        return self._content
+
+
+class MercurialRevisionFinder(BaseFinder):
+    """A finder that operates on a specific Mercurial revision."""
+
+    def __init__(self, repo, rev='.', recognize_repo_paths=False, **kwargs):
+        """Create a finder attached to a specific revision in a repository.
+
+        If no revision is given, open the parent of the working directory.
+
+        ``recognize_repo_paths`` will enable a mode where ``.get()`` will
+        recognize full paths that include the repo's path. Typically Finder
+        instances are "bound" to a base directory and paths are relative to
+        that directory. This mode changes that. When this mode is activated,
+        ``.find()`` will not work! This mode exists to support the moz.build
+        reader, which uses absolute paths instead of relative paths. The reader
+        should eventually be rewritten to use relative paths and this hack
+        should be removed (TODO bug 1171069).
+        """
+        if not hglib:
+            raise Exception('hglib package not found')
+
+        super(MercurialRevisionFinder, self).__init__(base=repo, **kwargs)
+
+        self._root = mozpath.normpath(repo).rstrip('/')
+        self._recognize_repo_paths = recognize_repo_paths
+
+        # We change directories here otherwise we have to deal with relative
+        # paths.
+        oldcwd = os.getcwd()
+        os.chdir(self._root)
+        try:
+            self._client = hglib.open(path=repo, encoding=b'utf-8')
+        finally:
+            os.chdir(oldcwd)
+        self._rev = rev if rev is not None else b'.'
+        self._files = OrderedDict()
+
+        # Immediately populate the list of files in the repo since nearly every
+        # operation requires this list.
+        out = self._client.rawcommand([b'files', b'--rev', str(self._rev)])
+        for relpath in out.splitlines():
+            self._files[relpath] = None
+
+    def _find(self, pattern):
+        if self._recognize_repo_paths:
+            raise NotImplementedError('cannot use find with recognize_repo_path')
+
+        return self._find_helper(pattern, self._files, self._get)
+
+    def get(self, path):
+        if self._recognize_repo_paths:
+            if not path.startswith(self._root):
+                raise ValueError('lookups in recognize_repo_paths mode must be '
+                                 'prefixed with repo path: %s' % path)
+            path = path[len(self._root) + 1:]
+
+        try:
+            return self._get(path)
+        except KeyError:
+            return None
+
+    def _get(self, path):
+        # We lazy populate self._files because potentially creating tens of
+        # thousands of MercurialFile instances for every file in the repo is
+        # inefficient.
+        f = self._files[path]
+        if not f:
+            f = MercurialFile(self._client, self._rev, path)
+            self._files[path] = f
+
+        return f

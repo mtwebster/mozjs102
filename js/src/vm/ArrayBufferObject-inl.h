@@ -14,8 +14,26 @@
 #include "js/Value.h"
 
 #include "vm/SharedArrayObject.h"
+#include "vm/SharedMem.h"
 
 namespace js {
+
+inline SharedMem<uint8_t*>
+ArrayBufferObjectMaybeShared::dataPointerEither()
+{
+    ArrayBufferObjectMaybeShared* buf = this;
+    if (buf->is<ArrayBufferObject>())
+        return buf->as<ArrayBufferObject>().dataPointerShared();
+    return buf->as<SharedArrayBufferObject>().dataPointerShared();
+}
+
+inline bool
+ArrayBufferObjectMaybeShared::isDetached() const
+{
+    if (this->is<ArrayBufferObject>())
+        return this->as<ArrayBufferObject>().isDetached();
+    return false;
+}
 
 inline uint32_t
 AnyArrayBufferByteLength(const ArrayBufferObjectMaybeShared* buf)
@@ -25,12 +43,12 @@ AnyArrayBufferByteLength(const ArrayBufferObjectMaybeShared* buf)
     return buf->as<SharedArrayBufferObject>().byteLength();
 }
 
-inline uint8_t*
-AnyArrayBufferDataPointer(const ArrayBufferObjectMaybeShared* buf)
+inline bool
+AnyArrayBufferIsPreparedForAsmJS(const ArrayBufferObjectMaybeShared* buf)
 {
     if (buf->is<ArrayBufferObject>())
-        return buf->as<ArrayBufferObject>().dataPointer();
-    return buf->as<SharedArrayBufferObject>().dataPointer();
+        return buf->as<ArrayBufferObject>().isPreparedForAsmJS();
+    return buf->as<SharedArrayBufferObject>().isPreparedForAsmJS();
 }
 
 inline ArrayBufferObjectMaybeShared&

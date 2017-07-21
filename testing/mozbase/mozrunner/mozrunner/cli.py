@@ -2,7 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import optparse
 import os
 import sys
 
@@ -15,10 +14,11 @@ from .utils import findInPath
 # Map of debugging programs to information about them
 # from http://mxr.mozilla.org/mozilla-central/source/build/automationutils.py#59
 DEBUGGERS = {'gdb': {'interactive': True,
-                     'args': ['-q', '--args'],},
+                     'args': ['-q', '--args'], },
              'valgrind': {'interactive': False,
                           'args': ['--leak-check=full']}
              }
+
 
 def debugger_arguments(debugger, arguments=None, interactive=None):
     """Finds debugger arguments from debugger given and defaults
@@ -54,20 +54,7 @@ class CLI(MozProfileCLI):
     module = "mozrunner"
 
     def __init__(self, args=sys.argv[1:]):
-        self.metadata = getattr(sys.modules[self.module],
-                                'package_metadata',
-                                {})
-        version = self.metadata.get('Version')
-        parser_args = {'description': self.metadata.get('Summary')}
-        if version:
-            parser_args['version'] = "%prog " + version
-        self.parser = optparse.OptionParser(**parser_args)
-        self.add_options(self.parser)
-        (self.options, self.args) = self.parser.parse_args(args)
-
-        if getattr(self.options, 'info', None):
-            self.print_metadata()
-            sys.exit(0)
+        MozProfileCLI.__init__(self, args=args)
 
         # choose appropriate runner and profile classes
         app = self.options.app
@@ -80,6 +67,8 @@ class CLI(MozProfileCLI):
 
     def add_options(self, parser):
         """add options to the parser"""
+        parser.description = ("Reliable start/stop/configuration of Mozilla"
+                              " Applications (Firefox, Thunderbird, etc.)")
 
         # add profile options
         MozProfileCLI.add_options(self, parser)
@@ -101,32 +90,8 @@ class CLI(MozProfileCLI):
         parser.add_option('--interactive', dest='interactive',
                           action='store_true',
                           help="run the program interactively")
-        if self.metadata:
-            parser.add_option("--info", dest="info", default=False,
-                              action="store_true",
-                              help="Print module information")
 
-    ### methods for introspecting data
-
-    def get_metadata_from_egg(self):
-        import pkg_resources
-        ret = {}
-        dist = pkg_resources.get_distribution(self.module)
-        if dist.has_metadata("PKG-INFO"):
-            for line in dist.get_metadata_lines("PKG-INFO"):
-                key, value = line.split(':', 1)
-                ret[key] = value
-        if dist.has_metadata("requires.txt"):
-            ret["Dependencies"] = "\n" + dist.get_metadata("requires.txt")
-        return ret
-
-    def print_metadata(self, data=("Name", "Version", "Summary", "Home-page",
-                                   "Author", "Author-email", "License", "Platform", "Dependencies")):
-        for key in data:
-            if key in self.metadata:
-                print key + ": " + self.metadata[key]
-
-    ### methods for running
+    # methods for running
 
     def command_args(self):
         """additional arguments for the mozilla application"""
@@ -158,7 +123,8 @@ class CLI(MozProfileCLI):
             debug_args = debug_args.split()
         interactive = self.options.interactive
         if self.options.debugger:
-            debug_args, interactive = debugger_arguments(self.options.debugger, debug_args, interactive)
+            debug_args, interactive = debugger_arguments(self.options.debugger, debug_args,
+                                                         interactive)
         return debug_args, interactive
 
     def start(self, runner):

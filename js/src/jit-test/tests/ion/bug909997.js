@@ -1,3 +1,10 @@
+// getJitCompilerOptions will always return array with zeros when JIT is
+// disabled. Therefore we quit now.
+if (inJit() == 'Baseline is disabled.') {
+    print("JIT is disabled.");
+    quit();
+}
+
 var wait = 100;
 
 var method_A = function() {
@@ -23,7 +30,7 @@ for (var n = 0; n < 4; ++n) {
 	setJitCompilerOption("baseline.enable", n & 1);
 	setJitCompilerOption("ion.enable", n & 2 ? 1: 0);
     } catch(e) {
-	if (e.toString().contains("on the stack"))
+	if (e.toString().includes("on the stack"))
 	    continue;
 	throw e;
     }

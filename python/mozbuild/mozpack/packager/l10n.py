@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 '''
 Replace localized parts of a packaged directory with data from a langpack
 directory.
@@ -42,7 +44,7 @@ from createprecomplete import generate_precomplete
 class LocaleManifestFinder(object):
     def __init__(self, finder):
         entries = self.entries = []
-        bases = self.bases = ['']
+        bases = self.bases = []
 
         class MockFormatter(object):
             def add_interfaces(self, path, content):
@@ -95,8 +97,12 @@ def _repack(app_finder, l10n_finder, copier, formatter, non_chrome=set()):
 
     # The code further below assumes there's only one locale replaced with
     # another one.
-    if len(app.locales) > 1 or len(l10n.locales) > 1:
-        errors.fatal("Multiple locales aren't supported")
+    if len(app.locales) > 1:
+        errors.fatal("Multiple app locales aren't supported: " +
+                     ",".join(app.locales))
+    if len(l10n.locales) > 1:
+        errors.fatal("Multiple l10n locales aren't supported: " +
+                     ",".join(l10n.locales))
     locale = app.locales[0]
     l10n_locale = l10n.locales[0]
 
@@ -165,8 +171,11 @@ def _repack(app_finder, l10n_finder, copier, formatter, non_chrome=set()):
             files = [f for p, f in l10n_finder.find(path)]
             if not len(files):
                 if base not in non_chrome:
+                    finderBase = ""
+                    if hasattr(l10n_finder, 'base'):
+                        finderBase = l10n_finder.base
                     errors.error("Missing file: %s" %
-                                 os.path.join(l10n_finder.base, path))
+                                 os.path.join(finderBase, path))
             else:
                 packager.add(path, files[0])
         else:
@@ -235,10 +244,13 @@ def repack(source, l10n, extra_l10n={}, non_resources=[], non_chrome=set()):
     if app_finder.kind == 'flat':
         formatter = FlatFormatter(copier)
     elif app_finder.kind == 'jar':
-        formatter = JarFormatter(copier, optimize=app_finder.optimizedjars)
+        formatter = JarFormatter(copier,
+                                 optimize=app_finder.optimizedjars,
+                                 compress=app_finder.compressed)
     elif app_finder.kind == 'omni':
         formatter = OmniJarFormatter(copier, app_finder.omnijar,
                                      optimize=app_finder.optimizedjars,
+                                     compress=app_finder.compressed,
                                      non_resources=non_resources)
 
     with errors.accumulate():

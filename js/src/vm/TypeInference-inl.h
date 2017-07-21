@@ -11,6 +11,8 @@
 
 #include "vm/TypeInference.h"
 
+#include "mozilla/BinarySearch.h"
+#include "mozilla/Casting.h"
 #include "mozilla/PodOperations.h"
 
 #include "builtin/SymbolObject.h"
@@ -19,12 +21,13 @@
 #include "vm/BooleanObject.h"
 #include "vm/NumberObject.h"
 #include "vm/SharedArrayObject.h"
-#include "vm/SharedTypedArrayObject.h"
 #include "vm/StringObject.h"
 #include "vm/TypedArrayObject.h"
 #include "vm/UnboxedObject.h"
 
 #include "jscntxtinlines.h"
+
+#include "vm/ObjectGroup-inl.h"
 
 namespace js {
 
@@ -137,6 +140,15 @@ TypeSet::ObjectKey::singleton()
     JSObject* res = singletonNoBarrier();
     JSObject::readBarrier(res);
     return res;
+}
+
+inline JSCompartment*
+TypeSet::ObjectKey::maybeCompartment()
+{
+    if (isSingleton())
+        return singleton()->compartment();
+
+    return group()->compartment();
 }
 
 /* static */ inline TypeSet::Type
@@ -273,7 +285,11 @@ TypeIdString(jsid id)
  */
 struct AutoEnterAnalysis
 {
-    /* Prevent GC activity in the middle of analysis. */
+    // For use when initializing an UnboxedLayout.  The UniquePtr's destructor
+    // must run when GC is not suppressed.
+    UniquePtr<UnboxedLayout> unboxedLayoutToCleanUp;
+
+    // Prevent GC activity in the middle of analysis.
     gc::AutoSuppressGC suppressGC;
 
     // Allow clearing inference info on OOM during incremental sweeping.
@@ -282,17 +298,21 @@ struct AutoEnterAnalysis
     // Pending recompilations to perform before execution of JIT code can resume.
     RecompileInfoVector pendingRecompiles;
 
+    // Prevent us from calling the objectMetadataCallback.
+    js::AutoSuppressAllocationMetadataBuilder suppressMetadata;
+
     FreeOp* freeOp;
     Zone* zone;
 
     explicit AutoEnterAnalysis(ExclusiveContext* cx)
-      : suppressGC(cx), oom(cx->zone())
+      : suppressGC(cx), oom(cx->zone()), suppressMetadata(cx)
     {
         init(cx->defaultFreeOp(), cx->zone());
     }
 
     AutoEnterAnalysis(FreeOp* fop, Zone* zone)
-      : suppressGC(zone->runtimeFromMainThread()), oom(zone)
+      : suppressGC(zone->runtimeFromMainThread()->contextFromMainThread()),
+        oom(zone), suppressMetadata(zone)
     {
         init(fop, zone);
     }
@@ -353,25 +373,8 @@ TrackPropertyTypes(ExclusiveContext* cx, JSObject* obj, jsid id)
     return true;
 }
 
-inline void
-EnsureTrackPropertyTypes(JSContext* cx, JSObject* obj, jsid id)
-{
-    id = IdToTypeId(id);
-
-    if (obj->isSingleton()) {
-        AutoEnterAnalysis enter(cx);
-        if (obj->hasLazyGroup() && !obj->getGroup(cx)) {
-            CrashAtUnhandlableOOM("Could not allocate ObjectGroup in EnsureTrackPropertyTypes");
-            return;
-        }
-        if (!obj->group()->unknownProperties() && !obj->group()->getProperty(cx, id)) {
-            MOZ_ASSERT(obj->group()->unknownProperties());
-            return;
-        }
-    }
-
-    MOZ_ASSERT(obj->group()->unknownProperties() || TrackPropertyTypes(cx, obj, id));
-}
+void
+EnsureTrackPropertyTypes(JSContext* cx, JSObject* obj, jsid id);
 
 inline bool
 CanHaveEmptyPropertyTypesForOwnProperty(JSObject* obj)
@@ -417,8 +420,8 @@ HasTypePropertyId(JSObject* obj, jsid id, const Value& value)
     return HasTypePropertyId(obj, id, TypeSet::GetValueType(value));
 }
 
-void AddTypePropertyId(ExclusiveContext* cx, ObjectGroup* group, jsid id, TypeSet::Type type);
-void AddTypePropertyId(ExclusiveContext* cx, ObjectGroup* group, jsid id, const Value& value);
+void AddTypePropertyId(ExclusiveContext* cx, ObjectGroup* group, JSObject* obj, jsid id, TypeSet::Type type);
+void AddTypePropertyId(ExclusiveContext* cx, ObjectGroup* group, JSObject* obj, jsid id, const Value& value);
 
 /* Add a possible type for a property of obj. */
 inline void
@@ -426,7 +429,7 @@ AddTypePropertyId(ExclusiveContext* cx, JSObject* obj, jsid id, TypeSet::Type ty
 {
     id = IdToTypeId(id);
     if (TrackPropertyTypes(cx, obj, id))
-        AddTypePropertyId(cx, obj->group(), id, type);
+        AddTypePropertyId(cx, obj->group(), obj, id, type);
 }
 
 inline void
@@ -434,7 +437,7 @@ AddTypePropertyId(ExclusiveContext* cx, JSObject* obj, jsid id, const Value& val
 {
     id = IdToTypeId(id);
     if (TrackPropertyTypes(cx, obj, id))
-        AddTypePropertyId(cx, obj->group(), id, value);
+        AddTypePropertyId(cx, obj->group(), obj, id, value);
 }
 
 inline void
@@ -445,7 +448,7 @@ MarkObjectGroupFlags(ExclusiveContext* cx, JSObject* obj, ObjectGroupFlags flags
 }
 
 inline void
-MarkObjectGroupUnknownProperties(JSContext* cx, ObjectGroup* obj)
+MarkObjectGroupUnknownProperties(ExclusiveContext* cx, ObjectGroup* obj)
 {
     if (!obj->unknownProperties())
         obj->markUnknown(cx);
@@ -456,7 +459,7 @@ MarkTypePropertyNonData(ExclusiveContext* cx, JSObject* obj, jsid id)
 {
     id = IdToTypeId(id);
     if (TrackPropertyTypes(cx, obj, id))
-        obj->group()->markPropertyNonData(cx, id);
+        obj->group()->markPropertyNonData(cx, obj, id);
 }
 
 inline void
@@ -464,19 +467,7 @@ MarkTypePropertyNonWritable(ExclusiveContext* cx, JSObject* obj, jsid id)
 {
     id = IdToTypeId(id);
     if (TrackPropertyTypes(cx, obj, id))
-        obj->group()->markPropertyNonWritable(cx, id);
-}
-
-inline bool
-IsTypePropertyIdMarkedNonData(JSObject* obj, jsid id)
-{
-    return obj->group()->isPropertyNonData(id);
-}
-
-inline bool
-IsTypePropertyIdMarkedNonWritable(JSObject* obj, jsid id)
-{
-    return obj->group()->isPropertyNonWritable(id);
+        obj->group()->markPropertyNonWritable(cx, obj, id);
 }
 
 /* Mark a state change on a particular object. */
@@ -488,8 +479,8 @@ MarkObjectStateChange(ExclusiveContext* cx, JSObject* obj)
 }
 
 /* Interface helpers for JSScript*. */
+extern void TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, TypeSet::Type type);
 extern void TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, const Value& rval);
-extern void TypeDynamicResult(JSContext* cx, JSScript* script, jsbytecode* pc, TypeSet::Type type);
 
 /////////////////////////////////////////////////////////////////////
 // Script interface functions
@@ -530,7 +521,7 @@ template <typename TYPESET>
 TypeScript::BytecodeTypes(JSScript* script, jsbytecode* pc, uint32_t* bytecodeMap,
                           uint32_t* hint, TYPESET* typeArray)
 {
-    MOZ_ASSERT(js_CodeSpec[*pc].format & JOF_TYPESET);
+    MOZ_ASSERT(CodeSpec[*pc].format & JOF_TYPESET);
     uint32_t offset = script->pcToOffset(pc);
 
     // See if this pc is the next typeset opcode after the last one looked up.
@@ -543,26 +534,17 @@ TypeScript::BytecodeTypes(JSScript* script, jsbytecode* pc, uint32_t* bytecodeMa
     if (bytecodeMap[*hint] == offset)
         return typeArray + *hint;
 
-    // Fall back to a binary search.
-    size_t bottom = 0;
-    size_t top = script->nTypeSets() - 1;
-    size_t mid = bottom + (top - bottom) / 2;
-    while (mid < top) {
-        if (bytecodeMap[mid] < offset)
-            bottom = mid + 1;
-        else if (bytecodeMap[mid] > offset)
-            top = mid;
-        else
-            break;
-        mid = bottom + (top - bottom) / 2;
-    }
+    // Fall back to a binary search.  We'll either find the exact offset, or
+    // there are more JOF_TYPESET opcodes than nTypeSets in the script (as can
+    // happen if the script is very long) and we'll use the last location.
+    size_t loc;
+#ifdef DEBUG
+    bool found =
+#endif
+        mozilla::BinarySearch(bytecodeMap, 0, script->nTypeSets() - 1, offset, &loc);
 
-    // We should have have zeroed in on either the exact offset, unless there
-    // are more JOF_TYPESET opcodes than nTypeSets in the script (as can happen
-    // if the script is very long).
-    MOZ_ASSERT(bytecodeMap[mid] == offset || mid == top);
-
-    *hint = mid;
+    MOZ_ASSERT_IF(found, bytecodeMap[loc] == offset);
+    *hint = mozilla::AssertedCast<uint32_t>(loc);
     return typeArray + *hint;
 }
 
@@ -582,6 +564,12 @@ TypeScript::BytecodeTypes(JSScript* script, jsbytecode* pc)
 TypeScript::Monitor(JSContext* cx, JSScript* script, jsbytecode* pc, const js::Value& rval)
 {
     TypeMonitorResult(cx, script, pc, rval);
+}
+
+/* static */ inline void
+TypeScript::Monitor(JSContext* cx, JSScript* script, jsbytecode* pc, TypeSet::Type type)
+{
+    TypeMonitorResult(cx, script, pc, type);
 }
 
 /* static */ inline void
@@ -605,14 +593,14 @@ TypeScript::MonitorAssign(JSContext* cx, HandleObject obj, jsid id)
          * specific properties.
          */
         uint32_t i;
-        if (js_IdIsIndex(id, &i))
+        if (IdIsIndex(id, &i))
             return;
 
         // But if we don't have too many properties yet, don't do anything.  The
         // idea here is that normal object initialization should not trigger
         // deoptimization in most cases, while actual usage as a hashmap should.
         ObjectGroup* group = obj->group();
-        if (group->getPropertyCount() < 128)
+        if (group->basePropertyCount() < 128)
             return;
         MarkObjectGroupUnknownProperties(cx, group);
     }
@@ -621,6 +609,8 @@ TypeScript::MonitorAssign(JSContext* cx, HandleObject obj, jsid id)
 /* static */ inline void
 TypeScript::SetThis(JSContext* cx, JSScript* script, TypeSet::Type type)
 {
+    assertSameCompartment(cx, script, type);
+
     StackTypeSet* types = ThisTypes(script);
     if (!types)
         return;
@@ -643,6 +633,8 @@ TypeScript::SetThis(JSContext* cx, JSScript* script, const js::Value& value)
 /* static */ inline void
 TypeScript::SetArgument(JSContext* cx, JSScript* script, unsigned arg, TypeSet::Type type)
 {
+    assertSameCompartment(cx, script, type);
+
     StackTypeSet* types = ArgTypes(script, arg);
     if (!types)
         return;
@@ -868,6 +860,32 @@ TypeSet::Type::groupNoBarrier() const
     return objectKey()->groupNoBarrier();
 }
 
+inline void
+TypeSet::Type::trace(JSTracer* trc)
+{
+    if (isSingletonUnchecked()) {
+        JSObject* obj = singletonNoBarrier();
+        TraceManuallyBarrieredEdge(trc, &obj, "TypeSet::Object");
+        *this = TypeSet::ObjectType(obj);
+    } else if (isGroupUnchecked()) {
+        ObjectGroup* group = groupNoBarrier();
+        TraceManuallyBarrieredEdge(trc, &group, "TypeSet::Group");
+        *this = TypeSet::ObjectType(group);
+    }
+}
+
+inline JSCompartment*
+TypeSet::Type::maybeCompartment()
+{
+    if (isSingletonUnchecked())
+        return singletonNoBarrier()->compartment();
+
+    if (isGroupUnchecked())
+        return groupNoBarrier()->compartment();
+
+    return nullptr;
+}
+
 inline bool
 TypeSet::hasType(Type type) const
 {
@@ -1000,21 +1018,6 @@ TypeSet::getObjectClass(unsigned i) const
 }
 
 /////////////////////////////////////////////////////////////////////
-// TypeNewScript
-/////////////////////////////////////////////////////////////////////
-
-inline void
-TypeNewScript::writeBarrierPre(TypeNewScript* newScript)
-{
-    if (!newScript->function()->runtimeFromAnyThread()->needsIncrementalBarrier())
-        return;
-
-    JS::Zone* zone = newScript->function()->zoneFromAnyThread();
-    if (zone->needsIncrementalBarrier())
-        newScript->trace(zone->barrierTracer());
-}
-
-/////////////////////////////////////////////////////////////////////
 // ObjectGroup
 /////////////////////////////////////////////////////////////////////
 
@@ -1034,11 +1037,13 @@ ObjectGroup::setBasePropertyCount(uint32_t count)
 }
 
 inline HeapTypeSet*
-ObjectGroup::getProperty(ExclusiveContext* cx, jsid id)
+ObjectGroup::getProperty(ExclusiveContext* cx, JSObject* obj, jsid id)
 {
     MOZ_ASSERT(JSID_IS_VOID(id) || JSID_IS_EMPTY(id) || JSID_IS_STRING(id) || JSID_IS_SYMBOL(id));
     MOZ_ASSERT_IF(!JSID_IS_EMPTY(id), id == IdToTypeId(id));
     MOZ_ASSERT(!unknownProperties());
+    MOZ_ASSERT_IF(obj, obj->group() == this);
+    MOZ_ASSERT_IF(singleton(), obj);
 
     if (HeapTypeSet* types = maybeGetProperty(id))
         return types;
@@ -1062,7 +1067,7 @@ ObjectGroup::getProperty(ExclusiveContext* cx, jsid id)
     setBasePropertyCount(propertyCount);
     *pprop = base;
 
-    updateNewPropertyTypes(cx, id, &base->types);
+    updateNewPropertyTypes(cx, obj, id, &base->types);
 
     if (propertyCount == OBJECT_FLAG_PROPERTY_COUNT_LIMIT) {
         // We hit the maximum number of properties the object can have, mark
@@ -1106,26 +1111,6 @@ ObjectGroup::getProperty(unsigned i)
     }
     return propertySet[i];
 }
-
-template <>
-struct GCMethods<const TypeSet::Type>
-{
-    static TypeSet::Type initial() { return TypeSet::UnknownType(); }
-    static bool poisoned(TypeSet::Type v) {
-        return (v.isGroup() && IsPoisonedPtr(v.group()))
-            || (v.isSingleton() && IsPoisonedPtr(v.singleton()));
-    }
-};
-
-template <>
-struct GCMethods<TypeSet::Type>
-{
-    static TypeSet::Type initial() { return TypeSet::UnknownType(); }
-    static bool poisoned(TypeSet::Type v) {
-        return (v.isGroup() && IsPoisonedPtr(v.group()))
-            || (v.isSingleton() && IsPoisonedPtr(v.singleton()));
-    }
-};
 
 } // namespace js
 

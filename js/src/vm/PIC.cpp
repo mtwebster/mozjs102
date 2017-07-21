@@ -170,7 +170,7 @@ js::ForOfPIC::Chain::getMatchingStub(JSObject* obj)
 
     // Check if there is a matching stub.
     for (Stub* stub = stubs(); stub != nullptr; stub = stub->next()) {
-        if (stub->shape() == obj->lastProperty())
+        if (stub->shape() == obj->maybeShape())
             return stub;
     }
 
@@ -181,14 +181,7 @@ bool
 js::ForOfPIC::Chain::isOptimizableArray(JSObject* obj)
 {
     MOZ_ASSERT(obj->is<ArrayObject>());
-
-    // Ensure object's prototype is the actual Array.prototype
-    if (!obj->getTaggedProto().isObject())
-        return false;
-    if (obj->getTaggedProto().toObject() != arrayProto_)
-        return false;
-
-    return true;
+    return obj->staticPrototype() == arrayProto_;
 }
 
 bool
@@ -254,14 +247,14 @@ js::ForOfPIC::Chain::mark(JSTracer* trc)
     if (!initialized_ || disabled_)
         return;
 
-    gc::MarkObject(trc, &arrayProto_, "ForOfPIC Array.prototype.");
-    gc::MarkObject(trc, &arrayIteratorProto_, "ForOfPIC ArrayIterator.prototype.");
+    TraceEdge(trc, &arrayProto_, "ForOfPIC Array.prototype.");
+    TraceEdge(trc, &arrayIteratorProto_, "ForOfPIC ArrayIterator.prototype.");
 
-    gc::MarkShape(trc, &arrayProtoShape_, "ForOfPIC Array.prototype shape.");
-    gc::MarkShape(trc, &arrayIteratorProtoShape_, "ForOfPIC ArrayIterator.prototype shape.");
+    TraceEdge(trc, &arrayProtoShape_, "ForOfPIC Array.prototype shape.");
+    TraceEdge(trc, &arrayIteratorProtoShape_, "ForOfPIC ArrayIterator.prototype shape.");
 
-    gc::MarkValue(trc, &canonicalIteratorFunc_, "ForOfPIC ArrayValues builtin.");
-    gc::MarkValue(trc, &canonicalNextFunc_, "ForOfPIC ArrayIterator.prototype.next builtin.");
+    TraceEdge(trc, &canonicalIteratorFunc_, "ForOfPIC ArrayValues builtin.");
+    TraceEdge(trc, &canonicalNextFunc_, "ForOfPIC ArrayIterator.prototype.next builtin.");
 
     // Free all the stubs in the chain.
     while (stubs_)
@@ -283,6 +276,7 @@ js::ForOfPIC::Chain::sweep(FreeOp* fop)
 static void
 ForOfPIC_finalize(FreeOp* fop, JSObject* obj)
 {
+    MOZ_ASSERT(fop->maybeOffMainThread());
     if (ForOfPIC::Chain* chain = ForOfPIC::fromJSObject(&obj->as<NativeObject>()))
         chain->sweep(fop);
 }
@@ -294,8 +288,7 @@ ForOfPIC_traceObject(JSTracer* trc, JSObject* obj)
         chain->mark(trc);
 }
 
-const Class ForOfPIC::jsclass = {
-    "ForOfPIC", JSCLASS_HAS_PRIVATE | JSCLASS_IMPLEMENTS_BARRIERS,
+static const ClassOps ForOfPICClassOps = {
     nullptr, nullptr, nullptr, nullptr,
     nullptr, nullptr, nullptr, ForOfPIC_finalize,
     nullptr,              /* call        */
@@ -304,11 +297,18 @@ const Class ForOfPIC::jsclass = {
     ForOfPIC_traceObject
 };
 
+const Class ForOfPIC::class_ = {
+    "ForOfPIC",
+    JSCLASS_HAS_PRIVATE |
+    JSCLASS_BACKGROUND_FINALIZE,
+    &ForOfPICClassOps
+};
+
 /* static */ NativeObject*
 js::ForOfPIC::createForOfPICObject(JSContext* cx, Handle<GlobalObject*> global)
 {
     assertSameCompartment(cx, global);
-    NativeObject* obj = NewNativeObjectWithGivenProto(cx, &ForOfPIC::jsclass, NullPtr(), global);
+    NativeObject* obj = NewNativeObjectWithGivenProto(cx, &ForOfPIC::class_, nullptr);
     if (!obj)
         return nullptr;
     ForOfPIC::Chain* chain = cx->new_<ForOfPIC::Chain>();

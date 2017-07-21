@@ -15,6 +15,7 @@
 
 #include "gc/Heap.h"
 #include "jit/ExecutableAllocator.h"
+#include "jit/ICStubSpace.h"
 #include "jit/IonOptimizationLevels.h"
 #include "jit/IonTypes.h"
 #include "js/UbiNode.h"
@@ -22,17 +23,15 @@
 #include "vm/TypeInference.h"
 
 namespace js {
-
-class AsmJSModule;
-
 namespace jit {
 
 class MacroAssembler;
-class CodeOffsetLabel;
 class PatchableBackedge;
 class IonBuilder;
+class IonICEntry;
 
 typedef Vector<JSObject*, 4, JitAllocPolicy> ObjectVector;
+typedef Vector<TraceLoggerEvent, 0, SystemAllocPolicy> TraceLoggerEventVector;
 
 class JitCode : public gc::TenuredCell
 {
@@ -107,20 +106,24 @@ class JitCode : public gc::TenuredCell
     size_t instructionsSize() const {
         return insnSize_;
     }
-    void trace(JSTracer* trc);
+    size_t bufferSize() const {
+        return bufferSize_;
+    }
+    size_t headerSize() const {
+        return headerSize_;
+    }
+
+    void traceChildren(JSTracer* trc);
     void finalize(FreeOp* fop);
-    void fixupAfterMovingGC() {}
     void setInvalidated() {
         invalidated_ = true;
     }
-
-    void fixupNurseryObjects(JSContext* cx, const ObjectVector& nurseryObjects);
 
     void setHasBytecodeMap() {
         hasBytecodeMap_ = true;
     }
 
-    void togglePreBarriers(bool enabled);
+    void togglePreBarriers(bool enabled, ReprotectCode reprotect);
 
     // If this JitCode object has been, effectively, corrupted due to
     // invalidation patching, then we have to remember this so we don't try and
@@ -157,7 +160,7 @@ class JitCode : public gc::TenuredCell
                         ExecutablePool* pool, CodeKind kind);
 
   public:
-    static inline ThingRootKind rootKind() { return THING_ROOT_JIT_CODE; }
+    static const JS::TraceKind TraceKind = JS::TraceKind::JitCode;
 };
 
 class SnapshotWriter;
@@ -261,6 +264,10 @@ struct IonScript
     uint32_t backedgeList_;
     uint32_t backedgeEntries_;
 
+    // List of entries to the shared stub.
+    uint32_t sharedStubList_;
+    uint32_t sharedStubEntries_;
+
     // Number of references from invalidation records.
     uint32_t invalidationCount_;
 
@@ -274,10 +281,11 @@ struct IonScript
     // a LOOPENTRY pc other than osrPc_.
     uint32_t osrPcMismatchCounter_;
 
-    // The tracelogger event used to log the start/stop of this IonScript.
-    TraceLoggerEvent traceLoggerScriptEvent_;
+    // Allocated space for fallback stubs.
+    FallbackICStubSpace fallbackStubSpace_;
 
-    IonBuilder* pendingBuilder_;
+    // TraceLogger events that are baked into the IonScript.
+    TraceLoggerEventVector traceLoggerEvents_;
 
   private:
     inline uint8_t* bottomBuffer() {
@@ -288,14 +296,6 @@ struct IonScript
     }
 
   public:
-
-    // SHOULD ONLY BE CALLED FROM JSScript
-    void setPendingBuilderPrivate(IonBuilder* builder) {
-        pendingBuilder_ = builder;
-    }
-    IonBuilder* pendingBuilder() const {
-        return pendingBuilder_;
-    }
 
     SnapshotOffset* bailoutTable() {
         return (SnapshotOffset*) &bottomBuffer()[bailoutTable_];
@@ -332,6 +332,12 @@ struct IonScript
     // Do not call directly, use IonScript::New. This is public for cx->new_.
     IonScript();
 
+    ~IonScript() {
+        // The contents of the fallback stub space are removed and freed
+        // separately after the next minor GC. See IonScript::Destroy.
+        MOZ_ASSERT(fallbackStubSpace_.isEmpty());
+    }
+
     static IonScript* New(JSContext* cx, RecompileInfo recompileInfo,
                           uint32_t frameSlots, uint32_t argumentSlots, uint32_t frameSize,
                           size_t snapshotsListSize, size_t snapshotsRVATableSize,
@@ -339,7 +345,8 @@ struct IonScript
                           size_t constants, size_t safepointIndexEntries,
                           size_t osiIndexEntries, size_t cacheEntries,
                           size_t runtimeSize, size_t safepointsSize,
-                          size_t backedgeEntries, OptimizationLevel optimizationLevel);
+                          size_t backedgeEntries, size_t sharedStubEntries,
+                          OptimizationLevel optimizationLevel);
     static void Trace(JSTracer* trc, IonScript* script);
     static void Destroy(FreeOp* fop, IonScript* script);
 
@@ -417,11 +424,8 @@ struct IonScript
     void incNumBailouts() {
         numBailouts_++;
     }
-    uint32_t numBailouts() const {
-        return numBailouts_;
-    }
     bool bailoutExpected() const {
-        return numBailouts_ > 0;
+        return numBailouts_ >= JitOptions.frequentBailoutThreshold;
     }
     void setHasProfilingInstrumentation() {
         hasProfilingInstrumentation_ = true;
@@ -432,8 +436,9 @@ struct IonScript
     bool hasProfilingInstrumentation() const {
         return hasProfilingInstrumentation_;
     }
-    void setTraceLoggerEvent(TraceLoggerEvent& event) {
-        traceLoggerScriptEvent_ = event;
+    MOZ_MUST_USE bool addTraceLoggerEvent(TraceLoggerEvent& event) {
+        MOZ_ASSERT(event.hasPayload());
+        return traceLoggerEvents_.append(Move(event));
     }
     const uint8_t* snapshots() const {
         return reinterpret_cast<const uint8_t*>(this) + snapshots_;
@@ -498,6 +503,12 @@ struct IonScript
     size_t numCaches() const {
         return cacheEntries_;
     }
+    IonICEntry* sharedStubList() {
+        return (IonICEntry*) &bottomBuffer()[sharedStubList_];
+    }
+    size_t numSharedStubs() const {
+        return sharedStubEntries_;
+    }
     size_t runtimeSize() const {
         return runtimeSize_;
     }
@@ -505,9 +516,8 @@ struct IonScript
         MOZ_ASSERT(locIndex < runtimeSize_);
         return (CacheLocation*) &runtimeData()[locIndex];
     }
-    void toggleBarriers(bool enabled);
+    void toggleBarriers(bool enabled, ReprotectCode reprotect = Reprotect);
     void purgeCaches();
-    void destroyCaches();
     void unlinkFromRuntime(FreeOp* fop);
     void copySnapshots(const SnapshotWriter* writer);
     void copyRecovers(const RecoverWriter* writer);
@@ -527,7 +537,7 @@ struct IonScript
     }
 
     // Invalidate the current compilation.
-    bool invalidate(JSContext* cx, bool resetUses, const char* reason);
+    void invalidate(JSContext* cx, bool resetUses, const char* reason);
 
     size_t invalidationCount() const {
         return invalidationCount_;
@@ -569,6 +579,12 @@ struct IonScript
         recompiling_ = false;
     }
 
+    FallbackICStubSpace* fallbackStubSpace() {
+        return &fallbackStubSpace_;
+    }
+    void adoptFallbackStubs(FallbackICStubSpace* stubSpace);
+    void purgeOptimizedStubs(Zone* zone);
+
     enum ShouldIncreaseAge {
         IncreaseAge = true,
         KeepAge = false
@@ -603,7 +619,8 @@ struct IonBlockCounts
 
   public:
 
-    bool init(uint32_t id, uint32_t offset, char* description, uint32_t numSuccessors) {
+    MOZ_MUST_USE bool init(uint32_t id, uint32_t offset, char* description,
+                           uint32_t numSuccessors) {
         id_ = id;
         offset_ = offset;
         description_ = description;
@@ -657,7 +674,7 @@ struct IonBlockCounts
     }
 
     void setCode(const char* code) {
-        char* ncode = (char*) js_malloc(strlen(code) + 1);
+        char* ncode = js_pod_malloc<char>(strlen(code) + 1);
         if (ncode) {
             strcpy(ncode, code);
             code_ = ncode;
@@ -691,13 +708,24 @@ struct IonScriptCounts
         for (size_t i = 0; i < numBlocks_; i++)
             blocks_[i].destroy();
         js_free(blocks_);
-        js_delete(previous_);
+        // The list can be long in some corner cases (bug 1140084), so
+        // unroll the recursion.
+        IonScriptCounts* victims = previous_;
+        while (victims) {
+            IonScriptCounts* victim = victims;
+            victims = victim->previous_;
+            victim->previous_ = nullptr;
+            js_delete(victim);
+        }
     }
 
-    bool init(size_t numBlocks) {
-        numBlocks_ = numBlocks;
+    MOZ_MUST_USE bool init(size_t numBlocks) {
         blocks_ = js_pod_calloc<IonBlockCounts>(numBlocks);
-        return blocks_ != nullptr;
+        if (!blocks_)
+            return false;
+
+        numBlocks_ = numBlocks;
+        return true;
     }
 
     size_t numBlocks() const {
@@ -720,13 +748,10 @@ struct IonScriptCounts
 
 struct VMFunction;
 
-class JitCompartment;
-class JitRuntime;
-
 struct AutoFlushICache
 {
   private:
-#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS)
+#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64) || defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
     uintptr_t start_;
     uintptr_t stop_;
     const char* name_;
@@ -747,7 +772,7 @@ struct AutoFlushICache
 namespace gc {
 
 inline bool
-IsMarked(const jit::VMFunction*)
+IsMarked(JSRuntime* rt, const jit::VMFunction*)
 {
     // VMFunction are only static objects which are used by WeakMaps as keys.
     // It is considered as a root object which is always marked.
@@ -762,8 +787,39 @@ IsMarked(const jit::VMFunction*)
 // instances with no associated compartment.
 namespace JS {
 namespace ubi {
-template<> struct Concrete<js::jit::JitCode> : TracerConcrete<js::jit::JitCode> { };
-}
-}
+template<>
+class Concrete<js::jit::JitCode> : TracerConcrete<js::jit::JitCode> {
+  protected:
+    explicit Concrete(js::jit::JitCode *ptr) : TracerConcrete<js::jit::JitCode>(ptr) { }
+
+  public:
+    static void construct(void *storage, js::jit::JitCode *ptr) { new (storage) Concrete(ptr); }
+
+    CoarseType coarseType() const final { return CoarseType::Script; }
+
+    Size size(mozilla::MallocSizeOf mallocSizeOf) const override {
+        Size size = js::gc::Arena::thingSize(get().asTenured().getAllocKind());
+        size += get().bufferSize();
+        size += get().headerSize();
+        return size;
+    }
+
+    const char16_t* typeName() const override { return concreteTypeName; }
+    static const char16_t concreteTypeName[];
+};
+
+} // namespace ubi
+
+template <>
+struct DeletePolicy<js::jit::IonScript>
+{
+    explicit DeletePolicy(JSRuntime* rt) : rt_(rt) {}
+    void operator()(const js::jit::IonScript* script);
+
+  private:
+    JSRuntime* rt_;
+};
+
+} // namespace JS
 
 #endif /* jit_IonCode_h */

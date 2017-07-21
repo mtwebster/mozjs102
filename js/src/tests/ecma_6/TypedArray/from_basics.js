@@ -1,18 +1,6 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     // 'from' method is identical for all typed array constructors.
-    assertEq(constructors[0].from === constructor.from, true);
+    assertEq(anyTypedArrayConstructors[0].from === constructor.from, true);
 
     // %TypedArray%.from copies arrays.
     var src = new constructor([1, 2, 3]), copy = constructor.from(src);

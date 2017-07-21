@@ -1,19 +1,4 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
-    if (!("includes" in constructor.prototype))
-        break;
-
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.includes.length, 1);
 
     assertEq(new constructor([1, 2, 3]).includes(1), true);

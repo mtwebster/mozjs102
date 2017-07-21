@@ -107,9 +107,12 @@
     macro(THROW,        "keyword 'throw'") \
     macro(DEBUGGER,     "keyword 'debugger'") \
     macro(YIELD,        "keyword 'yield'") \
-    macro(LET,          "keyword 'let'") \
+    macro(AWAIT,        "keyword 'await'") \
     macro(EXPORT,       "keyword 'export'") \
     macro(IMPORT,       "keyword 'import'") \
+    macro(CLASS,        "keyword 'class'") \
+    macro(EXTENDS,      "keyword 'extends'") \
+    macro(SUPER,        "keyword 'super'") \
     macro(RESERVED,     "reserved keyword") \
     /* reserved keywords in strict mode */ \
     macro(STRICT_RESERVED, "reserved keyword") \
@@ -119,7 +122,7 @@
      * range-testing. \
      */ \
     /* \
-     * Binary operators tokens, TOK_OR thru TOK_MOD. These must be in the same \
+     * Binary operators tokens, TOK_OR thru TOK_POW. These must be in the same \
      * order as F(OR) and friends in FOR_EACH_PARSE_NODE_KIND in ParseNode.h. \
      */ \
     macro(OR,           "'||'")   /* logical or */ \
@@ -160,7 +163,8 @@
     macro(MUL,          "'*'") \
     macro(DIV,          "'/'") \
     macro(MOD,          "'%'") \
-    range(BINOP_LAST, MOD) \
+    macro(POW,          "'**'") \
+    range(BINOP_LAST, POW) \
     \
     /* Unary operation tokens. */ \
     macro(TYPEOF,       "keyword 'typeof'") \
@@ -184,7 +188,8 @@
     macro(MULASSIGN,    "'*='") \
     macro(DIVASSIGN,    "'/='") \
     macro(MODASSIGN,    "'%='") \
-    range(ASSIGNMENT_LAST, MODASSIGN)
+    macro(POWASSIGN,    "'**='") \
+    range(ASSIGNMENT_LAST, POWASSIGN)
 
 #define TOKEN_KIND_RANGE_EMIT_NONE(name, value)
 #define FOR_EACH_TOKEN_KIND(macro) \
@@ -232,12 +237,6 @@ inline bool
 TokenKindIsAssignment(TokenKind tt)
 {
     return TOK_ASSIGNMENT_START <= tt && tt <= TOK_ASSIGNMENT_LAST;
-}
-
-inline bool
-TokenKindIsDecl(TokenKind tt)
-{
-    return tt == TOK_VAR || tt == TOK_LET;
 }
 
 } // namespace frontend

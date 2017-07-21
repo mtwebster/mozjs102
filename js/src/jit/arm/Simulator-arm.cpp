@@ -33,10 +33,16 @@
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/Likely.h"
 #include "mozilla/MathAlgorithms.h"
+#include "mozilla/SizePrintfMacros.h"
 
-#include "asmjs/AsmJSValidate.h"
 #include "jit/arm/Assembler-arm.h"
+#include "jit/arm/disasm/Constants-arm.h"
+#include "jit/AtomicOperations.h"
+#include "threading/LockGuard.h"
 #include "vm/Runtime.h"
+#include "vm/SharedMem.h"
+#include "wasm/WasmInstance.h"
+#include "wasm/WasmSignalHandlers.h"
 
 extern "C" {
 
@@ -354,23 +360,26 @@ class CachePage
 
 // Protects the icache() and redirection() properties of the
 // Simulator.
-class AutoLockSimulatorCache
+class AutoLockSimulatorCache : public LockGuard<Mutex>
 {
+    using Base = LockGuard<Mutex>;
+
   public:
-    explicit AutoLockSimulatorCache(Simulator* sim) : sim_(sim) {
-        PR_Lock(sim_->cacheLock_);
-        MOZ_ASSERT(!sim_->cacheLockHolder_);
+    explicit AutoLockSimulatorCache(Simulator* sim)
+      : Base(sim->cacheLock_)
+      , sim_(sim)
+    {
+        MOZ_ASSERT(sim_->cacheLockHolder_.isNothing());
 #ifdef DEBUG
-        sim_->cacheLockHolder_ = PR_GetCurrentThread();
+        sim_->cacheLockHolder_ = mozilla::Some(ThisThread::GetId());
 #endif
     }
 
     ~AutoLockSimulatorCache() {
-        MOZ_ASSERT(sim_->cacheLockHolder_);
+        MOZ_ASSERT(sim_->cacheLockHolder_.isSome());
 #ifdef DEBUG
-        sim_->cacheLockHolder_ = nullptr;
+        sim_->cacheLockHolder_.reset();
 #endif
-        PR_Unlock(sim_->cacheLock_);
     }
 
   private:
@@ -382,9 +391,9 @@ bool Simulator::ICacheCheckingEnabled = false;
 int64_t Simulator::StopSimAt = -1L;
 
 Simulator*
-Simulator::Create()
+Simulator::Create(JSContext* cx)
 {
-    Simulator* sim = js_new<Simulator>();
+    Simulator* sim = js_new<Simulator>(cx);
     if (!sim)
         return nullptr;
 
@@ -412,6 +421,38 @@ Simulator::Destroy(Simulator* sim)
     js_delete(sim);
 }
 
+void
+Simulator::disassemble(SimInstruction* instr, size_t n)
+{
+    disasm::NameConverter converter;
+    disasm::Disassembler dasm(converter);
+    disasm::EmbeddedVector<char, disasm::ReasonableBufferSize> buffer;
+    while (n-- > 0) {
+        dasm.InstructionDecode(buffer,
+                               reinterpret_cast<uint8_t*>(instr));
+        printf("  0x%08x  %s\n", uint32_t(instr), buffer.start());
+        instr = reinterpret_cast<SimInstruction*>(reinterpret_cast<uint8_t*>(instr) + 4);
+    }
+}
+
+void
+Simulator::disasm(SimInstruction* instr)
+{
+    disassemble(instr, 1);
+}
+
+void
+Simulator::disasm(SimInstruction* instr, size_t n)
+{
+    disassemble(instr, n);
+}
+
+void
+Simulator::disasm(SimInstruction* instr, size_t m, size_t n)
+{
+    disassemble(reinterpret_cast<SimInstruction*>(reinterpret_cast<uint8_t*>(instr)-m*4), n);
+}
+
 // The ArmDebugger class is used by the simulator while debugging simulated ARM
 // code.
 class ArmDebugger {
@@ -429,7 +470,7 @@ class ArmDebugger {
 
     int32_t getRegisterValue(int regnum);
     double getRegisterPairDoubleValue(int regnum);
-    double getVFPDoubleRegisterValue(int regnum);
+    void getVFPDoubleRegisterValue(int regnum, double* value);
     bool getValue(const char* desc, int32_t* value);
     bool getVFPDoubleValue(const char* desc, double* value);
 
@@ -479,10 +520,10 @@ ArmDebugger::getRegisterPairDoubleValue(int regnum)
     return sim_->get_double_from_register_pair(regnum);
 }
 
-double
-ArmDebugger::getVFPDoubleRegisterValue(int regnum)
+void
+ArmDebugger::getVFPDoubleRegisterValue(int regnum, double* out)
 {
-    return sim_->get_double_from_d_register(regnum);
+    sim_->get_double_from_d_register(regnum, out);
 }
 
 bool
@@ -503,7 +544,7 @@ ArmDebugger::getVFPDoubleValue(const char* desc, double* value)
 {
     FloatRegister reg(FloatRegister::FromName(desc));
     if (reg != InvalidFloatReg) {
-        *value = sim_->get_double_from_d_register(reg.code());
+        sim_->get_double_from_d_register(reg.code(), value);
         return true;
     }
     return false;
@@ -599,20 +640,6 @@ ReadLine(const char* prompt)
     return result;
 }
 
-// Observe that llvm-mc may have a different name on your system.  Make a symlink.
-static void
-DisassembleInstruction(uint32_t pc)
-{
-    uint8_t* bytes = reinterpret_cast<uint8_t*>(pc);
-    char hexbytes[256];
-    sprintf(hexbytes, "0x%x 0x%x 0x%x 0x%x", bytes[0], bytes[1], bytes[2], bytes[3]);
-    char llvmcmd[1024];
-    sprintf(llvmcmd, "bash -c \"echo -n '%p'; echo '%s' | "
-            "llvm-mc -disassemble -arch=arm -mcpu=cortex-a9 | "
-            "grep -v pure_instructions | grep -v .text\"",
-            reinterpret_cast<void*>(pc), hexbytes);
-    system(llvmcmd);
-}
 
 void
 ArmDebugger::debug()
@@ -640,9 +667,24 @@ ArmDebugger::debug()
     // make them invisible to all commands.
     undoBreakpoints();
 
+#ifndef JS_DISASM_ARM
+    static bool disasm_warning_printed = false;
+    if (!disasm_warning_printed) {
+        printf("  No ARM disassembler present.  Enable JS_DISASM_ARM in configure.in.");
+        disasm_warning_printed = true;
+    }
+#endif
+
     while (!done && !sim_->has_bad_pc()) {
         if (last_pc != sim_->get_pc()) {
-            DisassembleInstruction(sim_->get_pc());
+#ifdef JS_DISASM_ARM
+            disasm::NameConverter converter;
+            disasm::Disassembler dasm(converter);
+            disasm::EmbeddedVector<char, disasm::ReasonableBufferSize> buffer;
+            dasm.InstructionDecode(buffer,
+                                   reinterpret_cast<uint8_t*>(sim_->get_pc()));
+            printf("  0x%08x  %s\n", sim_->get_pc(), buffer.start());
+#endif
             last_pc = sim_->get_pc();
         }
         char* line = ReadLine("sim> ");
@@ -691,15 +733,15 @@ ArmDebugger::debug()
                                 i < 8 &&
                                 (i % 2) == 0) {
                                 dvalue = getRegisterPairDoubleValue(i);
-                                printf(" (%f)\n", dvalue);
+                                printf(" (%.16g)\n", dvalue);
                             } else {
                                 printf("\n");
                             }
                         }
                         for (uint32_t i = 0; i < FloatRegisters::TotalPhys; i++) {
-                            dvalue = getVFPDoubleRegisterValue(i);
+                            getVFPDoubleRegisterValue(i, &dvalue);
                             uint64_t as_words = mozilla::BitwiseCast<uint64_t>(dvalue);
-                            printf("%3s: %f 0x%08x %08x\n",
+                            printf("%3s: %.16g 0x%08x %08x\n",
                                    FloatRegister::FromCode(i).name(),
                                    dvalue,
                                    static_cast<uint32_t>(as_words >> 32),
@@ -710,7 +752,7 @@ ArmDebugger::debug()
                             printf("%s: 0x%08x %d \n", arg1, value, value);
                         } else if (getVFPDoubleValue(arg1, &dvalue)) {
                             uint64_t as_words = mozilla::BitwiseCast<uint64_t>(dvalue);
-                            printf("%s: %f 0x%08x %08x\n",
+                            printf("%s: %.16g 0x%08x %08x\n",
                                    arg1,
                                    dvalue,
                                    static_cast<uint32_t>(as_words >> 32),
@@ -755,8 +797,11 @@ ArmDebugger::debug()
                     cur++;
                 }
             } else if (strcmp(cmd, "disasm") == 0 || strcmp(cmd, "di") == 0) {
+#ifdef JS_DISASM_ARM
+                uint8_t* prev = nullptr;
                 uint8_t* cur = nullptr;
                 uint8_t* end = nullptr;
+
                 if (argc == 1) {
                     cur = reinterpret_cast<uint8_t*>(sim_->get_pc());
                     end = cur + (10 * SimInstruction::kInstrSize);
@@ -788,9 +833,15 @@ ArmDebugger::debug()
                     }
                 }
                 while (cur < end) {
-                    DisassembleInstruction(uint32_t(cur));
-                    cur += SimInstruction::kInstrSize;
+                    disasm::NameConverter converter;
+                    disasm::Disassembler dasm(converter);
+                    disasm::EmbeddedVector<char, disasm::ReasonableBufferSize> buffer;
+
+                    prev = cur;
+                    cur += dasm.InstructionDecode(buffer, cur);
+                    printf("  0x%08x  %s\n", reinterpret_cast<uint32_t>(prev), buffer.start());
                 }
+#endif
             } else if (strcmp(cmd, "gdb") == 0) {
                 printf("relinquishing control to gdb\n");
                 asm("int $3");
@@ -955,9 +1006,11 @@ GetCachePageLocked(Simulator::ICacheMap& i_cache, void* page)
     if (p)
         return p->value();
 
+    AutoEnterOOMUnsafeRegion oomUnsafe;
     CachePage* new_page = js_new<CachePage>();
-    if (!i_cache.add(p, page, new_page))
-        return nullptr;
+    if (!new_page || !i_cache.add(p, page, new_page))
+        oomUnsafe.crash("Simulator CachePage");
+
     return new_page;
 }
 
@@ -1045,7 +1098,7 @@ Simulator::setLastDebuggerInput(char* input)
 void
 Simulator::FlushICache(void* start_addr, size_t size)
 {
-    JitSpewCont(JitSpew_CacheFlush, "[%p %zx]", start_addr, size);
+    JitSpewCont(JitSpew_CacheFlush, "[%p %" PRIxSIZE "]", start_addr, size);
     if (Simulator::ICacheCheckingEnabled) {
         Simulator* sim = Simulator::Current();
 
@@ -1055,7 +1108,9 @@ Simulator::FlushICache(void* start_addr, size_t size)
     }
 }
 
-Simulator::Simulator()
+Simulator::Simulator(JSContext* cx)
+  : cx_(cx),
+    cacheLock_(mutexid::SimulatorCacheLock)
 {
     // Set up simulator support first. Some of this information is needed to
     // setup the architecture state.
@@ -1108,20 +1163,14 @@ Simulator::Simulator()
 
     lastDebuggerInput_ = nullptr;
 
-    cacheLock_ = nullptr;
-#ifdef DEBUG
-    cacheLockHolder_ = nullptr;
-#endif
     redirection_ = nullptr;
+    exclusiveMonitorHeld_ = false;
+    exclusiveMonitor_ = 0;
 }
 
 bool
 Simulator::init()
 {
-    cacheLock_ = PR_NewLock();
-    if (!cacheLock_)
-        return false;
-
     if (!icache_.init())
         return false;
 
@@ -1184,12 +1233,10 @@ class Redirection
             }
         }
 
+        AutoEnterOOMUnsafeRegion oomUnsafe;
         Redirection* redir = (Redirection*)js_malloc(sizeof(Redirection));
-        if (!redir) {
-            MOZ_ReportAssertionFailure("[unhandlable oom] Simulator redirection",
-                                       __FILE__, __LINE__);
-            MOZ_CRASH();
-        }
+        if (!redir)
+            oomUnsafe.crash("Simulator redirection");
         new(redir) Redirection(nativeFunction, type, sim);
         return redir;
     }
@@ -1210,7 +1257,6 @@ class Redirection
 Simulator::~Simulator()
 {
     js_free(stack_);
-    PR_DestroyLock(cacheLock_);
     Redirection* r = redirection_;
     while (r) {
         Redirection* next = r->next_;
@@ -1382,24 +1428,22 @@ Simulator::setVFPRegister(int reg_index, const InputType& value)
 }
 
 template<class ReturnType, int register_size>
-ReturnType Simulator::getFromVFPRegister(int reg_index)
+void Simulator::getFromVFPRegister(int reg_index, ReturnType* out)
 {
     MOZ_ASSERT(reg_index >= 0);
     MOZ_ASSERT_IF(register_size == 1, reg_index < num_s_registers);
     MOZ_ASSERT_IF(register_size == 2, reg_index < int(FloatRegisters::TotalPhys));
 
-    ReturnType value = 0;
     char buffer[register_size * sizeof(vfp_registers_[0])];
     memcpy(buffer, &vfp_registers_[register_size * reg_index],
            register_size * sizeof(vfp_registers_[0]));
-    memcpy(&value, buffer, register_size * sizeof(vfp_registers_[0]));
-    return value;
+    memcpy(out, buffer, register_size * sizeof(vfp_registers_[0]));
 }
 
 // These forced-instantiations are for jsapi-tests. Evidently, nothing
 // requires these to be instantiated.
-template double Simulator::getFromVFPRegister<double, 2>(int reg_index);
-template float Simulator::getFromVFPRegister<float, 1>(int reg_index);
+template void Simulator::getFromVFPRegister<double, 2>(int reg_index, double* out);
+template void Simulator::getFromVFPRegister<float, 1>(int reg_index, float* out);
 template void Simulator::setVFPRegister<double, 2>(int reg_index, const double& value);
 template void Simulator::setVFPRegister<float, 1>(int reg_index, const float& value);
 
@@ -1407,8 +1451,8 @@ void
 Simulator::getFpArgs(double* x, double* y, int32_t* z)
 {
     if (UseHardFpABI()) {
-        *x = get_double_from_d_register(0);
-        *y = get_double_from_d_register(1);
+        get_double_from_d_register(0, x);
+        get_double_from_d_register(1, y);
         *z = get_register(0);
     } else {
         *x = get_double_from_register_pair(0);
@@ -1466,41 +1510,224 @@ Simulator::setCallResult(int64_t res)
     set_register(r1, static_cast<int32_t>(res >> 32));
 }
 
+void
+Simulator::exclusiveMonitorSet(uint64_t value)
+{
+    exclusiveMonitor_ = value;
+    exclusiveMonitorHeld_ = true;
+}
+
+uint64_t
+Simulator::exclusiveMonitorGetAndClear(bool* held)
+{
+    *held = exclusiveMonitorHeld_;
+    exclusiveMonitorHeld_ = false;
+    return *held ? exclusiveMonitor_ : 0;
+}
+
+void
+Simulator::exclusiveMonitorClear()
+{
+    exclusiveMonitorHeld_ = false;
+}
+
+// WebAssembly memories contain an extra region of guard pages (see
+// WasmArrayRawBuffer comment). The guard pages catch out-of-bounds accesses
+// using a signal handler that redirects PC to a stub that safely reports an
+// error. However, if the handler is hit by the simulator, the PC is in C++ code
+// and cannot be redirected. Therefore, we must avoid hitting the handler by
+// redirecting in the simulator before the real handler would have been hit.
+bool
+Simulator::handleWasmFault(int32_t addr, unsigned numBytes)
+{
+    WasmActivation* act = cx_->wasmActivationStack();
+    if (!act)
+        return false;
+
+    void* pc = reinterpret_cast<void*>(get_pc());
+    wasm::Instance* instance = act->compartment()->wasm.lookupInstanceDeprecated(pc);
+    if (!instance || !instance->memoryAccessInGuardRegion((uint8_t*)addr, numBytes))
+        return false;
+
+    const wasm::MemoryAccess* memoryAccess = instance->code().lookupMemoryAccess(pc);
+    if (!memoryAccess) {
+        set_pc(int32_t(instance->codeSegment().outOfBoundsCode()));
+        return true;
+    }
+
+    MOZ_ASSERT(memoryAccess->hasTrapOutOfLineCode());
+    set_pc(int32_t(memoryAccess->trapOutOfLineCode(instance->codeBase())));
+    return true;
+}
+
+uint64_t
+Simulator::readQ(int32_t addr, SimInstruction* instr, UnalignedPolicy f)
+{
+    if (handleWasmFault(addr, 8))
+        return -1;
+
+    if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+        uint64_t* ptr = reinterpret_cast<uint64_t*>(addr);
+        return *ptr;
+    }
+
+    // See the comments below in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        uint64_t value;
+        memcpy(&value, ptr, sizeof(value));
+        return value;
+    }
+
+    printf("Unaligned read at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+}
+
+void
+Simulator::writeQ(int32_t addr, uint64_t value, SimInstruction* instr, UnalignedPolicy f)
+{
+    if (handleWasmFault(addr, 8))
+        return;
+
+    if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+        uint64_t* ptr = reinterpret_cast<uint64_t*>(addr);
+        *ptr = value;
+        return;
+    }
+
+    // See the comments below in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        memcpy(ptr, &value, sizeof(value));
+        return;
+    }
+
+    printf("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+}
+
 int
-Simulator::readW(int32_t addr, SimInstruction* instr)
+Simulator::readW(int32_t addr, SimInstruction* instr, UnalignedPolicy f)
+{
+    if (handleWasmFault(addr, 4))
+        return -1;
+
+    if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+        intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
+        return *ptr;
+    }
+
+    // In WebAssembly, we want unaligned accesses to either raise a signal or
+    // do the right thing. Making this simulator properly emulate the behavior
+    // of raising a signal is complex, so as a special-case, when in wasm code,
+    // we just do the right thing.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        int value;
+        memcpy(&value, ptr, sizeof(value));
+        return value;
+    }
+
+    printf("Unaligned read at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+}
+
+void
+Simulator::writeW(int32_t addr, int value, SimInstruction* instr, UnalignedPolicy f)
+{
+    if (handleWasmFault(addr, 4))
+        return;
+
+    if ((addr & 3) == 0 || (f == AllowUnaligned && !HasAlignmentFault())) {
+        intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
+        *ptr = value;
+        return;
+    }
+
+    // See the comments above in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        memcpy(ptr, &value, sizeof(value));
+        return;
+    }
+
+    printf("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+}
+
+// For the time being, define Relaxed operations in terms of SeqCst
+// operations - we don't yet need Relaxed operations anywhere else in
+// the system, and the distinction is not important to the simulation
+// at the level where we're operating.
+
+template<typename T>
+static
+T loadRelaxed(SharedMem<T*> addr)
+{
+    return AtomicOperations::loadSeqCst(addr);
+}
+
+template<typename T>
+static
+T compareExchangeRelaxed(SharedMem<T*> addr, T oldval, T newval)
+{
+    return AtomicOperations::compareExchangeSeqCst(addr, oldval, newval);
+}
+
+int
+Simulator::readExW(int32_t addr, SimInstruction* instr)
 {
     // The regexp engine emits unaligned loads, so we don't check for them here
     // like most of the other methods do.
     if ((addr & 3) == 0 || !HasAlignmentFault()) {
-        intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
-        return *ptr;
+        SharedMem<int32_t*> ptr = SharedMem<int32_t*>::shared(reinterpret_cast<int32_t*>(addr));
+        int32_t value = loadRelaxed(ptr);
+        exclusiveMonitorSet(value);
+        return value;
     } else {
         printf("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
         MOZ_CRASH();
     }
 }
 
-void
-Simulator::writeW(int32_t addr, int value, SimInstruction* instr)
+int32_t
+Simulator::writeExW(int32_t addr, int value, SimInstruction* instr)
 {
     if ((addr & 3) == 0) {
-        intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
-        *ptr = value;
-    } else {
-        printf("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
-        MOZ_CRASH();
+        SharedMem<int32_t*> ptr = SharedMem<int32_t*>::shared(reinterpret_cast<int32_t*>(addr));
+        bool held;
+        int32_t expected = int32_t(exclusiveMonitorGetAndClear(&held));
+        if (!held)
+            return 1;
+        int32_t old = compareExchangeRelaxed(ptr, expected, int32_t(value));
+        return old != expected;
     }
+
+    printf("Unaligned write at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
 }
 
 uint16_t
 Simulator::readHU(int32_t addr, SimInstruction* instr)
 {
+    if (handleWasmFault(addr, 2))
+        return UINT16_MAX;
+
     // The regexp engine emits unaligned loads, so we don't check for them here
     // like most of the other methods do.
     if ((addr & 1) == 0 || !HasAlignmentFault()) {
-       uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
-       return *ptr;
+        uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
+        return *ptr;
     }
+
+    // See comments above in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        uint16_t value;
+        memcpy(&value, ptr, sizeof(value));
+        return value;
+    }
+
     printf("Unaligned unsigned halfword read at 0x%08x, pc=%p\n", addr, instr);
     MOZ_CRASH();
     return 0;
@@ -1509,10 +1736,22 @@ Simulator::readHU(int32_t addr, SimInstruction* instr)
 int16_t
 Simulator::readH(int32_t addr, SimInstruction* instr)
 {
-    if ((addr & 1) == 0) {
+    if (handleWasmFault(addr, 2))
+        return -1;
+
+    if ((addr & 1) == 0 || !HasAlignmentFault()) {
         int16_t* ptr = reinterpret_cast<int16_t*>(addr);
         return *ptr;
     }
+
+    // See comments above in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        int16_t value;
+        memcpy(&value, ptr, sizeof(value));
+        return value;
+    }
+
     printf("Unaligned signed halfword read at 0x%08x\n", addr);
     MOZ_CRASH();
     return 0;
@@ -1521,23 +1760,78 @@ Simulator::readH(int32_t addr, SimInstruction* instr)
 void
 Simulator::writeH(int32_t addr, uint16_t value, SimInstruction* instr)
 {
-    if ((addr & 1) == 0) {
+    if (handleWasmFault(addr, 2))
+        return;
+
+    if ((addr & 1) == 0 || !HasAlignmentFault()) {
         uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
         *ptr = value;
-    } else {
-        printf("Unaligned unsigned halfword write at 0x%08x, pc=%p\n", addr, instr);
-        MOZ_CRASH();
+        return;
     }
+
+    // See the comments above in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        memcpy(ptr, &value, sizeof(value));
+        return;
+    }
+
+    printf("Unaligned unsigned halfword write at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
 }
 
 void
 Simulator::writeH(int32_t addr, int16_t value, SimInstruction* instr)
 {
-    if ((addr & 1) == 0) {
+    if (handleWasmFault(addr, 2))
+        return;
+
+    if ((addr & 1) == 0 || !HasAlignmentFault()) {
         int16_t* ptr = reinterpret_cast<int16_t*>(addr);
         *ptr = value;
+        return;
+    }
+
+    // See the comments above in readW.
+    if (FixupFault() && wasm::IsPCInWasmCode(reinterpret_cast<void *>(get_pc()))) {
+        char* ptr = reinterpret_cast<char*>(addr);
+        memcpy(ptr, &value, sizeof(value));
+        return;
+    }
+
+    printf("Unaligned halfword write at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+}
+
+uint16_t
+Simulator::readExHU(int32_t addr, SimInstruction* instr)
+{
+    // The regexp engine emits unaligned loads, so we don't check for them here
+    // like most of the other methods do.
+    if ((addr & 1) == 0 || !HasAlignmentFault()) {
+        SharedMem<uint16_t*> ptr = SharedMem<uint16_t*>::shared(reinterpret_cast<uint16_t*>(addr));
+        uint16_t value = loadRelaxed(ptr);
+        exclusiveMonitorSet(value);
+        return value;
+    }
+    printf("Unaligned atomic unsigned halfword read at 0x%08x, pc=%p\n", addr, instr);
+    MOZ_CRASH();
+    return 0;
+}
+
+int32_t
+Simulator::writeExH(int32_t addr, uint16_t value, SimInstruction* instr)
+{
+    if ((addr & 1) == 0) {
+        SharedMem<uint16_t*> ptr = SharedMem<uint16_t*>::shared(reinterpret_cast<uint16_t*>(addr));
+        bool held;
+        uint16_t expected = uint16_t(exclusiveMonitorGetAndClear(&held));
+        if (!held)
+            return 1;
+        uint16_t old = compareExchangeRelaxed(ptr, expected, value);
+        return old != expected;
     } else {
-        printf("Unaligned halfword write at 0x%08x, pc=%p\n", addr, instr);
+        printf("Unaligned atomic unsigned halfword write at 0x%08x, pc=%p\n", addr, instr);
         MOZ_CRASH();
     }
 }
@@ -1545,13 +1839,40 @@ Simulator::writeH(int32_t addr, int16_t value, SimInstruction* instr)
 uint8_t
 Simulator::readBU(int32_t addr)
 {
+    if (handleWasmFault(addr, 1))
+        return UINT8_MAX;
+
     uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
     return *ptr;
+}
+
+uint8_t
+Simulator::readExBU(int32_t addr)
+{
+    SharedMem<uint8_t*> ptr = SharedMem<uint8_t*>::shared(reinterpret_cast<uint8_t*>(addr));
+    uint8_t value = loadRelaxed(ptr);
+    exclusiveMonitorSet(value);
+    return value;
+}
+
+int32_t
+Simulator::writeExB(int32_t addr, uint8_t value)
+{
+    SharedMem<uint8_t*> ptr = SharedMem<uint8_t*>::shared(reinterpret_cast<uint8_t*>(addr));
+    bool held;
+    uint8_t expected = uint8_t(exclusiveMonitorGetAndClear(&held));
+    if (!held)
+        return 1;
+    uint8_t old = compareExchangeRelaxed(ptr, expected, value);
+    return old != expected;
 }
 
 int8_t
 Simulator::readB(int32_t addr)
 {
+    if (handleWasmFault(addr, 1))
+        return -1;
+
     int8_t* ptr = reinterpret_cast<int8_t*>(addr);
     return *ptr;
 }
@@ -1559,6 +1880,9 @@ Simulator::readB(int32_t addr)
 void
 Simulator::writeB(int32_t addr, uint8_t value)
 {
+    if (handleWasmFault(addr, 1))
+        return;
+
     uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
     *ptr = value;
 }
@@ -1566,6 +1890,9 @@ Simulator::writeB(int32_t addr, uint8_t value)
 void
 Simulator::writeB(int32_t addr, int8_t value)
 {
+    if (handleWasmFault(addr, 1))
+        return;
+
     int8_t* ptr = reinterpret_cast<int8_t*>(addr);
     *ptr = value;
 }
@@ -1593,6 +1920,49 @@ Simulator::writeDW(int32_t addr, int32_t value1, int32_t value2)
         printf("Unaligned write at 0x%08x\n", addr);
         MOZ_CRASH();
     }
+}
+
+int32_t
+Simulator::readExDW(int32_t addr, int32_t* hibits)
+{
+#if defined(__clang__) && defined(__i386)
+    // This is OK for now, we don't yet generate LDREXD.
+    MOZ_CRASH("Unimplemented - 8-byte atomics are unsupported in Clang on i386");
+#else
+    if ((addr & 3) == 0) {
+        SharedMem<uint64_t*> ptr = SharedMem<uint64_t*>::shared(reinterpret_cast<uint64_t*>(addr));
+        uint64_t value = loadRelaxed(ptr);
+        exclusiveMonitorSet(value);
+        *hibits = int32_t(value);
+        return int32_t(value >> 32);
+    }
+    printf("Unaligned read at 0x%08x\n", addr);
+    MOZ_CRASH();
+    return 0;
+#endif
+}
+
+int32_t
+Simulator::writeExDW(int32_t addr, int32_t value1, int32_t value2)
+{
+#if defined(__clang__) && defined(__i386)
+    // This is OK for now, we don't yet generate STREXD.
+    MOZ_CRASH("Unimplemented - 8-byte atomics are unsupported in Clang on i386");
+#else
+    if ((addr & 3) == 0) {
+        SharedMem<uint64_t*> ptr = SharedMem<uint64_t*>::shared(reinterpret_cast<uint64_t*>(addr));
+        uint64_t value = (uint64_t(value1) << 32) | uint32_t(value2);
+        bool held;
+        uint64_t expected = exclusiveMonitorGetAndClear(&held);
+        if (!held)
+            return 1;
+        uint64_t old = compareExchangeRelaxed(ptr, expected, value);
+        return old != expected;
+    } else {
+        printf("Unaligned write at 0x%08x\n", addr);
+        MOZ_CRASH();
+    }
+#endif
 }
 
 uintptr_t
@@ -2017,7 +2387,8 @@ Simulator::handleVList(SimInstruction* instr)
                 set_d_register_from_double(reg, d);
             } else {
                 int32_t data[2];
-                double d = get_double_from_d_register(reg);
+                double d;
+                get_double_from_d_register(reg, &d);
                 memcpy(data, &d, 8);
                 writeW(reinterpret_cast<int32_t>(address), data[0], instr);
                 writeW(reinterpret_cast<int32_t>(address + 1), data[1], instr);
@@ -2051,7 +2422,12 @@ typedef int64_t (*Prototype_General8)(int32_t arg0, int32_t arg1, int32_t arg2, 
 typedef double (*Prototype_Double_None)();
 typedef double (*Prototype_Double_Double)(double arg0);
 typedef double (*Prototype_Double_Int)(int32_t arg0);
+typedef double (*Prototype_Double_IntInt)(int32_t arg0, int32_t arg1);
 typedef int32_t (*Prototype_Int_Double)(double arg0);
+typedef int64_t (*Prototype_Int64_Double)(double arg0);
+typedef int32_t (*Prototype_Int_DoubleIntInt)(double arg0, int32_t arg1, int32_t arg2);
+typedef int32_t (*Prototype_Int_IntDoubleIntInt)(int32_t arg0, double arg1, int32_t arg2,
+                                                 int32_t arg3);
 typedef float (*Prototype_Float32_Float32)(float arg0);
 
 typedef double (*Prototype_DoubleInt)(double arg0, int32_t arg1);
@@ -2191,6 +2567,16 @@ Simulator::softwareInterrupt(SimInstruction* instr)
             setCallResult(result);
             break;
           }
+          case Args_Int64_Double: {
+            double dval0, dval1;
+            int32_t ival;
+            getFpArgs(&dval0, &dval1, &ival);
+            Prototype_Int64_Double target = reinterpret_cast<Prototype_Int64_Double>(external);
+            int64_t result = target(dval0);
+            scratchVolatileRegisters(/* scratchFloat = true */);
+            setCallResult(result);
+            break;
+          }
           case Args_Double_None: {
             Prototype_Double_None target = reinterpret_cast<Prototype_Double_None>(external);
             double dresult = target();
@@ -2221,7 +2607,7 @@ Simulator::softwareInterrupt(SimInstruction* instr)
           case Args_Float32_Float32: {
             float fval0;
             if (UseHardFpABI())
-                fval0 = get_float_from_s_register(0);
+                get_float_from_s_register(0, &fval0);
             else
                 fval0 = mozilla::BitwiseCast<float>(arg0);
             Prototype_Float32_Float32 target = reinterpret_cast<Prototype_Float32_Float32>(external);
@@ -2233,6 +2619,13 @@ Simulator::softwareInterrupt(SimInstruction* instr)
           case Args_Double_Int: {
             Prototype_Double_Int target = reinterpret_cast<Prototype_Double_Int>(external);
             double dresult = target(arg0);
+            scratchVolatileRegisters(/* scratchFloat = true */);
+            setCallResultDouble(dresult);
+            break;
+          }
+          case Args_Double_IntInt: {
+            Prototype_Double_IntInt target = reinterpret_cast<Prototype_Double_IntInt>(external);
+            double dresult = target(arg0, arg1);
             scratchVolatileRegisters(/* scratchFloat = true */);
             setCallResultDouble(dresult);
             break;
@@ -2261,7 +2654,7 @@ Simulator::softwareInterrupt(SimInstruction* instr)
             int32_t ival = get_register(0);
             double dval0;
             if (UseHardFpABI())
-                dval0 = get_double_from_d_register(0);
+                get_double_from_d_register(0, &dval0);
             else
                 dval0 = get_double_from_register_pair(2);
             Prototype_Double_IntDouble target = reinterpret_cast<Prototype_Double_IntDouble>(external);
@@ -2274,11 +2667,41 @@ Simulator::softwareInterrupt(SimInstruction* instr)
             int32_t ival = get_register(0);
             double dval0;
             if (UseHardFpABI())
-                dval0 = get_double_from_d_register(0);
+                get_double_from_d_register(0, &dval0);
             else
                 dval0 = get_double_from_register_pair(2);
             Prototype_Int_IntDouble target = reinterpret_cast<Prototype_Int_IntDouble>(external);
             int32_t result = target(ival, dval0);
+            scratchVolatileRegisters(/* scratchFloat = true */);
+            set_register(r0, result);
+            break;
+          }
+          case Args_Int_DoubleIntInt: {
+            double dval;
+            int32_t result;
+            Prototype_Int_DoubleIntInt target = reinterpret_cast<Prototype_Int_DoubleIntInt>(external);
+            if (UseHardFpABI()) {
+                get_double_from_d_register(0, &dval);
+                result = target(dval, arg0, arg1);
+            } else {
+                dval = get_double_from_register_pair(0);
+                result = target(dval, arg2, arg3);
+            }
+            scratchVolatileRegisters(/* scratchFloat = true */);
+            set_register(r0, result);
+            break;
+          }
+          case Args_Int_IntDoubleIntInt: {
+            double dval;
+            int32_t result;
+            Prototype_Int_IntDoubleIntInt target = reinterpret_cast<Prototype_Int_IntDoubleIntInt>(external);
+            if (UseHardFpABI()) {
+                get_double_from_d_register(0, &dval);
+                result = target(arg0, dval, arg1, arg2);
+            } else {
+                dval = get_double_from_register_pair(2);
+                result = target(arg0, dval, arg4, arg5);
+            }
             scratchVolatileRegisters(/* scratchFloat = true */);
             set_register(r0, result);
             break;
@@ -2347,10 +2770,18 @@ Simulator::softwareInterrupt(SimInstruction* instr)
     }
 }
 
-double
-Simulator::canonicalizeNaN(double value)
+void
+Simulator::canonicalizeNaN(double* value)
 {
-    return FPSCR_default_NaN_mode_ ? JS::CanonicalizeNaN(value) : value;
+    if (!JitOptions.wasmTestMode && FPSCR_default_NaN_mode_)
+        *value = JS::CanonicalizeNaN(*value);
+}
+
+void
+Simulator::canonicalizeNaN(float* value)
+{
+    if (!JitOptions.wasmTestMode && FPSCR_default_NaN_mode_)
+        *value = JS::CanonicalizeNaN(*value);
 }
 
 // Stop helper functions.
@@ -2507,63 +2938,56 @@ Simulator::decodeType01(SimInstruction* instr)
                         MOZ_CRASH();
                 }
             } else {
-                if (instr->bit(23)) {
+                if (instr->bits(disasm::ExclusiveOpHi, disasm::ExclusiveOpLo) == disasm::ExclusiveOpcode) {
                     // Load-exclusive / store-exclusive.
-                    //
-                    // Bare-bones simulation: the store always succeeds, and we
-                    // do not execute any fences.  Also, we allow readDW and
-                    // writeDW to split the memory transaction.
-                    //
-                    // The next step up would involve remembering the value
-                    // that was read with load-exclusive so that we could use
-                    // compareExchange for the store-exclusive, and to
-                    // implement atomic doubleword read and write.
-                    //
-                    // Also see DMB/DSB/ISB below.
-                    if (instr->bit(20)) {
-                        // Load-exclusive.
+                    if (instr->bit(disasm::ExclusiveLoad)) {
                         int rn = instr->rnValue();
                         int rt = instr->rtValue();
                         int32_t address = get_register(rn);
-                        switch (instr->bits(22,21)) {
-                          case 0:
-                            set_register(rt, readW(address, instr));
+                        switch (instr->bits(disasm::ExclusiveSizeHi, disasm::ExclusiveSizeLo)) {
+                          case disasm::ExclusiveWord:
+                            set_register(rt, readExW(address, instr));
                             break;
-                          case 1:
-                            set_dw_register(rt, readDW(address));
+                          case disasm::ExclusiveDouble: {
+                            MOZ_ASSERT((rt % 2) == 0);
+                            int32_t hibits;
+                            int32_t lobits = readExDW(address, &hibits);
+                            set_register(rt, lobits);
+                            set_register(rt+1, hibits);
                             break;
-                          case 2:
-                            set_register(rt, readBU(address));
+                          }
+                          case disasm::ExclusiveByte:
+                            set_register(rt, readExBU(address));
                             break;
-                          case 3:
-                            set_register(rt, readHU(address, instr));
+                          case disasm::ExclusiveHalf:
+                            set_register(rt, readExHU(address, instr));
                             break;
                         }
                     } else {
-                        // Store-exclusive.
                         int rn = instr->rnValue();
                         int rd = instr->rdValue();
                         int rt = instr->bits(3,0);
                         int32_t address = get_register(rn);
                         int32_t value = get_register(rt);
-                        switch (instr->bits(22,21)) {
-                          case 0:
-                            writeW(address, value, instr);
+                        int32_t result = 0;
+                        switch (instr->bits(disasm::ExclusiveSizeHi, disasm::ExclusiveSizeLo)) {
+                          case disasm::ExclusiveWord:
+                            result = writeExW(address, value, instr);
                             break;
-                          case 1: {
-                              MOZ_ASSERT((rt % 2) == 0);
-                              int32_t value2 = get_register(rt+1);
-                              writeDW(address, value, value2);
-                              break;
+                          case disasm::ExclusiveDouble: {
+                            MOZ_ASSERT((rt % 2) == 0);
+                            int32_t value2 = get_register(rt+1);
+                            result = writeExDW(address, value, value2);
+                            break;
                           }
-                          case 2:
-                            writeB(address, (uint8_t)value);
+                          case disasm::ExclusiveByte:
+                            result = writeExB(address, (uint8_t)value);
                             break;
-                          case 3:
-                            writeH(address, (uint16_t)value, instr);
+                          case disasm::ExclusiveHalf:
+                            result = writeExH(address, (uint16_t)value, instr);
                             break;
                         }
-                        set_register(rd, 0);
+                        set_register(rd, result);
                     }
                 } else {
                     MOZ_CRASH(); // Not used atm
@@ -2831,8 +3255,16 @@ Simulator::decodeType01(SimInstruction* instr)
             }
             break;
           case OpSbc:
+            alu_out = rn_val - shifter_operand - (getCarry() == 0 ? 1 : 0);
+            set_register(rd, alu_out);
+            if (instr->hasS())
+                MOZ_CRASH();
+            break;
           case OpRsc:
-            MOZ_CRASH();
+            alu_out = shifter_operand - rn_val - (getCarry() == 0 ? 1 : 0);
+            set_register(rd, alu_out);
+            if (instr->hasS())
+                MOZ_CRASH();
             break;
           case OpTst:
             if (instr->hasS()) {
@@ -2965,9 +3397,9 @@ Simulator::decodeType2(SimInstruction* instr)
         }
     } else {
         if (instr->hasL())
-            set_register(rd, readW(addr, instr));
+            set_register(rd, readW(addr, instr, AllowUnaligned));
         else
-            writeW(addr, get_register(rd), instr);
+            writeW(addr, get_register(rd), instr, AllowUnaligned);
     }
 }
 
@@ -3107,6 +3539,19 @@ Simulator::decodeType3(SimInstruction* instr)
                                                           instr->bits(11, 10));
                             set_register(rd, rn_val + (rm_val & 0xFF));
                         }
+                    } else if ((instr->bit(20) == 1) && (instr->bits(9, 6) == 1)) {
+                        if (instr->bits(19, 16) == 0xF) {
+                            // Uxth.
+                            uint32_t rm_val = rotateBytes(get_register(instr->rmValue()),
+                                                          instr->bits(11, 10));
+                            set_register(rd, (rm_val & 0xFFFF));
+                        } else {
+                            // Uxtah.
+                            uint32_t rn_val = get_register(rn);
+                            uint32_t rm_val = rotateBytes(get_register(instr->rmValue()),
+                                                          instr->bits(11, 10));
+                            set_register(rd, rn_val + (rm_val & 0xFFFF));
+                        }
                     } else {
                         MOZ_CRASH();
                     }
@@ -3219,9 +3664,9 @@ Simulator::decodeType3(SimInstruction* instr)
         }
     } else {
         if (instr->hasL())
-            set_register(rd, readW(addr, instr));
+            set_register(rd, readW(addr, instr, AllowUnaligned));
         else
-            writeW(addr, get_register(rd), instr);
+            writeW(addr, get_register(rd), instr, AllowUnaligned);
     }
 }
 
@@ -3273,12 +3718,15 @@ Simulator::decodeType7CoprocessorIns(SimInstruction* instr)
             int CRn = instr->bits(19,16);
             int CRm = instr->bits(3,0);
             if (opc1 == 0 && opc2 == 4 && CRn == 7 && CRm == 10) {
-                // ARMv6 DSB instruction - do nothing now, see comments above
+                // ARMv6 DSB instruction.  We do not use DSB.
+                MOZ_CRASH("DSB not implemented");
             } else if (opc1 == 0 && opc2 == 5 && CRn == 7 && CRm == 10) {
-                // ARMv6 DMB instruction - do nothing now, see comments above
+                // ARMv6 DMB instruction.
+                AtomicOperations::fenceSeqCst();
             }
             else if (opc1 == 0 && opc2 == 4 && CRn == 7 && CRm == 5) {
-                // ARMv6 ISB instruction - do nothing now, see comments above
+                // ARMv6 ISB instruction.  We do not use ISB.
+                MOZ_CRASH("ISB not implemented");
             }
             else {
                 MOZ_CRASH();
@@ -3312,36 +3760,52 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
                 if (instr->szValue() == 0x1) {
                     int m = instr->VFPMRegValue(kDoublePrecision);
                     int d = instr->VFPDRegValue(kDoublePrecision);
-                    set_d_register_from_double(d, get_double_from_d_register(m));
+                    double temp;
+                    get_double_from_d_register(m, &temp);
+                    set_d_register_from_double(d, temp);
                 } else {
                     int m = instr->VFPMRegValue(kSinglePrecision);
                     int d = instr->VFPDRegValue(kSinglePrecision);
-                    set_s_register_from_float(d, get_float_from_s_register(m));
+                    float temp;
+                    get_float_from_s_register(m, &temp);
+                    set_s_register_from_float(d, temp);
                 }
             } else if ((instr->opc2Value() == 0x0) && (instr->opc3Value() == 0x3)) {
                 // vabs
                 if (instr->szValue() == 0x1) {
-                    double dm_value = get_double_from_d_register(vm);
-                    double dd_value = std::fabs(dm_value);
-                    dd_value = canonicalizeNaN(dd_value);
+                    union {
+                        double f64;
+                        uint64_t u64;
+                    } u;
+                    get_double_from_d_register(vm, &u.f64);
+                    u.u64 &= 0x7fffffffffffffffu;
+                    double dd_value = u.f64;
+                    canonicalizeNaN(&dd_value);
                     set_d_register_from_double(vd, dd_value);
                 } else {
-                    float fm_value = get_float_from_s_register(vm);
-                    float fd_value = std::fabs(fm_value);
-                    fd_value = canonicalizeNaN(fd_value);
+                    union {
+                        float f32;
+                        uint32_t u32;
+                    } u;
+                    get_float_from_s_register(vm, &u.f32);
+                    u.u32 &= 0x7fffffffu;
+                    float fd_value = u.f32;
+                    canonicalizeNaN(&fd_value);
                     set_s_register_from_float(vd, fd_value);
                 }
             } else if ((instr->opc2Value() == 0x1) && (instr->opc3Value() == 0x1)) {
                 // vneg
                 if (instr->szValue() == 0x1) {
-                    double dm_value = get_double_from_d_register(vm);
+                    double dm_value;
+                    get_double_from_d_register(vm, &dm_value);
                     double dd_value = -dm_value;
-                    dd_value = canonicalizeNaN(dd_value);
+                    canonicalizeNaN(&dd_value);
                     set_d_register_from_double(vd, dd_value);
                 } else {
-                    float fm_value = get_float_from_s_register(vm);
+                    float fm_value;
+                    get_float_from_s_register(vm, &fm_value);
                     float fd_value = -fm_value;
-                    fd_value = canonicalizeNaN(fd_value);
+                    canonicalizeNaN(&fd_value);
                     set_s_register_from_float(vd, fd_value);
                 }
             } else if ((instr->opc2Value() == 0x7) && (instr->opc3Value() == 0x3)) {
@@ -3364,14 +3828,16 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
             } else if (((instr->opc2Value() == 0x1)) && (instr->opc3Value() == 0x3)) {
                 // vsqrt
                 if (instr->szValue() == 0x1) {
-                    double dm_value = get_double_from_d_register(vm);
+                    double dm_value;
+                    get_double_from_d_register(vm, &dm_value);
                     double dd_value = std::sqrt(dm_value);
-                    dd_value = canonicalizeNaN(dd_value);
+                    canonicalizeNaN(&dd_value);
                     set_d_register_from_double(vd, dd_value);
                 } else {
-                    float fm_value = get_float_from_s_register(vm);
+                    float fm_value;
+                    get_float_from_s_register(vm, &fm_value);
                     float fd_value = std::sqrt(fm_value);
-                    fd_value = canonicalizeNaN(fd_value);
+                    canonicalizeNaN(&fd_value);
                     set_s_register_from_float(vd, fd_value);
                 }
             } else if (instr->opc3Value() == 0x0) {
@@ -3389,49 +3855,61 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
             if (instr->szValue() != 0x1) {
                 if (instr->opc3Value() & 0x1) {
                     // vsub
-                    float fn_value = get_float_from_s_register(vn);
-                    float fm_value = get_float_from_s_register(vm);
+                    float fn_value;
+                    get_float_from_s_register(vn, &fn_value);
+                    float fm_value;
+                    get_float_from_s_register(vm, &fm_value);
                     float fd_value = fn_value - fm_value;
-                    fd_value = canonicalizeNaN(fd_value);
+                    canonicalizeNaN(&fd_value);
                     set_s_register_from_float(vd, fd_value);
                 } else {
                     // vadd
-                    float fn_value = get_float_from_s_register(vn);
-                    float fm_value = get_float_from_s_register(vm);
+                    float fn_value;
+                    get_float_from_s_register(vn, &fn_value);
+                    float fm_value;
+                    get_float_from_s_register(vm, &fm_value);
                     float fd_value = fn_value + fm_value;
-                    fd_value = canonicalizeNaN(fd_value);
+                    canonicalizeNaN(&fd_value);
                     set_s_register_from_float(vd, fd_value);
                 }
             } else {
                 if (instr->opc3Value() & 0x1) {
                     // vsub
-                    double dn_value = get_double_from_d_register(vn);
-                    double dm_value = get_double_from_d_register(vm);
+                    double dn_value;
+                    get_double_from_d_register(vn, &dn_value);
+                    double dm_value;
+                    get_double_from_d_register(vm, &dm_value);
                     double dd_value = dn_value - dm_value;
-                    dd_value = canonicalizeNaN(dd_value);
+                    canonicalizeNaN(&dd_value);
                     set_d_register_from_double(vd, dd_value);
                 } else {
                     // vadd
-                    double dn_value = get_double_from_d_register(vn);
-                    double dm_value = get_double_from_d_register(vm);
+                    double dn_value;
+                    get_double_from_d_register(vn, &dn_value);
+                    double dm_value;
+                    get_double_from_d_register(vm, &dm_value);
                     double dd_value = dn_value + dm_value;
-                    dd_value = canonicalizeNaN(dd_value);
+                    canonicalizeNaN(&dd_value);
                     set_d_register_from_double(vd, dd_value);
                 }
             }
         } else if ((instr->opc1Value() == 0x2) && !(instr->opc3Value() & 0x1)) {
             // vmul
             if (instr->szValue() != 0x1) {
-                float fn_value = get_float_from_s_register(vn);
-                float fm_value = get_float_from_s_register(vm);
+                float fn_value;
+                get_float_from_s_register(vn, &fn_value);
+                float fm_value;
+                get_float_from_s_register(vm, &fm_value);
                 float fd_value = fn_value * fm_value;
-                fd_value = canonicalizeNaN(fd_value);
+                canonicalizeNaN(&fd_value);
                 set_s_register_from_float(vd, fd_value);
             } else {
-                double dn_value = get_double_from_d_register(vn);
-                double dm_value = get_double_from_d_register(vm);
+                double dn_value;
+                get_double_from_d_register(vn, &dn_value);
+                double dm_value;
+                get_double_from_d_register(vm, &dm_value);
                 double dd_value = dn_value * dm_value;
-                dd_value = canonicalizeNaN(dd_value);
+                canonicalizeNaN(&dd_value);
                 set_d_register_from_double(vd, dd_value);
             }
         } else if ((instr->opc1Value() == 0x0)) {
@@ -3441,35 +3919,43 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
             if (instr->szValue() != 0x1)
                 MOZ_CRASH("Not used by V8.");
 
-            const double dd_val = get_double_from_d_register(vd);
-            const double dn_val = get_double_from_d_register(vn);
-            const double dm_val = get_double_from_d_register(vm);
+            double dd_val;
+            get_double_from_d_register(vd, &dd_val);
+            double dn_val;
+            get_double_from_d_register(vn, &dn_val);
+            double dm_val;
+            get_double_from_d_register(vm, &dm_val);
 
             // Note: we do the mul and add/sub in separate steps to avoid
             // getting a result with too high precision.
             set_d_register_from_double(vd, dn_val * dm_val);
-            if (is_vmls) {
-                set_d_register_from_double(vd,
-                                           canonicalizeNaN(dd_val - get_double_from_d_register(vd)));
-            } else {
-                set_d_register_from_double(vd,
-                                           canonicalizeNaN(dd_val + get_double_from_d_register(vd)));
-            }
+            double temp;
+            get_double_from_d_register(vd, &temp);
+            if (is_vmls)
+                temp = dd_val - temp;
+            else
+                temp = dd_val + temp;
+            canonicalizeNaN(&temp);
+            set_d_register_from_double(vd, temp);
         } else if ((instr->opc1Value() == 0x4) && !(instr->opc3Value() & 0x1)) {
             // vdiv
             if (instr->szValue() != 0x1) {
-                float fn_value = get_float_from_s_register(vn);
-                float fm_value = get_float_from_s_register(vm);
+                float fn_value;
+                get_float_from_s_register(vn, &fn_value);
+                float fm_value;
+                get_float_from_s_register(vm, &fm_value);
                 float fd_value = fn_value / fm_value;
                 div_zero_vfp_flag_ = (fm_value == 0);
-                fd_value = canonicalizeNaN(fd_value);
+                canonicalizeNaN(&fd_value);
                 set_s_register_from_float(vd, fd_value);
             } else {
-                double dn_value = get_double_from_d_register(vn);
-                double dm_value = get_double_from_d_register(vm);
+                double dn_value;
+                get_double_from_d_register(vn, &dn_value);
+                double dm_value;
+                get_double_from_d_register(vm, &dm_value);
                 double dd_value = dn_value / dm_value;
                 div_zero_vfp_flag_ = (dm_value == 0);
-                dd_value = canonicalizeNaN(dd_value);
+                canonicalizeNaN(&dd_value);
                 set_d_register_from_double(vd, dd_value);
             }
         } else {
@@ -3483,7 +3969,8 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
                    (instr->bit(23) == 0x0)) {
             // vmov (ARM core register to scalar).
             int vd = instr->bits(19, 16) | (instr->bit(7) << 4);
-            double dd_value = get_double_from_d_register(vd);
+            double dd_value;
+            get_double_from_d_register(vd, &dd_value);
             int32_t data[2];
             memcpy(data, &dd_value, 8);
             data[instr->bit(21)] = get_register(instr->rtValue());
@@ -3494,7 +3981,8 @@ Simulator::decodeTypeVFP(SimInstruction* instr)
                    (instr->bit(23) == 0x0)) {
             // vmov (scalar to ARM core register).
             int vn = instr->bits(19, 16) | (instr->bit(7) << 4);
-            double dn_value = get_double_from_d_register(vn);
+            double dn_value;
+            get_double_from_d_register(vn, &dn_value);
             int32_t data[2];
             memcpy(data, &dn_value, 8);
             set_register(instr->rtValue(), data[instr->bit(21)]);
@@ -3587,11 +4075,11 @@ Simulator::decodeVCMP(SimInstruction* instr)
         m = instr->VFPMRegValue(precision);
 
     if (precision == kDoublePrecision) {
-        double dd_value = get_double_from_d_register(d);
+        double dd_value;
+        get_double_from_d_register(d, &dd_value);
         double dm_value = 0.0;
-        if (instr->opc2Value() == 0x4) {
-            dm_value = get_double_from_d_register(m);
-        }
+        if (instr->opc2Value() == 0x4)
+            get_double_from_d_register(m, &dm_value);
 
         // Raise exceptions for quiet NaNs if necessary.
         if (instr->bit(7) == 1) {
@@ -3600,10 +4088,11 @@ Simulator::decodeVCMP(SimInstruction* instr)
         }
         compute_FPSCR_Flags(dd_value, dm_value);
     } else {
-        float fd_value = get_float_from_s_register(d);
+        float fd_value;
+        get_float_from_s_register(d, &fd_value);
         float fm_value = 0.0;
         if (instr->opc2Value() == 0x4)
-            fm_value = get_float_from_s_register(m);
+            get_float_from_s_register(m, &fm_value);
 
         // Raise exceptions for quiet NaNs if necessary.
         if (instr->bit(7) == 1) {
@@ -3631,10 +4120,12 @@ Simulator::decodeVCVTBetweenDoubleAndSingle(SimInstruction* instr)
     int src = instr->VFPMRegValue(src_precision);
 
     if (dst_precision == kSinglePrecision) {
-        double val = get_double_from_d_register(src);
+        double val;
+        get_double_from_d_register(src, &val);
         set_s_register_from_float(dst, static_cast<float>(val));
     } else {
-        float val = get_float_from_s_register(src);
+        float val;
+        get_float_from_s_register(src, &val);
         set_d_register_from_double(dst, static_cast<double>(val));
     }
 }
@@ -3718,9 +4209,14 @@ Simulator::decodeVCVTBetweenFloatingPointAndInteger(SimInstruction* instr)
         bool unsigned_integer = (instr->bit(16) == 0);
         bool double_precision = (src_precision == kDoublePrecision);
 
-        double val = double_precision
-                     ? get_double_from_d_register(src)
-                     : get_float_from_s_register(src);
+        double val;
+        if (double_precision) {
+            get_double_from_d_register(src, &val);
+        } else {
+            float fval;
+            get_float_from_s_register(src, &fval);
+            val = double(fval);
+        }
 
         int temp = unsigned_integer ? static_cast<uint32_t>(val) : static_cast<int32_t>(val);
 
@@ -3815,9 +4311,14 @@ Simulator::decodeVCVTBetweenFloatingPointAndIntegerFrac(SimInstruction* instr)
         bool unsigned_integer = (instr->bit(16) == 1);
         bool double_precision = (precision == kDoublePrecision);
 
-        double val = double_precision
-                     ? get_double_from_d_register(dst)
-                     : get_float_from_s_register(dst);
+        double val;
+        if (double_precision) {
+            get_double_from_d_register(dst, &val);
+        } else {
+            float fval;
+            get_float_from_s_register(dst, &fval);
+            val = double(fval);
+        }
 
         // Scale value by specified number of fraction bits.
         val *= mult;
@@ -3901,7 +4402,8 @@ Simulator::decodeType6CoprocessorIns(SimInstruction* instr)
                 int vm = instr->VFPMRegValue(kDoublePrecision);
                 if (instr->hasL()) {
                     int32_t data[2];
-                    double d = get_double_from_d_register(vm);
+                    double d;
+                    get_double_from_d_register(vm, &d);
                     memcpy(data, &d, 8);
                     set_register(rt, data[0]);
                     set_register(rn, data[1]);
@@ -3925,20 +4427,17 @@ Simulator::decodeType6CoprocessorIns(SimInstruction* instr)
             int32_t address = get_register(rn) + 4 * offset;
             if (instr->hasL()) {
                 // Load double from memory: vldr.
-                int32_t data[] = {
-                    readW(address, instr),
-                    readW(address + 4, instr)
-                };
+                uint64_t data = readQ(address, instr);
                 double val;
-                memcpy(&val, data, 8);
+                memcpy(&val, &data, 8);
                 set_d_register_from_double(vd, val);
             } else {
                 // Store double to memory: vstr.
-                int32_t data[2];
-                double val = get_double_from_d_register(vd);
-                memcpy(data, &val, 8);
-                writeW(address, data[0], instr);
-                writeW(address + 4, data[1], instr);
+                uint64_t data;
+                double val;
+                get_double_from_d_register(vd, &val);
+                memcpy(&data, &val, 8);
+                writeQ(address, data, instr);
             }
             break;
           }
@@ -4043,8 +4542,10 @@ Simulator::decodeSpecialCondition(SimInstruction* instr)
             while (r < regs) {
                 uint32_t data[2];
                 get_d_register(Vd + r, data);
-                writeW(address, data[0], instr);
-                writeW(address + 4, data[1], instr);
+                // TODO: We should AllowUnaligned here only if the alignment attribute of
+                // the instruction calls for default alignment.
+                writeW(address, data[0], instr, AllowUnaligned);
+                writeW(address + 4, data[1], instr, AllowUnaligned);
                 address += 8;
                 r++;
             }
@@ -4082,8 +4583,10 @@ Simulator::decodeSpecialCondition(SimInstruction* instr)
             int r = 0;
             while (r < regs) {
                 uint32_t data[2];
-                data[0] = readW(address, instr);
-                data[1] = readW(address + 4, instr);
+                // TODO: We should AllowUnaligned here only if the alignment attribute of
+                // the instruction calls for default alignment.
+                data[0] = readW(address, instr, AllowUnaligned);
+                data[1] = readW(address + 4, instr, AllowUnaligned);
                 set_d_register(Vd + r, data);
                 address += 8;
                 r++;
@@ -4100,16 +4603,16 @@ Simulator::decodeSpecialCondition(SimInstruction* instr)
         break;
       case 0xA:
         if (instr->bits(31,20) == 0xf57) {
-            // Minimal simulation: do nothing.
-            //
-            // If/when we upgrade load-exclusive and store-exclusive (above) to
-            // do something useful concurrency-wise, we should also upgrade
-            // these instructions.
             switch (instr->bits(7,4)) {
               case 5: // DMB
-              case 4: // DSB
-              case 6: // ISB
+                AtomicOperations::fenceSeqCst();
                 break;
+              case 4: // DSB
+                // We do not use DSB.
+                MOZ_CRASH("DSB unimplemented");
+              case 6: // ISB
+                // We do not use ISB.
+                MOZ_CRASH("ISB unimplemented");
               default:
                 MOZ_CRASH();
             }
@@ -4234,8 +4737,8 @@ Simulator::execute()
 
             int32_t rpc = resume_pc_;
             if (MOZ_UNLIKELY(rpc != 0)) {
-                // AsmJS signal handler ran and we have to adjust the pc.
-                JSRuntime::innermostAsmJSActivation()->setResumePC((void*)get_pc());
+                // wasm signal handler ran and we have to adjust the pc.
+                JSRuntime::innermostWasmActivation()->setResumePC((void*)get_pc());
                 set_pc(rpc);
                 resume_pc_ = 0;
             }
@@ -4369,7 +4872,7 @@ Simulator::callInternal(uint8_t* entry)
     }
 }
 
-int64_t
+int32_t
 Simulator::call(uint8_t* entry, int argument_count, ...)
 {
     va_list parameters;
@@ -4406,7 +4909,7 @@ Simulator::call(uint8_t* entry, int argument_count, ...)
     MOZ_ASSERT(entry_stack == get_register(sp));
     set_register(sp, original_stack);
 
-    int64_t result = (int64_t(get_register(r1)) << 32) | get_register(r0);
+    int32_t result = get_register(r0);
     return result;
 }
 

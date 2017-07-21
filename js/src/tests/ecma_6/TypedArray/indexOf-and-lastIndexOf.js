@@ -1,17 +1,5 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
 // Tests for TypedArray#indexOf.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.indexOf.length, 1);
 
     // Works with one argument.
@@ -21,7 +9,7 @@ for (var constructor of constructors) {
     assertEq(new constructor([1, 2, 3, 4, 5]).indexOf(6), -1);
     assertEq(new constructor([1, 2, 1, 2, 1]).indexOf(1), 0);
 
-    if (constructor === Float32Array || constructor === Float64Array) {
+    if (isFloatConstructor(constructor)) {
         assertEq(new constructor([NaN, 0, -0]).indexOf(NaN), -1);
         assertEq(new constructor([NaN, 0, -0]).indexOf(0), 1);
         assertEq(new constructor([NaN, 0, -0]).indexOf(-0), 1);
@@ -57,12 +45,18 @@ for (var constructor of constructors) {
     }).indexOf(1), 1);
 }
 
-assertEq(new Float32Array([.1, .2, .3]).indexOf(.2), -1);
-assertEq(new Float32Array([.1, .2, .3]).indexOf(Math.fround(.2)), 1);
-assertEq(new Float64Array([.1, .2, .3]).indexOf(.2), 1);
+for (let constructor of anyTypedArrayConstructors.filter(isFloatConstructor)) {
+    if (constructor.BYTES_PER_ELEMENT === 4) {
+        assertEq(new constructor([.1, .2, .3]).indexOf(.2), -1);
+        assertEq(new constructor([.1, .2, .3]).indexOf(Math.fround(.2)), 1);
+    } else {
+        assertEq(constructor.BYTES_PER_ELEMENT, 8);
+        assertEq(new constructor([.1, .2, .3]).indexOf(.2), 1);
+    }
+}
 
 // Tests for TypedArray#lastIndexOf.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
 
     assertEq(constructor.prototype.lastIndexOf.length, 1);
 
@@ -73,7 +67,7 @@ for (var constructor of constructors) {
     assertEq(new constructor([1, 2, 3, 4, 5]).lastIndexOf(6), -1);
     assertEq(new constructor([1, 2, 1, 2, 1]).lastIndexOf(1), 4);
 
-    if (constructor === Float32Array || constructor === Float64Array) {
+    if (isFloatConstructor(constructor)) {
         assertEq(new constructor([NaN, 0, -0]).lastIndexOf(NaN), -1);
         assertEq(new constructor([NaN, 0, -0]).lastIndexOf(0), 2);
         assertEq(new constructor([NaN, 0, -0]).lastIndexOf(-0), 2);
@@ -109,9 +103,15 @@ for (var constructor of constructors) {
     }).lastIndexOf(1), 1);
 }
 
-assertEq(new Float32Array([.1, .2, .3]).lastIndexOf(.2), -1);
-assertEq(new Float32Array([.1, .2, .3]).lastIndexOf(Math.fround(.2)), 1);
-assertEq(new Float64Array([.1, .2, .3]).lastIndexOf(.2), 1);
+for (let constructor of anyTypedArrayConstructors.filter(isFloatConstructor)) {
+    if (constructor.BYTES_PER_ELEMENT === 4) {
+        assertEq(new constructor([.1, .2, .3]).lastIndexOf(.2), -1);
+        assertEq(new constructor([.1, .2, .3]).lastIndexOf(Math.fround(.2)), 1);
+    } else {
+        assertEq(constructor.BYTES_PER_ELEMENT, 8);
+        assertEq(new constructor([.1, .2, .3]).lastIndexOf(.2), 1);
+    }
+}
 
 if (typeof reportCompare === "function")
     reportCompare(true, true);

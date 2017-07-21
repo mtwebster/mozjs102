@@ -1,16 +1,4 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     // The third argument to %TypedArray%.from is passed as the 'this' value to the
     // mapping function.
     var hits = 0, obj = {};

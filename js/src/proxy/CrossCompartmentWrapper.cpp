@@ -49,12 +49,13 @@ CrossCompartmentWrapper::getOwnPropertyDescriptor(JSContext* cx, HandleObject wr
 
 bool
 CrossCompartmentWrapper::defineProperty(JSContext* cx, HandleObject wrapper, HandleId id,
-                                        MutableHandle<PropertyDescriptor> desc) const
+                                        Handle<PropertyDescriptor> desc,
+                                        ObjectOpResult& result) const
 {
     Rooted<PropertyDescriptor> desc2(cx, desc);
     PIERCE(cx, wrapper,
            cx->compartment()->wrap(cx, &desc2),
-           Wrapper::defineProperty(cx, wrapper, id, &desc2),
+           Wrapper::defineProperty(cx, wrapper, id, desc2, result),
            NOTHING);
 }
 
@@ -69,39 +70,64 @@ CrossCompartmentWrapper::ownPropertyKeys(JSContext* cx, HandleObject wrapper,
 }
 
 bool
-CrossCompartmentWrapper::delete_(JSContext* cx, HandleObject wrapper, HandleId id, bool* bp) const
+CrossCompartmentWrapper::delete_(JSContext* cx, HandleObject wrapper, HandleId id,
+                                 ObjectOpResult& result) const
 {
     PIERCE(cx, wrapper,
            NOTHING,
-           Wrapper::delete_(cx, wrapper, id, bp),
+           Wrapper::delete_(cx, wrapper, id, result),
            NOTHING);
 }
 
 bool
-CrossCompartmentWrapper::getPrototypeOf(JSContext* cx, HandleObject wrapper,
-                                        MutableHandleObject protop) const
+CrossCompartmentWrapper::getPrototype(JSContext* cx, HandleObject wrapper,
+                                      MutableHandleObject protop) const
 {
     {
         RootedObject wrapped(cx, wrappedObject(wrapper));
         AutoCompartment call(cx, wrapped);
         if (!GetPrototype(cx, wrapped, protop))
             return false;
-        if (protop)
-            protop->setDelegate(cx);
+        if (protop) {
+            if (!protop->setDelegate(cx))
+                return false;
+        }
     }
 
     return cx->compartment()->wrap(cx, protop);
 }
 
 bool
-CrossCompartmentWrapper::setPrototypeOf(JSContext* cx, HandleObject wrapper,
-                                        HandleObject proto, bool* bp) const
+CrossCompartmentWrapper::setPrototype(JSContext* cx, HandleObject wrapper,
+                                      HandleObject proto, ObjectOpResult& result) const
 {
     RootedObject protoCopy(cx, proto);
     PIERCE(cx, wrapper,
            cx->compartment()->wrap(cx, &protoCopy),
-           Wrapper::setPrototypeOf(cx, wrapper, protoCopy, bp),
+           Wrapper::setPrototype(cx, wrapper, protoCopy, result),
            NOTHING);
+}
+
+bool
+CrossCompartmentWrapper::getPrototypeIfOrdinary(JSContext* cx, HandleObject wrapper,
+                                                bool* isOrdinary, MutableHandleObject protop) const
+{
+    {
+        RootedObject wrapped(cx, wrappedObject(wrapper));
+        AutoCompartment call(cx, wrapped);
+        if (!GetPrototypeIfOrdinary(cx, wrapped, isOrdinary, protop))
+            return false;
+
+        if (!*isOrdinary)
+            return true;
+
+        if (protop) {
+            if (!protop->setDelegate(cx))
+                return false;
+        }
+    }
+
+    return cx->compartment()->wrap(cx, protop);
 }
 
 bool
@@ -115,11 +141,11 @@ CrossCompartmentWrapper::setImmutablePrototype(JSContext* cx, HandleObject wrapp
 
 bool
 CrossCompartmentWrapper::preventExtensions(JSContext* cx, HandleObject wrapper,
-                                           bool* succeeded) const
+                                           ObjectOpResult& result) const
 {
     PIERCE(cx, wrapper,
            NOTHING,
-           Wrapper::preventExtensions(cx, wrapper, succeeded),
+           Wrapper::preventExtensions(cx, wrapper, result),
            NOTHING);
 }
 
@@ -150,14 +176,34 @@ CrossCompartmentWrapper::hasOwn(JSContext* cx, HandleObject wrapper, HandleId id
            NOTHING);
 }
 
+static bool
+WrapReceiver(JSContext* cx, HandleObject wrapper, MutableHandleValue receiver)
+{
+    // Usually the receiver is the wrapper and we can just unwrap it. If the
+    // wrapped object is also a wrapper, things are more complicated and we
+    // fall back to the slow path (it calls UncheckedUnwrap to unwrap all
+    // wrappers).
+    if (ObjectValue(*wrapper) == receiver) {
+        JSObject* wrapped = Wrapper::wrappedObject(wrapper);
+        if (!IsWrapper(wrapped)) {
+            MOZ_ASSERT(wrapped->compartment() == cx->compartment());
+            MOZ_ASSERT(!IsWindow(wrapped));
+            receiver.setObject(*wrapped);
+            return true;
+        }
+    }
+
+    return cx->compartment()->wrap(cx, receiver);
+}
+
 bool
-CrossCompartmentWrapper::get(JSContext* cx, HandleObject wrapper, HandleObject receiver,
+CrossCompartmentWrapper::get(JSContext* cx, HandleObject wrapper, HandleValue receiver,
                              HandleId id, MutableHandleValue vp) const
 {
-    RootedObject receiverCopy(cx, receiver);
+    RootedValue receiverCopy(cx, receiver);
     {
         AutoCompartment call(cx, wrappedObject(wrapper));
-        if (!cx->compartment()->wrap(cx, &receiverCopy))
+        if (!WrapReceiver(cx, wrapper, &receiverCopy))
             return false;
 
         if (!Wrapper::get(cx, wrapper, receiverCopy, id, vp))
@@ -167,14 +213,15 @@ CrossCompartmentWrapper::get(JSContext* cx, HandleObject wrapper, HandleObject r
 }
 
 bool
-CrossCompartmentWrapper::set(JSContext* cx, HandleObject wrapper, HandleObject receiver,
-                             HandleId id, bool strict, MutableHandleValue vp) const
+CrossCompartmentWrapper::set(JSContext* cx, HandleObject wrapper, HandleId id, HandleValue v,
+                             HandleValue receiver, ObjectOpResult& result) const
 {
-    RootedObject receiverCopy(cx, receiver);
+    RootedValue valCopy(cx, v);
+    RootedValue receiverCopy(cx, receiver);
     PIERCE(cx, wrapper,
-           cx->compartment()->wrap(cx, &receiverCopy) &&
-           cx->compartment()->wrap(cx, vp),
-           Wrapper::set(cx, wrapper, receiverCopy, id, strict, vp),
+           cx->compartment()->wrap(cx, &valCopy) &&
+           WrapReceiver(cx, wrapper, &receiverCopy),
+           Wrapper::set(cx, wrapper, id, valCopy, receiverCopy, result),
            NOTHING);
 }
 
@@ -301,6 +348,8 @@ CrossCompartmentWrapper::construct(JSContext* cx, HandleObject wrapper, const Ca
             if (!cx->compartment()->wrap(cx, args[n]))
                 return false;
         }
+        if (!cx->compartment()->wrap(cx, args.newTarget()))
+            return false;
         if (!Wrapper::construct(cx, wrapper, args))
             return false;
     }
@@ -309,7 +358,7 @@ CrossCompartmentWrapper::construct(JSContext* cx, HandleObject wrapper, const Ca
 
 bool
 CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test, NativeImpl impl,
-                                    CallArgs srcArgs) const
+                                    const CallArgs& srcArgs) const
 {
     RootedObject wrapper(cx, &srcArgs.thisv().toObject());
     MOZ_ASSERT(srcArgs.thisv().isMagic(JS_IS_CONSTRUCTING) ||
@@ -319,7 +368,7 @@ CrossCompartmentWrapper::nativeCall(JSContext* cx, IsAcceptableThis test, Native
     {
         AutoCompartment call(cx, wrapped);
         InvokeArgs dstArgs(cx);
-        if (!dstArgs.init(srcArgs.length()))
+        if (!dstArgs.init(cx, srcArgs.length()))
             return false;
 
         Value* src = srcArgs.base();
@@ -412,16 +461,6 @@ CrossCompartmentWrapper::boxedValue_unbox(JSContext* cx, HandleObject wrapper, M
            cx->compartment()->wrap(cx, vp));
 }
 
-bool
-CrossCompartmentWrapper::defaultValue(JSContext* cx, HandleObject wrapper, JSType hint,
-                                      MutableHandleValue vp) const
-{
-    PIERCE(cx, wrapper,
-           NOTHING,
-           Wrapper::defaultValue(cx, wrapper, hint, vp),
-           cx->compartment()->wrap(cx, vp));
-}
-
 const CrossCompartmentWrapper CrossCompartmentWrapper::singleton(0u);
 
 bool
@@ -431,16 +470,26 @@ js::IsCrossCompartmentWrapper(JSObject* obj)
            !!(Wrapper::wrapperHandler(obj)->flags() & Wrapper::CROSS_COMPARTMENT);
 }
 
-void
-js::NukeCrossCompartmentWrapper(JSContext* cx, JSObject* wrapper)
+static void
+NukeRemovedCrossCompartmentWrapper(JSContext* cx, JSObject* wrapper)
 {
     MOZ_ASSERT(wrapper->is<CrossCompartmentWrapperObject>());
 
     NotifyGCNukeWrapper(wrapper);
 
-    wrapper->as<ProxyObject>().nuke(&DeadObjectProxy::singleton);
+    wrapper->as<ProxyObject>().nuke();
 
     MOZ_ASSERT(IsDeadProxyObject(wrapper));
+}
+
+void
+js::NukeCrossCompartmentWrapper(JSContext* cx, JSObject* wrapper)
+{
+    JSCompartment* comp = wrapper->compartment();
+    auto ptr = comp->lookupWrapper(ObjectValue(*Wrapper::wrappedObject(wrapper)));
+    if (ptr)
+        comp->removeWrapper(ptr);
+    NukeRemovedCrossCompartmentWrapper(cx, wrapper);
 }
 
 /*
@@ -460,6 +509,8 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
     CHECK_REQUEST(cx);
     JSRuntime* rt = cx->runtime();
 
+    rt->gc.evictNursery(JS::gcreason::EVICT_NURSERY);
+
     // Iterate through scopes looking for system cross compartment wrappers
     // that point to an object that shares a global with obj.
 
@@ -472,20 +523,22 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
             // Some cross-compartment wrappers are for strings.  We're not
             // interested in those.
             const CrossCompartmentKey& k = e.front().key();
-            if (k.kind != CrossCompartmentKey::ObjectWrapper)
+            if (!k.is<JSObject*>())
                 continue;
 
             AutoWrapperRooter wobj(cx, WrapperValue(e));
             JSObject* wrapped = UncheckedUnwrap(wobj);
 
             if (nukeReferencesToWindow == DontNukeWindowReferences &&
-                wrapped->getClass()->ext.innerObject)
+                IsWindowProxy(wrapped))
+            {
                 continue;
+            }
 
             if (targetFilter.match(wrapped->compartment())) {
                 // We found a wrapper to nuke.
                 e.removeFront();
-                NukeCrossCompartmentWrapper(cx, wobj);
+                NukeRemovedCrossCompartmentWrapper(cx, wobj);
             }
         }
     }
@@ -496,9 +549,14 @@ js::NukeCrossCompartmentWrappers(JSContext* cx,
 // Given a cross-compartment wrapper |wobj|, update it to point to
 // |newTarget|. This recomputes the wrapper with JS_WrapValue, and thus can be
 // useful even if wrapper already points to newTarget.
-bool
+// This operation crashes on failure rather than leaving the heap in an
+// inconsistent state.
+void
 js::RemapWrapper(JSContext* cx, JSObject* wobjArg, JSObject* newTargetArg)
 {
+    MOZ_ASSERT(!IsInsideNursery(wobjArg));
+    MOZ_ASSERT(!IsInsideNursery(newTargetArg));
+
     RootedObject wobj(cx, wobjArg);
     RootedObject newTarget(cx, newTargetArg);
     MOZ_ASSERT(wobj->is<CrossCompartmentWrapperObject>());
@@ -523,7 +581,7 @@ js::RemapWrapper(JSContext* cx, JSObject* wobjArg, JSObject* newTargetArg)
     wcompartment->removeWrapper(p);
 
     // When we remove origv from the wrapper map, its wrapper, wobj, must
-    // immediately cease to be a cross-compartment wrapper. Neuter it.
+    // immediately cease to be a cross-compartment wrapper. Nuke it.
     NukeCrossCompartmentWrapper(cx, wobj);
 
     // First, we wrap it in the new compartment. We try to use the existing
@@ -531,7 +589,7 @@ js::RemapWrapper(JSContext* cx, JSObject* wobjArg, JSObject* newTargetArg)
     // the choice to reuse |wobj| or not.
     RootedObject tobj(cx, newTarget);
     AutoCompartment ac(cx, wobj);
-    if (!wcompartment->wrap(cx, &tobj, wobj))
+    if (!wcompartment->rewrap(cx, &tobj, wobj))
         MOZ_CRASH();
 
     // If wrap() reused |wobj|, it will have overwritten it and returned with
@@ -553,8 +611,8 @@ js::RemapWrapper(JSContext* cx, JSObject* wobjArg, JSObject* newTargetArg)
     // Update the entry in the compartment's wrapper map to point to the old
     // wrapper, which has now been updated (via reuse or swap).
     MOZ_ASSERT(wobj->is<WrapperObject>());
-    wcompartment->putWrapper(cx, CrossCompartmentKey(newTarget), ObjectValue(*wobj));
-    return true;
+    if (!wcompartment->putWrapper(cx, CrossCompartmentKey(newTarget), ObjectValue(*wobj)))
+        MOZ_CRASH();
 }
 
 // Remap all cross-compartment wrappers pointing to |oldTarget| to point to
@@ -563,6 +621,9 @@ JS_FRIEND_API(bool)
 js::RemapAllWrappersForObject(JSContext* cx, JSObject* oldTargetArg,
                               JSObject* newTargetArg)
 {
+    MOZ_ASSERT(!IsInsideNursery(oldTargetArg));
+    MOZ_ASSERT(!IsInsideNursery(newTargetArg));
+
     RootedValue origv(cx, ObjectValue(*oldTargetArg));
     RootedObject newTarget(cx, newTargetArg);
 
@@ -577,12 +638,8 @@ js::RemapAllWrappersForObject(JSContext* cx, JSObject* oldTargetArg,
         }
     }
 
-    for (WrapperValue* begin = toTransplant.begin(), *end = toTransplant.end();
-         begin != end; ++begin)
-    {
-        if (!RemapWrapper(cx, &begin->toObject(), newTarget))
-            MOZ_CRASH();
-    }
+    for (const WrapperValue& v : toTransplant)
+        RemapWrapper(cx, &v.toObject(), newTarget);
 
     return true;
 }
@@ -591,8 +648,10 @@ JS_FRIEND_API(bool)
 js::RecomputeWrappers(JSContext* cx, const CompartmentFilter& sourceFilter,
                       const CompartmentFilter& targetFilter)
 {
-    AutoWrapperVector toRecompute(cx);
+    // Drop any nursery-allocated wrappers.
+    cx->runtime()->gc.evictNursery(JS::gcreason::EVICT_NURSERY);
 
+    AutoWrapperVector toRecompute(cx);
     for (CompartmentsIter c(cx->runtime(), SkipAtoms); !c.done(); c.next()) {
         // Filter by source compartment.
         if (!sourceFilter.match(c))
@@ -601,12 +660,12 @@ js::RecomputeWrappers(JSContext* cx, const CompartmentFilter& sourceFilter,
         // Iterate over the wrappers, filtering appropriately.
         for (JSCompartment::WrapperEnum e(c); !e.empty(); e.popFront()) {
             // Filter out non-objects.
-            const CrossCompartmentKey& k = e.front().key();
-            if (k.kind != CrossCompartmentKey::ObjectWrapper)
+            CrossCompartmentKey& k = e.front().mutableKey();
+            if (!k.is<JSObject*>())
                 continue;
 
             // Filter by target compartment.
-            if (!targetFilter.match(static_cast<JSObject*>(k.wrapped)->compartment()))
+            if (!targetFilter.match(k.compartment()))
                 continue;
 
             // Add it to the list.
@@ -616,12 +675,10 @@ js::RecomputeWrappers(JSContext* cx, const CompartmentFilter& sourceFilter,
     }
 
     // Recompute all the wrappers in the list.
-    for (WrapperValue* begin = toRecompute.begin(), *end = toRecompute.end(); begin != end; ++begin)
-    {
-        JSObject* wrapper = &begin->toObject();
+    for (const WrapperValue& v : toRecompute) {
+        JSObject* wrapper = &v.toObject();
         JSObject* wrapped = Wrapper::wrappedObject(wrapper);
-        if (!RemapWrapper(cx, wrapper, wrapped))
-            MOZ_CRASH();
+        RemapWrapper(cx, wrapper, wrapped);
     }
 
     return true;

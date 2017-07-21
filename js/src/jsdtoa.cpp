@@ -16,7 +16,7 @@
 
 using namespace js;
 
-#ifdef IS_LITTLE_ENDIAN
+#if MOZ_LITTLE_ENDIAN
 #define IEEE_8087
 #else
 #define IEEE_MC68k
@@ -40,15 +40,26 @@ using namespace js;
 #endif
 */
 
-/*
- * MALLOC gets declared external, and that doesn't work for class members, so
- * wrap.
- */
-static inline void* dtoa_malloc(size_t size) { return js_malloc(size); }
-static inline void dtoa_free(void* p) { return js_free(p); }
+// dtoa.c requires that MALLOC be infallible. Furthermore, its allocations are
+// few and small. So AutoEnterOOMUnsafeRegion is appropriate here.
+static inline void* dtoa_malloc(size_t size)
+{
+    AutoEnterOOMUnsafeRegion oomUnsafe;
+    void* p = js_malloc(size);
+    if (!p)
+        oomUnsafe.crash("dtoa_malloc");
+
+    return p;
+}
+
+static inline void dtoa_free(void* p)
+{
+  return js_free(p);
+}
 
 #define NO_GLOBAL_STATE
 #define NO_ERRNO
+#define Omit_Private_Memory // This saves memory for the workloads we see.
 #define MALLOC dtoa_malloc
 #define FREE dtoa_free
 #include "dtoa.c"
@@ -136,7 +147,7 @@ js_dtostr(DtoaState* state, char* buffer, size_t bufferSize, JSDToStrMode mode, 
             case DTOSTR_EXPONENTIAL:
                 MOZ_ASSERT(precision > 0);
                 minNDigits = precision;
-                /* Fall through */
+                MOZ_FALLTHROUGH;
             case DTOSTR_STANDARD_EXPONENTIAL:
                 exponentialNotation = true;
                 break;
@@ -166,7 +177,7 @@ js_dtostr(DtoaState* state, char* buffer, size_t bufferSize, JSDToStrMode mode, 
                 numBegin[0] = numBegin[1];
                 numBegin[1] = '.';
             }
-            JS_snprintf(numEnd, bufferSize - (numEnd - buffer), "e%+d", decPt-1);
+            snprintf(numEnd, bufferSize - (numEnd - buffer), "e%+d", decPt-1);
         } else if (decPt != nDigits) {
             /* Some kind of a fraction in fixed notation */
             MOZ_ASSERT(decPt <= nDigits);
@@ -248,7 +259,8 @@ static uint32_t quorem2(Bigint* b, int32_t k)
 {
     ULong mask;
     ULong result;
-    ULong* bx, *bxe;
+    ULong* bx;
+    ULong* bxe;
     int32_t w;
     int32_t n = k >> 5;
     k &= 0x1F;
@@ -365,9 +377,10 @@ js_dtobasestr(DtoaState* state, int base, double dinput)
         /* We have a fraction. */
         int e, bbits;
         int32_t s2, done;
-        Bigint* b, *s, *mlo, *mhi;
-
-        b = s = mlo = mhi = nullptr;
+        Bigint* b = nullptr;
+        Bigint* s = nullptr;
+        Bigint* mlo = nullptr;
+        Bigint* mhi = nullptr;
 
         *p++ = '.';
         b = d2b(PASS_STATE df, &e, &bbits);
@@ -499,13 +512,13 @@ js_dtobasestr(DtoaState* state, int base, double dinput)
 }
 
 DtoaState*
-js_NewDtoaState()
+js::NewDtoaState()
 {
     return newdtoa();
 }
 
 void
-js_DestroyDtoaState(DtoaState* state)
+js::DestroyDtoaState(DtoaState* state)
 {
     destroydtoa(state);
 }

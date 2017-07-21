@@ -12,6 +12,7 @@
 
 #include "jsprf.h"
 
+#include "mozilla/Sprintf.h"
 #include "mozilla/Vector.h"
 
 #include <stdarg.h>
@@ -62,18 +63,18 @@ struct NumArgState
 typedef mozilla::Vector<NumArgState, 20, js::SystemAllocPolicy> NumArgStateVector;
 
 
-#define TYPE_INT16      0
-#define TYPE_UINT16     1
+#define TYPE_SHORT      0
+#define TYPE_USHORT     1
 #define TYPE_INTN       2
 #define TYPE_UINTN      3
-#define TYPE_INT32      4
-#define TYPE_UINT32     5
-#define TYPE_INT64      6
-#define TYPE_UINT64     7
+#define TYPE_LONG       4
+#define TYPE_ULONG      5
+#define TYPE_LONGLONG   6
+#define TYPE_ULONGLONG  7
 #define TYPE_STRING     8
 #define TYPE_DOUBLE     9
 #define TYPE_INTSTR     10
-#define TYPE_WSTRING    11
+#define TYPE_POINTER    11
 #define TYPE_UNKNOWN    20
 
 #define FLAG_LEFT       0x1
@@ -88,31 +89,9 @@ generic_write(SprintfState* ss, const char* src, size_t srclen)
     return (*ss->stuff)(ss, src, srclen);
 }
 
-inline bool
-generic_write(SprintfState* ss, const char16_t* src, size_t srclen)
-{
-    const size_t CHUNK_SIZE = 64;
-    char chunk[CHUNK_SIZE];
-
-    size_t j = 0;
-    size_t i = 0;
-    while (i < srclen) {
-        // FIXME: truncates characters to 8 bits
-        chunk[j++] = char(src[i++]);
-
-        if (j == CHUNK_SIZE || i == srclen) {
-            if (!(*ss->stuff)(ss, chunk, j))
-                return false;
-            j = 0;
-        }
-    }
-    return true;
-}
-
 // Fill into the buffer using the data in src
-template <typename Char>
 static bool
-fill2(SprintfState* ss, const Char* src, int srclen, int width, int flags)
+fill2(SprintfState* ss, const char* src, int srclen, int width, int flags)
 {
     char space = ' ';
 
@@ -286,8 +265,6 @@ static bool cvt_ll(SprintfState* ss, int64_t num, int width, int prec, int radix
 /*
  * Convert a double precision floating point number into its printable
  * form.
- *
- * XXX stop using sprintf to convert floating point
  */
 static bool cvt_f(SprintfState* ss, double d, const char* fmt0, const char* fmt1)
 {
@@ -303,7 +280,7 @@ static bool cvt_f(SprintfState* ss, double d, const char* fmt0, const char* fmt1
     js_memcpy(fin, fmt0, (size_t)amount);
     fin[amount] = 0;
 
-    // Convert floating point using the native sprintf code
+    // Convert floating point using the native snprintf code
 #ifdef DEBUG
     {
         const char* p = fin;
@@ -313,30 +290,22 @@ static bool cvt_f(SprintfState* ss, double d, const char* fmt0, const char* fmt1
         }
     }
 #endif
-    sprintf(fout, fin, d);
-
-    // This assert will catch overflow's of fout, when building with
-    // debugging on. At least this way we can track down the evil piece
-    // of calling code and fix it!
-    MOZ_ASSERT(strlen(fout) < sizeof(fout));
+    SprintfLiteral(fout, fin, d);
 
     return (*ss->stuff)(ss, fout, strlen(fout));
 }
 
 static inline const char* generic_null_str(const char*) { return "(null)"; }
-static inline const char16_t* generic_null_str(const char16_t*) { return MOZ_UTF16("(null)"); }
 
 static inline size_t generic_strlen(const char* s) { return strlen(s); }
-static inline size_t generic_strlen(const char16_t* s) { return js_strlen(s); }
 
 /*
  * Convert a string into its printable form.  "width" is the output
  * width. "prec" is the maximum number of characters of "s" to output,
  * where -1 means until NUL.
  */
-template <typename Char>
 static bool
-cvt_s(SprintfState* ss, const Char* s, int width, int prec, int flags)
+cvt_s(SprintfState* ss, const char* s, int width, int prec, int flags)
 {
     if (prec == 0)
         return true;
@@ -381,11 +350,11 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
             if (c > '9' || c < '0') {
                 if (c == '$') {         // numbered argument case
                     if (i > 0)
-                        return false;
+                        MOZ_CRASH("Bad format string");
                     number++;
                 } else {                // non-numbered argument case
                     if (number > 0)
-                        return false;
+                        MOZ_CRASH("Bad format string");
                     i = 1;
                 }
                 break;
@@ -423,7 +392,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
         }
 
         if (!c || cn < 1 || cn > number)
-            return false;
+            MOZ_CRASH("Bad format string");
 
         // nas[cn] starts from 0, and make sure nas[cn].type is not assigned.
         cn--;
@@ -435,7 +404,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
         // width
         if (c == '*') {
             // not supported feature, for the argument is not numbered
-            return false;
+            MOZ_CRASH("Bad format string");
         }
 
         while ((c >= '0') && (c <= '9')) {
@@ -447,7 +416,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
             c = *p++;
             if (c == '*') {
                 // not supported feature, for the argument is not numbered
-                return false;
+                MOZ_CRASH("Bad format string");
             }
 
             while ((c >= '0') && (c <= '9')) {
@@ -458,19 +427,25 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
         // size
         nas[cn].type = TYPE_INTN;
         if (c == 'h') {
-            nas[cn].type = TYPE_INT16;
+            nas[cn].type = TYPE_SHORT;
             c = *p++;
         } else if (c == 'L') {
-            // XXX not quite sure here
-            nas[cn].type = TYPE_INT64;
+            nas[cn].type = TYPE_LONGLONG;
             c = *p++;
         } else if (c == 'l') {
-            nas[cn].type = TYPE_INT32;
+            nas[cn].type = TYPE_LONG;
             c = *p++;
             if (c == 'l') {
-                nas[cn].type = TYPE_INT64;
+                nas[cn].type = TYPE_LONGLONG;
                 c = *p++;
             }
+        } else if (c == 'z' || c == 'I') {
+            static_assert(sizeof(size_t) == sizeof(int) || sizeof(size_t) == sizeof(long) ||
+                          sizeof(size_t) == sizeof(long long),
+                          "size_t is not one of the expected sizes");
+            nas[cn].type = sizeof(size_t) == sizeof(int) ? TYPE_INTN :
+                sizeof(size_t) == sizeof(long) ? TYPE_LONG : TYPE_LONGLONG;
+            c = *p++;
         }
 
         // format
@@ -491,16 +466,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
             break;
 
         case 'p':
-            // XXX should use cpp
-            if (sizeof(void*) == sizeof(int32_t)) {
-                nas[cn].type = TYPE_UINT32;
-            } else if (sizeof(void*) == sizeof(int64_t)) {
-                nas[cn].type = TYPE_UINT64;
-            } else if (sizeof(void*) == sizeof(int)) {
-                nas[cn].type = TYPE_UINTN;
-            } else {
-                nas[cn].type = TYPE_UNKNOWN;
-            }
+            nas[cn].type = TYPE_POINTER;
             break;
 
         case 'C':
@@ -513,7 +479,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
             break;
 
         case 's':
-            nas[cn].type = (nas[cn].type == TYPE_UINT16) ? TYPE_WSTRING : TYPE_STRING;
+            nas[cn].type = TYPE_STRING;
             break;
 
         case 'n':
@@ -528,7 +494,7 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
 
         // get a legal para.
         if (nas[cn].type == TYPE_UNKNOWN)
-            return false;
+            MOZ_CRASH("Bad format string");
     }
 
 
@@ -545,20 +511,20 @@ BuildArgArray(const char* fmt, va_list ap, NumArgStateVector& nas)
         VARARGS_ASSIGN(nas[cn].ap, ap);
 
         switch (nas[cn].type) {
-        case TYPE_INT16:
-        case TYPE_UINT16:
+        case TYPE_SHORT:
+        case TYPE_USHORT:
         case TYPE_INTN:
         case TYPE_UINTN:        (void) va_arg(ap, int);         break;
-        case TYPE_INT32:        (void) va_arg(ap, int32_t);     break;
-        case TYPE_UINT32:       (void) va_arg(ap, uint32_t);    break;
-        case TYPE_INT64:        (void) va_arg(ap, int64_t);     break;
-        case TYPE_UINT64:       (void) va_arg(ap, uint64_t);    break;
+        case TYPE_LONG:         (void) va_arg(ap, long);        break;
+        case TYPE_ULONG:        (void) va_arg(ap, unsigned long); break;
+        case TYPE_LONGLONG:     (void) va_arg(ap, long long);   break;
+        case TYPE_ULONGLONG:    (void) va_arg(ap, unsigned long long); break;
         case TYPE_STRING:       (void) va_arg(ap, char*);       break;
-        case TYPE_WSTRING:      (void) va_arg(ap, char16_t*);   break;
         case TYPE_INTSTR:       (void) va_arg(ap, int*);        break;
         case TYPE_DOUBLE:       (void) va_arg(ap, double);      break;
+        case TYPE_POINTER:      (void) va_arg(ap, void*);       break;
 
-        default: return false;
+        default: MOZ_CRASH();
         }
 
         cn++;
@@ -577,14 +543,13 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
     int flags, width, prec, radix, type;
     union {
         char ch;
-        char16_t wch;
         int i;
         long l;
-        int64_t ll;
+        long long ll;
         double d;
         const char* s;
-        const char16_t* ws;
         int* ip;
+        void* p;
     } u;
     const char* fmt0;
     static const char hex[] = "0123456789abcdef";
@@ -600,8 +565,7 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
     NumArgStateVector nas;
     if (!BuildArgArray(fmt, ap, nas)) {
         // the fmt contains error Numbered Argument format, jliu@netscape.com
-        MOZ_ASSERT(0);
-        return false;
+        MOZ_CRASH("Bad format string");
     }
 
     while ((c = *fmt++) != 0) {
@@ -634,7 +598,7 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
             }
 
             if (nas[i - 1].type == TYPE_UNKNOWN)
-                return false;
+                MOZ_CRASH("Bad format string");
 
             ap = nas[i - 1].ap;
             dolPt = fmt;
@@ -687,19 +651,25 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
         // size
         type = TYPE_INTN;
         if (c == 'h') {
-            type = TYPE_INT16;
+            type = TYPE_SHORT;
             c = *fmt++;
         } else if (c == 'L') {
-            // XXX not quite sure here
-            type = TYPE_INT64;
+            type = TYPE_LONGLONG;
             c = *fmt++;
         } else if (c == 'l') {
-            type = TYPE_INT32;
+            type = TYPE_LONG;
             c = *fmt++;
             if (c == 'l') {
-                type = TYPE_INT64;
+                type = TYPE_LONGLONG;
                 c = *fmt++;
             }
+        } else if (c == 'z' || c == 'I') {
+            static_assert(sizeof(size_t) == sizeof(int) || sizeof(size_t) == sizeof(long) ||
+                          sizeof(size_t) == sizeof(long long),
+                          "size_t is not one of the expected sizes");
+            type = sizeof(size_t) == sizeof(int) ? TYPE_INTN :
+                sizeof(size_t) == sizeof(long) ? TYPE_LONG : TYPE_LONGLONG;
+            c = *fmt++;
         }
 
         // format
@@ -732,15 +702,15 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
 
           fetch_and_convert:
             switch (type) {
-              case TYPE_INT16:
+              case TYPE_SHORT:
                 u.l = va_arg(ap, int);
                 if (u.l < 0) {
                     u.l = -u.l;
                     flags |= FLAG_NEG;
                 }
                 goto do_long;
-              case TYPE_UINT16:
-                u.l = va_arg(ap, int) & 0xffff;
+              case TYPE_USHORT:
+                u.l = (unsigned short) va_arg(ap, unsigned int);
                 goto do_long;
               case TYPE_INTN:
                 u.l = va_arg(ap, int);
@@ -753,30 +723,33 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
                 u.l = (long)va_arg(ap, unsigned int);
                 goto do_long;
 
-              case TYPE_INT32:
-                u.l = va_arg(ap, int32_t);
+              case TYPE_LONG:
+                u.l = va_arg(ap, long);
                 if (u.l < 0) {
                     u.l = -u.l;
                     flags |= FLAG_NEG;
                 }
                 goto do_long;
-              case TYPE_UINT32:
-                u.l = (long)va_arg(ap, uint32_t);
+              case TYPE_ULONG:
+                u.l = (long)va_arg(ap, unsigned long);
               do_long:
                 if (!cvt_l(ss, u.l, width, prec, radix, type, flags, hexp))
                     return false;
 
                 break;
 
-              case TYPE_INT64:
-                u.ll = va_arg(ap, int64_t);
+              case TYPE_LONGLONG:
+                u.ll = va_arg(ap, long long);
                 if (u.ll < 0) {
                     u.ll = -u.ll;
                     flags |= FLAG_NEG;
                 }
                 goto do_longlong;
-              case TYPE_UINT64:
-                u.ll = va_arg(ap, uint64_t);
+              case TYPE_POINTER:
+                u.ll = (uintptr_t)va_arg(ap, void*);
+                goto do_longlong;
+              case TYPE_ULONGLONG:
+                u.ll = va_arg(ap, unsigned long long);
               do_longlong:
                 if (!cvt_ll(ss, u.ll, width, prec, radix, type, flags, hexp))
                     return false;
@@ -813,7 +786,7 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
                 }
             }
             switch (type) {
-              case TYPE_INT16:
+              case TYPE_SHORT:
               case TYPE_INTN:
                 u.ch = va_arg(ap, int);
                 if (!(*ss->stuff)(ss, &u.ch, 1))
@@ -829,16 +802,7 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
             break;
 
           case 'p':
-            if (sizeof(void*) == sizeof(int32_t)) {
-                type = TYPE_UINT32;
-            } else if (sizeof(void*) == sizeof(int64_t)) {
-                type = TYPE_UINT64;
-            } else if (sizeof(void*) == sizeof(int)) {
-                type = TYPE_UINTN;
-            } else {
-                MOZ_ASSERT(0);
-                break;
-            }
+            type = TYPE_POINTER;
             radix = 16;
             goto fetch_and_convert;
 
@@ -853,15 +817,9 @@ dosprintf(SprintfState* ss, const char* fmt, va_list ap)
 #endif
 
           case 's':
-            if(type == TYPE_INT16) {
-                u.ws = va_arg(ap, const char16_t*);
-                if (!cvt_s(ss, u.ws, width, prec, flags))
-                    return false;
-            } else {
-                u.s = va_arg(ap, const char*);
-                if (!cvt_s(ss, u.s, width, prec, flags))
-                    return false;
-            }
+            u.s = va_arg(ap, const char*);
+            if (!cvt_s(ss, u.s, width, prec, flags))
+                return false;
             break;
 
           case 'n':
@@ -966,67 +924,6 @@ JS_vsmprintf(const char* fmt, va_list ap)
     return ss.base;
 }
 
-/*
- * Stuff routine that discards overflow data
- */
-static bool
-LimitStuff(SprintfState* ss, const char* sp, size_t len)
-{
-    size_t limit = ss->maxlen - (ss->cur - ss->base);
-
-    if (len > limit)
-        len = limit;
-    while (len) {
-        --len;
-        *ss->cur++ = *sp++;
-    }
-    return true;
-}
-
-/*
- * sprintf into a fixed size buffer. Make sure there is a NUL at the end
- * when finished.
- */
-JS_PUBLIC_API(uint32_t)
-JS_snprintf(char* out, uint32_t outlen, const char* fmt, ...)
-{
-    va_list ap;
-    int rv;
-
-    MOZ_ASSERT(int32_t(outlen) > 0);
-    if (int32_t(outlen) <= 0)
-        return 0;
-
-    va_start(ap, fmt);
-    rv = JS_vsnprintf(out, outlen, fmt, ap);
-    va_end(ap);
-    return rv;
-}
-
-JS_PUBLIC_API(uint32_t)
-JS_vsnprintf(char* out, uint32_t outlen, const char* fmt, va_list ap)
-{
-    SprintfState ss;
-    uint32_t n;
-
-    MOZ_ASSERT(int32_t(outlen) > 0);
-    if (int32_t(outlen) <= 0)
-        return 0;
-
-    ss.stuff = LimitStuff;
-    ss.base = out;
-    ss.cur = out;
-    ss.maxlen = outlen;
-    (void) dosprintf(&ss, fmt, ap);
-
-    /* If we added chars, and we didn't append a null, do it now. */
-    if (ss.cur != ss.base && ss.cur[-1] != '\0')
-        ss.cur[-1] = '\0';
-
-    n = ss.cur - ss.base;
-    return n ? n - 1 : n;
-}
-
 JS_PUBLIC_API(char*)
 JS_sprintf_append(char* last, const char* fmt, ...)
 {
@@ -1062,18 +959,18 @@ JS_vsprintf_append(char* last, const char* fmt, va_list ap)
     return ss.base;
 }
 
-#undef TYPE_INT16
-#undef TYPE_UINT16
+#undef TYPE_SHORT
+#undef TYPE_USHORT
 #undef TYPE_INTN
 #undef TYPE_UINTN
-#undef TYPE_INT32
-#undef TYPE_UINT32
-#undef TYPE_INT64
-#undef TYPE_UINT64
+#undef TYPE_LONG
+#undef TYPE_ULONG
+#undef TYPE_LONGLONG
+#undef TYPE_ULONGLONG
 #undef TYPE_STRING
 #undef TYPE_DOUBLE
 #undef TYPE_INTSTR
-#undef TYPE_WSTRING
+#undef TYPE_POINTER
 #undef TYPE_UNKNOWN
 
 #undef FLAG_LEFT

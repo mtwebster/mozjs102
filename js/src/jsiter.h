@@ -16,6 +16,7 @@
 #include "jscntxt.h"
 
 #include "gc/Barrier.h"
+#include "vm/ReceiverGuard.h"
 #include "vm/Stack.h"
 
 /*
@@ -27,16 +28,18 @@
 
 namespace js {
 
+class PropertyIteratorObject;
+
 struct NativeIterator
 {
-    HeapPtrObject obj;                  // Object being iterated.
-    JSObject* iterObj_;                 // Internal iterator object.
-    HeapPtrFlatString* props_array;
-    HeapPtrFlatString* props_cursor;
-    HeapPtrFlatString* props_end;
-    Shape** shapes_array;
-    uint32_t shapes_length;
-    uint32_t shapes_key;
+    GCPtrObject obj;    // Object being iterated.
+    JSObject* iterObj_; // Internal iterator object.
+    GCPtrFlatString* props_array;
+    GCPtrFlatString* props_cursor;
+    GCPtrFlatString* props_end;
+    HeapReceiverGuard* guard_array;
+    uint32_t guard_length;
+    uint32_t guard_key;
     uint32_t flags;
 
   private:
@@ -49,11 +52,11 @@ struct NativeIterator
         return (flags & JSITER_FOREACH) == 0;
     }
 
-    inline HeapPtrFlatString* begin() const {
+    inline GCPtrFlatString* begin() const {
         return props_array;
     }
 
-    inline HeapPtrFlatString* end() const {
+    inline GCPtrFlatString* end() const {
         return props_end;
     }
 
@@ -64,7 +67,7 @@ struct NativeIterator
     JSObject* iterObj() const {
         return iterObj_;
     }
-    HeapPtrFlatString* current() const {
+    GCPtrFlatString* current() const {
         MOZ_ASSERT(props_cursor < props_end);
         return props_cursor;
     }
@@ -102,12 +105,13 @@ struct NativeIterator
         prev_ = nullptr;
     }
 
-    static NativeIterator* allocateSentinel(JSContext* cx);
-    static NativeIterator* allocateIterator(JSContext* cx, uint32_t slength,
-                                            const js::AutoIdVector& props);
+    static NativeIterator* allocateSentinel(JSContext* maybecx);
+    static NativeIterator* allocateIterator(JSContext* cx, uint32_t slength, uint32_t plength);
     void init(JSObject* obj, JSObject* iterObj, unsigned flags, uint32_t slength, uint32_t key);
+    bool initProperties(JSContext* cx, Handle<PropertyIteratorObject*> obj,
+                        const js::AutoIdVector& props);
 
-    void mark(JSTracer* trc);
+    void trace(JSTracer* trc);
 
     static void destroy(NativeIterator* iter) {
         js_free(iter);
@@ -116,6 +120,8 @@ struct NativeIterator
 
 class PropertyIteratorObject : public NativeObject
 {
+    static const ClassOps classOps_;
+
   public:
     static const Class class_;
 
@@ -145,8 +151,11 @@ class StringIteratorObject : public JSObject
     static const Class class_;
 };
 
-bool
-VectorToIdArray(JSContext* cx, AutoIdVector& props, JSIdArray** idap);
+class ListIteratorObject : public JSObject
+{
+  public:
+    static const Class class_;
+};
 
 bool
 GetIterator(JSContext* cx, HandleObject obj, unsigned flags, MutableHandleObject objp);
@@ -171,8 +180,8 @@ NewEmptyPropertyIterator(JSContext* cx, unsigned flags, MutableHandleObject objp
  * for-in semantics are required, and when the caller can guarantee that the
  * iterator will never be exposed to scripts.
  */
-bool
-ValueToIterator(JSContext* cx, unsigned flags, MutableHandleValue vp);
+JSObject*
+ValueToIterator(JSContext* cx, unsigned flags, HandleValue vp);
 
 bool
 CloseIterator(JSContext* cx, HandleObject iterObj);
@@ -192,9 +201,6 @@ SuppressDeletedProperty(JSContext* cx, HandleObject obj, jsid id);
 extern bool
 SuppressDeletedElement(JSContext* cx, HandleObject obj, uint32_t index);
 
-extern bool
-SuppressDeletedElements(JSContext* cx, HandleObject obj, uint32_t begin, uint32_t end);
-
 /*
  * IteratorMore() returns the next iteration value. If no value is available,
  * MagicValue(JS_NO_ITER_VALUE) is returned.
@@ -212,9 +218,12 @@ ThrowStopIteration(JSContext* cx);
 extern JSObject*
 CreateItrResultObject(JSContext* cx, HandleValue value, bool done);
 
-} /* namespace js */
+extern JSObject*
+InitLegacyIteratorClass(JSContext* cx, HandleObject obj);
 
 extern JSObject*
-js_InitIteratorClasses(JSContext* cx, js::HandleObject obj);
+InitStopIterationClass(JSContext* cx, HandleObject obj);
+
+} /* namespace js */
 
 #endif /* jsiter_h */

@@ -23,13 +23,15 @@ class WeakSetObject : public NativeObject
     static const JSPropertySpec properties[];
     static const JSFunctionSpec methods[];
 
-    static WeakSetObject* create(JSContext* cx);
-    static bool construct(JSContext* cx, unsigned argc, Value* vp);
+    static WeakSetObject* create(JSContext* cx, HandleObject proto = nullptr);
+    static MOZ_MUST_USE bool construct(JSContext* cx, unsigned argc, Value* vp);
+
+    static bool isBuiltinAdd(HandleValue add, JSContext* cx);
 };
 
-} // namespace js
-
 extern JSObject*
-js_InitWeakSetClass(JSContext* cx, js::HandleObject obj);
+InitWeakSetClass(JSContext* cx, HandleObject obj);
+
+} // namespace js
 
 #endif /* builtin_WeakSetObject_h */

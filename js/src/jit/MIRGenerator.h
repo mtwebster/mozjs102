@@ -20,6 +20,7 @@
 #include "jit/CompileInfo.h"
 #include "jit/JitAllocPolicy.h"
 #include "jit/JitCompartment.h"
+#include "jit/MIR.h"
 #ifdef JS_ION_PERF
 # include "jit/PerfSpewer.h"
 #endif
@@ -28,9 +29,7 @@
 namespace js {
 namespace jit {
 
-class MBasicBlock;
 class MIRGraph;
-class MStart;
 class OptimizationInfo;
 
 class MIRGenerator
@@ -38,7 +37,11 @@ class MIRGenerator
   public:
     MIRGenerator(CompileCompartment* compartment, const JitCompileOptions& options,
                  TempAllocator* alloc, MIRGraph* graph,
-                 CompileInfo* info, const OptimizationInfo* optimizationInfo);
+                 const CompileInfo* info, const OptimizationInfo* optimizationInfo);
+
+    void initMinWasmHeapLength(uint32_t init) {
+        minWasmHeapLength_ = init;
+    }
 
     TempAllocator& alloc() {
         return *alloc_;
@@ -46,13 +49,13 @@ class MIRGenerator
     MIRGraph& graph() {
         return *graph_;
     }
-    bool ensureBallast() {
+    MOZ_MUST_USE bool ensureBallast() {
         return alloc().ensureBallast();
     }
     const JitRuntime* jitRuntime() const {
         return GetJitContext()->runtime->jitRuntime();
     }
-    CompileInfo& info() {
+    const CompileInfo& info() const {
         return *info_;
     }
     const OptimizationInfo& optimizationInfo() const {
@@ -69,14 +72,14 @@ class MIRGenerator
 
     // Set an error state and prints a message. Returns false so errors can be
     // propagated up.
-    bool abort(const char* message, ...);
-    bool abortFmt(const char* message, va_list ap);
+    bool abort(const char* message, ...) MOZ_FORMAT_PRINTF(2, 3); // always returns false
+    bool abortFmt(const char* message, va_list ap); // always returns false
 
     bool errored() const {
         return error_;
     }
 
-    bool instrumentedProfiling() {
+    MOZ_MUST_USE bool instrumentedProfiling() {
         if (!instrumentedProfilingIsCached_) {
             instrumentedProfiling_ = GetJitContext()->runtime->spsProfiler().enabled();
             instrumentedProfilingIsCached_ = true;
@@ -85,11 +88,18 @@ class MIRGenerator
     }
 
     bool isProfilerInstrumentationEnabled() {
-        return !compilingAsmJS() && instrumentedProfiling();
+        return !compilingWasm() && instrumentedProfiling();
     }
 
     bool isOptimizationTrackingEnabled() {
         return isProfilerInstrumentationEnabled() && !info().isAnalysis();
+    }
+
+    bool safeForMinorGC() const {
+        return safeForMinorGC_;
+    }
+    void setNotSafeForMinorGC() {
+        safeForMinorGC_ = false;
     }
 
     // Whether the main thread is trying to cancel this build.
@@ -116,23 +126,21 @@ class MIRGenerator
         return abortReason_;
     }
 
-    bool compilingAsmJS() const {
-        return info_->compilingAsmJS();
+    bool compilingWasm() const {
+        return info_->compilingWasm();
     }
 
-    uint32_t maxAsmJSStackArgBytes() const {
-        MOZ_ASSERT(compilingAsmJS());
-        return maxAsmJSStackArgBytes_;
+    uint32_t wasmMaxStackArgBytes() const {
+        MOZ_ASSERT(compilingWasm());
+        return wasmMaxStackArgBytes_;
     }
-    uint32_t resetAsmJSMaxStackArgBytes() {
-        MOZ_ASSERT(compilingAsmJS());
-        uint32_t old = maxAsmJSStackArgBytes_;
-        maxAsmJSStackArgBytes_ = 0;
-        return old;
+    void initWasmMaxStackArgBytes(uint32_t n) {
+        MOZ_ASSERT(compilingWasm());
+        MOZ_ASSERT(wasmMaxStackArgBytes_ == 0);
+        wasmMaxStackArgBytes_ = n;
     }
-    void setAsmJSMaxStackArgBytes(uint32_t n) {
-        MOZ_ASSERT(compilingAsmJS());
-        maxAsmJSStackArgBytes_ = n;
+    uint32_t minWasmHeapLength() const {
+        return minWasmHeapLength_;
     }
     void setPerformsCall() {
         performsCall_ = true;
@@ -143,13 +151,6 @@ class MIRGenerator
     // Traverses the graph to find if there's any SIMD instruction. Costful but
     // the value is cached, so don't worry about calling it several times.
     bool usesSimd();
-    void initMinAsmJSHeapLength(uint32_t len) {
-        MOZ_ASSERT(minAsmJSHeapLength_ == 0);
-        minAsmJSHeapLength_ = len;
-    }
-    uint32_t minAsmJSHeapLength() const {
-        return minAsmJSHeapLength_;
-    }
 
     bool modifiesFrameArguments() const {
         return modifiesFrameArguments_;
@@ -157,34 +158,31 @@ class MIRGenerator
 
     typedef Vector<ObjectGroup*, 0, JitAllocPolicy> ObjectGroupVector;
 
-    // When abortReason() == AbortReason_NewScriptProperties, all types which
-    // the new script properties analysis hasn't been performed on yet.
-    const ObjectGroupVector& abortedNewScriptPropertiesGroups() const {
-        return abortedNewScriptPropertiesGroups_;
+    // When abortReason() == AbortReason_PreliminaryObjects, all groups with
+    // preliminary objects which haven't been analyzed yet.
+    const ObjectGroupVector& abortedPreliminaryGroups() const {
+        return abortedPreliminaryGroups_;
     }
 
   public:
     CompileCompartment* compartment;
 
   protected:
-    CompileInfo* info_;
+    const CompileInfo* info_;
     const OptimizationInfo* optimizationInfo_;
     TempAllocator* alloc_;
-    JSFunction* fun_;
-    uint32_t nslots_;
     MIRGraph* graph_;
     AbortReason abortReason_;
     bool shouldForceAbort_; // Force AbortReason_Disable
-    ObjectGroupVector abortedNewScriptPropertiesGroups_;
+    ObjectGroupVector abortedPreliminaryGroups_;
     bool error_;
     mozilla::Atomic<bool, mozilla::Relaxed>* pauseBuild_;
     mozilla::Atomic<bool, mozilla::Relaxed> cancelBuild_;
 
-    uint32_t maxAsmJSStackArgBytes_;
+    uint32_t wasmMaxStackArgBytes_;
     bool performsCall_;
     bool usesSimd_;
-    bool usesSimdCached_;
-    uint32_t minAsmJSHeapLength_;
+    bool cachedUsesSimd_;
 
     // Keep track of whether frame arguments are modified during execution.
     // RegAlloc needs to know this as spilling values back to their register
@@ -193,14 +191,12 @@ class MIRGenerator
 
     bool instrumentedProfiling_;
     bool instrumentedProfilingIsCached_;
+    bool safeForMinorGC_;
 
-    // List of nursery objects used by this compilation. Can be traced by a
-    // minor GC while compilation happens off-thread. This Vector should only
-    // be accessed on the main thread (IonBuilder, nursery GC or
-    // CodeGenerator::link).
-    ObjectVector nurseryObjects_;
+    void addAbortedPreliminaryGroup(ObjectGroup* group);
 
-    void addAbortedNewScriptPropertiesGroup(ObjectGroup* type);
+    uint32_t minWasmHeapLength_;
+
     void setForceAbort() {
         shouldForceAbort_ = true;
     }
@@ -209,19 +205,21 @@ class MIRGenerator
     }
 
 #if defined(JS_ION_PERF)
-    AsmJSPerfSpewer asmJSPerfSpewer_;
+    WasmPerfSpewer wasmPerfSpewer_;
 
   public:
-    AsmJSPerfSpewer& perfSpewer() { return asmJSPerfSpewer_; }
+    WasmPerfSpewer& perfSpewer() { return wasmPerfSpewer_; }
 #endif
 
   public:
     const JitCompileOptions options;
 
-    void traceNurseryObjects(JSTracer* trc);
+  private:
+    GraphSpewer gs_;
 
-    const ObjectVector& nurseryObjects() const {
-        return nurseryObjects_;
+  public:
+    GraphSpewer& graphSpewer() {
+        return gs_;
     }
 };
 

@@ -15,7 +15,6 @@ namespace js {
 namespace jit {
 
 struct SafepointSlotEntry;
-struct SafepointNunboxEntry;
 
 class LAllocation;
 class LSafepoint;
@@ -30,7 +29,7 @@ class SafepointWriter
 
   public:
     explicit SafepointWriter(uint32_t slotCount, uint32_t argumentCount);
-    bool init(TempAllocator& alloc);
+    MOZ_MUST_USE bool init(TempAllocator& alloc);
 
   private:
     // A safepoint entry is written in the order these functions appear.
@@ -58,6 +57,9 @@ class SafepointWriter
     const uint8_t* buffer() const {
         return stream_.buffer();
     }
+    bool oom() const {
+        return stream_.oom();
+    }
 };
 
 class SafepointReader
@@ -82,7 +84,7 @@ class SafepointReader
     void advanceFromGcSlots();
     void advanceFromValueSlots();
     void advanceFromNunboxSlots();
-    bool getSlotFromBitmap(SafepointSlotEntry* entry);
+    MOZ_MUST_USE bool getSlotFromBitmap(SafepointSlotEntry* entry);
 
   public:
     SafepointReader(IonScript* script, const SafepointIndex* si);
@@ -92,35 +94,35 @@ class SafepointReader
     uint32_t osiCallPointOffset() const {
         return osiCallPointOffset_;
     }
-    GeneralRegisterSet gcSpills() const {
-        return gcSpills_;
+    LiveGeneralRegisterSet gcSpills() const {
+        return LiveGeneralRegisterSet(gcSpills_);
     }
-    GeneralRegisterSet slotsOrElementsSpills() const {
-        return slotsOrElementsSpills_;
+    LiveGeneralRegisterSet slotsOrElementsSpills() const {
+        return LiveGeneralRegisterSet(slotsOrElementsSpills_);
     }
-    GeneralRegisterSet valueSpills() const {
-        return valueSpills_;
+    LiveGeneralRegisterSet valueSpills() const {
+        return LiveGeneralRegisterSet(valueSpills_);
     }
-    GeneralRegisterSet allGprSpills() const {
-        return allGprSpills_;
+    LiveGeneralRegisterSet allGprSpills() const {
+        return LiveGeneralRegisterSet(allGprSpills_);
     }
-    FloatRegisterSet allFloatSpills() const {
-        return allFloatSpills_;
+    LiveFloatRegisterSet allFloatSpills() const {
+        return LiveFloatRegisterSet(allFloatSpills_);
     }
     uint32_t osiReturnPointOffset() const;
 
     // Returns true if a slot was read, false if there are no more slots.
-    bool getGcSlot(SafepointSlotEntry* entry);
+    MOZ_MUST_USE bool getGcSlot(SafepointSlotEntry* entry);
 
     // Returns true if a slot was read, false if there are no more value slots.
-    bool getValueSlot(SafepointSlotEntry* entry);
+    MOZ_MUST_USE bool getValueSlot(SafepointSlotEntry* entry);
 
     // Returns true if a nunbox slot was read, false if there are no more
     // nunbox slots.
-    bool getNunboxSlot(LAllocation* type, LAllocation* payload);
+    MOZ_MUST_USE bool getNunboxSlot(LAllocation* type, LAllocation* payload);
 
     // Returns true if a slot was read, false if there are no more slots.
-    bool getSlotsOrElementsSlot(SafepointSlotEntry* entry);
+    MOZ_MUST_USE bool getSlotsOrElementsSlot(SafepointSlotEntry* entry);
 };
 
 } // namespace jit

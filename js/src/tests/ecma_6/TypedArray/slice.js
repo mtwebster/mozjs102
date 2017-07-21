@@ -1,16 +1,4 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertDeepEq(constructor.prototype.slice.length, 2);
 
     assertDeepEq(new constructor().slice(0), new constructor());
@@ -50,23 +38,6 @@ for (var constructor of constructors) {
             throw new Error("length accessor called");
         }
     }).slice(2);
-
-    // Basic tests for our SpeciesConstructor implementation.
-    var undefConstructor = new constructor(2);
-    undefConstructor.constructor = undefined;
-    assertDeepEq(undefConstructor.slice(1), new constructor(1));
-
-    assertThrowsInstanceOf(() => {
-        var strConstructor = new constructor;
-        strConstructor.constructor = "not a constructor";
-        strConstructor.slice(123);
-    }, TypeError, "Assert that we have an invalid constructor");
-    assertThrowsInstanceOf(() => {
-        var mathConstructor = new constructor;
-        mathConstructor.constructor = Math.sin;
-        mathConstructor.slice(123);
-    }, TypeError, "Assert that we have an invalid constructor");
-
 }
 
 if (typeof reportCompare === "function")

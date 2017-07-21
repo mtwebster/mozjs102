@@ -14,11 +14,27 @@
 
 #include "js/Conversions.h"
 
+
+// This macro is should be `one' if current compiler supports builtin functions
+// like __builtin_sadd_overflow.
+#if __GNUC__ >= 5
+    // GCC 5 and above supports these functions.
+    #define BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(x) 1
+#else
+    // For CLANG, we use its own function to check for this.
+    #ifdef __has_builtin
+        #define BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(x) __has_builtin(x)
+    #endif
+#endif
+#ifndef BUILTIN_CHECKED_ARITHMETIC_SUPPORTED
+    #define BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(x) 0
+#endif
+
 namespace js {
 
 class StringBuffer;
 
-extern bool
+extern MOZ_MUST_USE bool
 InitRuntimeNumberState(JSRuntime* rt);
 
 #if !EXPOSE_INTL_API
@@ -26,11 +42,11 @@ extern void
 FinishRuntimeNumberState(JSRuntime* rt);
 #endif
 
-} /* namespace js */
-
 /* Initialize the Number class, returning its prototype object. */
 extern JSObject*
-js_InitNumberClass(JSContext* cx, js::HandleObject obj);
+InitNumberClass(JSContext* cx, HandleObject obj);
+
+} /* namespace js */
 
 /*
  * String constants for global function names, used in jsapi.c and jsnum.c.
@@ -67,7 +83,7 @@ Int32ToAtom(ExclusiveContext* cx, int32_t si);
  * Convert an integer or double (contained in the given value) to a string and
  * append to the given buffer.
  */
-extern bool JS_FASTCALL
+extern MOZ_MUST_USE bool JS_FASTCALL
 NumberValueToStringBuffer(JSContext* cx, const Value& v, StringBuffer& sb);
 
 /* Same as js_NumberToString, different signature. */
@@ -101,7 +117,7 @@ struct ToCStringBuf
  * Convert a number to a C string.  When base==10, this function implements
  * ToString() as specified by ECMA-262-5 section 9.8.1.  It handles integral
  * values cheaply.  Return nullptr if we ran out of memory.  See also
- * js_NumberToCString().
+ * NumberToCString().
  */
 extern char*
 NumberToCString(JSContext* cx, ToCStringBuf* cbuf, double d, int base = 10);
@@ -135,7 +151,7 @@ ParseDecimalNumber(const mozilla::Range<const CharT> chars);
  * *dp == 0 and *endp == start upon return.
  */
 template <typename CharT>
-extern bool
+extern MOZ_MUST_USE bool
 GetPrefixInteger(ExclusiveContext* cx, const CharT* start, const CharT* end, int base,
                  const CharT** endp, double* dp);
 
@@ -144,20 +160,20 @@ GetPrefixInteger(ExclusiveContext* cx, const CharT* start, const CharT* end, int
  * and |endp| outparam.  It should only be used when the characters are known to
  * only contain digits.
  */
-extern bool
+extern MOZ_MUST_USE bool
 GetDecimalInteger(ExclusiveContext* cx, const char16_t* start, const char16_t* end, double* dp);
 
-extern bool
+extern MOZ_MUST_USE bool
 StringToNumber(ExclusiveContext* cx, JSString* str, double* result);
 
 /* ES5 9.3 ToNumber, overwriting *vp with the appropriate number value. */
-MOZ_ALWAYS_INLINE bool
+MOZ_ALWAYS_INLINE MOZ_MUST_USE bool
 ToNumber(JSContext* cx, JS::MutableHandleValue vp)
 {
     if (vp.isNumber())
         return true;
     double d;
-    extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext* cx, Value v, double* dp);
+    extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext* cx, HandleValue v, double* dp);
     if (!ToNumberSlow(cx, vp, &d))
         return false;
 
@@ -165,7 +181,7 @@ ToNumber(JSContext* cx, JS::MutableHandleValue vp)
     return true;
 }
 
-bool
+MOZ_MUST_USE bool
 num_parseInt(JSContext* cx, unsigned argc, Value* vp);
 
 }  /* namespace js */
@@ -183,17 +199,17 @@ num_parseInt(JSContext* cx, unsigned argc, Value* vp);
  * Return false if out of memory.
  */
 template <typename CharT>
-extern bool
+extern MOZ_MUST_USE bool
 js_strtod(js::ExclusiveContext* cx, const CharT* begin, const CharT* end,
           const CharT** dEnd, double* d);
 
-extern bool
-js_num_toString(JSContext* cx, unsigned argc, js::Value* vp);
-
-extern bool
-js_num_valueOf(JSContext* cx, unsigned argc, js::Value* vp);
-
 namespace js {
+
+extern MOZ_MUST_USE bool
+num_toString(JSContext* cx, unsigned argc, Value* vp);
+
+extern MOZ_MUST_USE bool
+num_valueOf(JSContext* cx, unsigned argc, Value* vp);
 
 static MOZ_ALWAYS_INLINE bool
 ValueFitsInInt32(const Value& v, int32_t* pi)
@@ -232,7 +248,7 @@ IsDefinitelyIndex(const Value& v, uint32_t* indexp)
 }
 
 /* ES5 9.4 ToInteger. */
-static inline bool
+static MOZ_MUST_USE inline bool
 ToInteger(JSContext* cx, HandleValue v, double* dp)
 {
     if (v.isInt32()) {
@@ -242,7 +258,7 @@ ToInteger(JSContext* cx, HandleValue v, double* dp)
     if (v.isDouble()) {
         *dp = v.toDouble();
     } else {
-        extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext* cx, Value v, double* dp);
+        extern JS_PUBLIC_API(bool) ToNumberSlow(JSContext* cx, HandleValue v, double* dp);
         if (!ToNumberSlow(cx, v, dp))
             return false;
     }
@@ -257,41 +273,74 @@ ToInteger(JSContext* cx, HandleValue v, double* dp)
  * For JSContext and ExclusiveContext.
  */
 template<typename T>
-bool ToLengthClamped(T* cx, HandleValue v, uint32_t* out, bool* overflow);
+MOZ_MUST_USE bool ToLengthClamped(T* cx, HandleValue v, uint32_t* out, bool* overflow);
 
-inline bool
+/* Convert and range check an index value as for DataView, SIMD, and Atomics
+ * operations, eg ES7 24.2.1.1, DataView's GetViewValue():
+ *
+ *   1. numericIndex = ToNumber(argument)            (may throw TypeError)
+ *   2. intIndex = ToInteger(numericIndex)
+ *   3. if intIndex != numericIndex throw RangeError
+ *
+ * This function additionally bounds the range to the non-negative contiguous
+ * integers:
+ *
+ *   4. if intIndex < 0 or intIndex > 2^53 throw RangeError
+ *
+ * Return true and set |*index| to the integer value if |argument| is a valid
+ * array index argument. Otherwise report an TypeError or RangeError and return
+ * false.
+ *
+ * The returned index will always be in the range 0 <= *index <= 2^53.
+ */
+MOZ_MUST_USE bool ToIntegerIndex(JSContext* cx, JS::HandleValue v, uint64_t* index);
+
+MOZ_MUST_USE inline bool
 SafeAdd(int32_t one, int32_t two, int32_t* res)
 {
+#if BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(__builtin_sadd_overflow)
+    // Using compiler's builtin function.
+    return !__builtin_sadd_overflow(one, two, res);
+#else
     // Use unsigned for the 32-bit operation since signed overflow gets
     // undefined behavior.
     *res = uint32_t(one) + uint32_t(two);
     int64_t ores = (int64_t)one + (int64_t)two;
     return ores == (int64_t)*res;
+#endif
 }
 
-inline bool
+MOZ_MUST_USE inline bool
 SafeSub(int32_t one, int32_t two, int32_t* res)
 {
+#if BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(__builtin_ssub_overflow)
+    return !__builtin_ssub_overflow(one, two, res);
+#else
     *res = uint32_t(one) - uint32_t(two);
     int64_t ores = (int64_t)one - (int64_t)two;
     return ores == (int64_t)*res;
+#endif
 }
 
-inline bool
+MOZ_MUST_USE inline bool
 SafeMul(int32_t one, int32_t two, int32_t* res)
 {
+#if BUILTIN_CHECKED_ARITHMETIC_SUPPORTED(__builtin_smul_overflow)
+    return !__builtin_smul_overflow(one, two, res);
+#else
     *res = uint32_t(one) * uint32_t(two);
     int64_t ores = (int64_t)one * (int64_t)two;
     return ores == (int64_t)*res;
+#endif
 }
 
-extern bool
-ToNumberSlow(ExclusiveContext* cx, Value v, double* dp);
+extern MOZ_MUST_USE bool
+ToNumberSlow(ExclusiveContext* cx, HandleValue v, double* dp);
 
 // Variant of ToNumber which takes an ExclusiveContext instead of a JSContext.
 // ToNumber is part of the API and can't use ExclusiveContext directly.
-MOZ_ALWAYS_INLINE bool
-ToNumber(ExclusiveContext* cx, const Value& v, double* out)
+MOZ_ALWAYS_INLINE MOZ_MUST_USE bool
+ToNumber(ExclusiveContext* cx, HandleValue v, double* out)
 {
     if (v.isNumber()) {
         *out = v.toNumber();

@@ -21,7 +21,7 @@ ExtractWellSized(ExclusiveContext* cx, Buffer& cb)
     size_t capacity = cb.capacity();
     size_t length = cb.length();
 
-    CharT* buf = cb.extractRawBuffer();
+    CharT* buf = cb.extractOrCopyRawBuffer();
     if (!buf)
         return nullptr;
 
@@ -31,6 +31,7 @@ ExtractWellSized(ExclusiveContext* cx, Buffer& cb)
         CharT* tmp = cx->zone()->pod_realloc<CharT>(buf, capacity, length + 1);
         if (!tmp) {
             js_free(buf);
+            ReportOutOfMemory(cx);
             return nullptr;
         }
         buf = tmp;
@@ -161,7 +162,7 @@ js::ValueToStringBufferSlow(JSContext* cx, const Value& arg, StringBuffer& sb)
     if (v.isNull())
         return sb.append(cx->names().null);
     if (v.isSymbol()) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_SYMBOL_TO_STRING);
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_SYMBOL_TO_STRING);
         return false;
     }
     MOZ_ASSERT(v.isUndefined());

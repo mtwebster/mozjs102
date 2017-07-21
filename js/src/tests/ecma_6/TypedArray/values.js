@@ -1,16 +1,4 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.values.length, 0);
     assertEq(constructor.prototype.values.name, "values");
     assertEq(constructor.prototype.values, constructor.prototype[Symbol.iterator]);
@@ -31,7 +19,7 @@ for (var constructor of constructors) {
     if (typeof newGlobal === "function") {
         var values = newGlobal()[constructor.name].prototype.values;
         assertDeepEq([...values.call(new constructor([42, 36]))], [42, 36]);
-        arr = newGlobal()[constructor.name]([42, 36]);
+        arr = new (newGlobal()[constructor.name])([42, 36]);
         assertEq([...constructor.prototype.values.call(arr)].toString(), "42,36");
     }
 

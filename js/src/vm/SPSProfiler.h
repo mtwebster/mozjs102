@@ -12,10 +12,11 @@
 
 #include <stddef.h>
 
-#include "jslock.h"
 #include "jsscript.h"
 
 #include "js/ProfilingStack.h"
+#include "threading/ExclusiveData.h"
+#include "vm/MutexIDs.h"
 
 /*
  * SPS Profiler integration with the JS Engine
@@ -106,36 +107,40 @@
 
 namespace js {
 
-class ProfileEntry;
+// The `ProfileStringMap` weakly holds its `JSScript*` keys and owns its string
+// values. Entries are removed when the `JSScript` is finalized; see
+// `SPSProfiler::onScriptFinalized`.
+using ProfileStringMap = HashMap<JSScript*,
+                                 UniqueChars,
+                                 DefaultHasher<JSScript*>,
+                                 SystemAllocPolicy>;
 
-typedef HashMap<JSScript*, const char*, DefaultHasher<JSScript*>, SystemAllocPolicy>
-        ProfileStringMap;
-
+class AutoSPSEntry;
 class SPSEntryMarker;
 class SPSBaselineOSRMarker;
 
 class SPSProfiler
 {
+    friend class AutoSPSEntry;
     friend class SPSEntryMarker;
     friend class SPSBaselineOSRMarker;
 
     JSRuntime*           rt;
-    ProfileStringMap     strings;
+    ExclusiveData<ProfileStringMap> strings;
     ProfileEntry*        stack_;
     uint32_t*            size_;
     uint32_t             max_;
     bool                 slowAssertions;
     uint32_t             enabled_;
-    PRLock*              lock_;
     void                (*eventMarker_)(const char*);
 
-    const char* allocProfileString(JSScript* script, JSFunction* function);
-    void push(const char* string, void* sp, JSScript* script, jsbytecode* pc, bool copy);
+    UniqueChars allocProfileString(JSScript* script, JSFunction* function);
+    void push(const char* string, void* sp, JSScript* script, jsbytecode* pc, bool copy,
+              ProfileEntry::Category category = ProfileEntry::Category::JS);
     void pop();
 
   public:
     explicit SPSProfiler(JSRuntime* rt);
-    ~SPSProfiler();
 
     bool init();
 
@@ -172,17 +177,17 @@ class SPSProfiler
      *   - exit: this function has ceased execution, and no further
      *           entries/exits will be made
      */
-    bool enter(JSScript* script, JSFunction* maybeFun);
+    bool enter(JSContext* cx, JSScript* script, JSFunction* maybeFun);
     void exit(JSScript* script, JSFunction* maybeFun);
     void updatePC(JSScript* script, jsbytecode* pc) {
         if (enabled() && *size_ - 1 < max_) {
             MOZ_ASSERT(*size_ > 0);
-            MOZ_ASSERT(stack_[*size_ - 1].script() == script);
+            MOZ_ASSERT(stack_[*size_ - 1].rawScript() == script);
             stack_[*size_ - 1].setPC(pc);
         }
     }
 
-    /* Enter asm.js code */
+    /* Enter wasm code */
     void beginPseudoJS(const char* string, void* sp);
     void endPseudoJS() { pop(); }
 
@@ -202,32 +207,19 @@ class SPSProfiler
     uint32_t* addressOfEnabled() {
         return &enabled_;
     }
-};
 
-/*
- * This class is used to make sure the strings table
- * is only accessed on one thread at a time.
- */
-class AutoSPSLock
-{
-  public:
-    explicit AutoSPSLock(PRLock* lock)
-    {
-        MOZ_ASSERT(lock, "Parameter should not be null!");
-        lock_ = lock;
-        PR_Lock(lock);
-    }
-    ~AutoSPSLock() { PR_Unlock(lock_); }
-
-  private:
-    PRLock* lock_;
+    void trace(JSTracer* trc);
+    void fixupStringsMapAfterMovingGC();
+#ifdef JSGC_HASH_TABLE_CHECKS
+    void checkStringsMapAfterMovingGC();
+#endif
 };
 
 /*
  * This class is used to suppress profiler sampling during
  * critical sections where stack state is not valid.
  */
-class AutoSuppressProfilerSampling
+class MOZ_RAII AutoSuppressProfilerSampling
 {
   public:
     explicit AutoSuppressProfilerSampling(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
@@ -244,15 +236,13 @@ class AutoSuppressProfilerSampling
 inline size_t
 SPSProfiler::stringsCount()
 {
-    AutoSPSLock lock(lock_);
-    return strings.count();
+    return strings.lock()->count();
 }
 
 inline void
 SPSProfiler::stringsReset()
 {
-    AutoSPSLock lock(lock_);
-    strings.clear();
+    strings.lock()->clear();
 }
 
 /*
@@ -260,7 +250,7 @@ SPSProfiler::stringsReset()
  * that we're about to enter JS function calls. This is the only time in which a
  * valid stack pointer is pushed to the sampling stack.
  */
-class SPSEntryMarker
+class MOZ_RAII SPSEntryMarker
 {
   public:
     explicit SPSEntryMarker(JSRuntime* rt,
@@ -275,11 +265,30 @@ class SPSEntryMarker
 };
 
 /*
+ * RAII class to automatically add SPS psuedo frame entries.
+ *
+ * NB: The `label` string must be statically allocated.
+ */
+class MOZ_NONHEAP_CLASS AutoSPSEntry
+{
+  public:
+    explicit AutoSPSEntry(JSRuntime* rt, const char* label,
+                          ProfileEntry::Category category = ProfileEntry::Category::JS
+                          MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+    ~AutoSPSEntry();
+
+  private:
+    SPSProfiler* profiler_;
+    mozilla::DebugOnly<uint32_t> sizeBefore_;
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
+
+/*
  * This class is used in the interpreter to bound regions where the baseline JIT
  * being entered via OSR.  It marks the current top pseudostack entry as
  * OSR-ed
  */
-class SPSBaselineOSRMarker
+class MOZ_RAII SPSBaselineOSRMarker
 {
   public:
     explicit SPSBaselineOSRMarker(JSRuntime* rt, bool hasSPSFrame

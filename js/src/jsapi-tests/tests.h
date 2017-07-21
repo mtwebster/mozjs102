@@ -7,6 +7,7 @@
 #ifndef jsapi_tests_tests_h
 #define jsapi_tests_tests_h
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/TypeTraits.h"
 
 #include <errno.h>
@@ -54,20 +55,18 @@ class JSAPITest
     static JSAPITest* list;
     JSAPITest* next;
 
-    JSRuntime* rt;
     JSContext* cx;
     JS::PersistentRootedObject global;
     bool knownFail;
     JSAPITestString msgs;
     JSCompartment* oldCompartment;
 
-    JSAPITest() : rt(nullptr), cx(nullptr), knownFail(false), oldCompartment(nullptr) {
+    JSAPITest() : cx(nullptr), knownFail(false), oldCompartment(nullptr) {
         next = list;
         list = this;
     }
 
     virtual ~JSAPITest() {
-        MOZ_RELEASE_ASSERT(!rt);
         MOZ_RELEASE_ASSERT(!cx);
         MOZ_RELEASE_ASSERT(!global);
     }
@@ -81,6 +80,9 @@ class JSAPITest
 #define EXEC(s) do { if (!exec(s, __FILE__, __LINE__)) return false; } while (false)
 
     bool exec(const char* bytes, const char* filename, int lineno);
+
+    // Like exec(), but doesn't call fail() if JS::Evaluate returns false.
+    bool execDontReport(const char* bytes, const char* filename, int lineno);
 
 #define EVAL(s, vp) do { if (!evaluate(s, __FILE__, __LINE__, vp)) return false; } while (false)
 
@@ -181,7 +183,7 @@ class JSAPITest
             return false; \
     } while (false)
 
-    bool checkSame(jsval actualArg, jsval expectedArg,
+    bool checkSame(const JS::Value& actualArg, const JS::Value& expectedArg,
                    const char* actualExpr, const char* expectedExpr,
                    const char* filename, int lineno) {
         bool same;
@@ -225,19 +227,22 @@ class JSAPITest
     JSAPITestString messages() const { return msgs; }
 
     static const JSClass * basicGlobalClass() {
-        static const JSClass c = {
-            "global", JSCLASS_GLOBAL_FLAGS,
+        static const JSClassOps cOps = {
             nullptr, nullptr, nullptr, nullptr,
             nullptr, nullptr, nullptr, nullptr,
             nullptr, nullptr, nullptr,
             JS_GlobalObjectTraceHook
+        };
+        static const JSClass c = {
+            "global", JSCLASS_GLOBAL_FLAGS,
+            &cOps
         };
         return &c;
     }
 
   protected:
     static bool
-    print(JSContext* cx, unsigned argc, jsval* vp)
+    print(JSContext* cx, unsigned argc, JS::Value* vp)
     {
         JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
 
@@ -260,7 +265,7 @@ class JSAPITest
 
     bool definePrint();
 
-    static void setNativeStackQuota(JSRuntime* rt)
+    static void setNativeStackQuota(JSContext* cx)
     {
         const size_t MAX_STACK_SIZE =
 /* Assume we can't use more than 5e5 bytes of C stack by default. */
@@ -275,35 +280,32 @@ class JSAPITest
 #endif
         ;
 
-        JS_SetNativeStackQuota(rt, MAX_STACK_SIZE);
+        JS_SetNativeStackQuota(cx, MAX_STACK_SIZE);
     }
 
-    virtual JSRuntime * createRuntime() {
-        JSRuntime* rt = JS_NewRuntime(8L * 1024 * 1024);
-        if (!rt)
+    virtual JSContext* createContext() {
+        JSContext* cx = JS_NewContext(8L * 1024 * 1024);
+        if (!cx)
             return nullptr;
-        JS_SetErrorReporter(rt, &reportError);
-        setNativeStackQuota(rt);
-        JS::RuntimeOptionsRef(rt).setVarObjFix(true);
-        return rt;
+        JS::SetWarningReporter(cx, &reportWarning);
+        setNativeStackQuota(cx);
+        return cx;
     }
 
-    virtual void destroyRuntime() {
-        MOZ_RELEASE_ASSERT(!cx);
-        MOZ_RELEASE_ASSERT(rt);
-        JS_DestroyRuntime(rt);
-        rt = nullptr;
+    virtual void destroyContext() {
+        MOZ_RELEASE_ASSERT(cx);
+        JS_DestroyContext(cx);
+        cx = nullptr;
     }
 
-    static void reportError(JSContext* cx, const char* message, JSErrorReport* report) {
+    static void reportWarning(JSContext* cx, JSErrorReport* report) {
+        MOZ_RELEASE_ASSERT(report);
+        MOZ_RELEASE_ASSERT(JSREPORT_IS_WARNING(report->flags));
+
         fprintf(stderr, "%s:%u:%s\n",
                 report->filename ? report->filename : "<no filename>",
                 (unsigned int) report->lineno,
-                message);
-    }
-
-    virtual JSContext * createContext() {
-        return JS_NewContext(rt, 8192);
+                report->message().c_str());
     }
 
     virtual const JSClass * getGlobalClass() {
@@ -316,7 +318,7 @@ class JSAPITest
 #define BEGIN_TEST(testname)                                            \
     class cls_##testname : public JSAPITest {                           \
       public:                                                           \
-        virtual const char * name() override { return #testname; }  \
+        virtual const char * name() override { return #testname; }      \
         virtual bool run(JS::HandleObject global) override
 
 #define END_TEST(testname)                                              \
@@ -334,7 +336,7 @@ class JSAPITest
 #define BEGIN_FIXTURE_TEST(fixture, testname)                           \
     class cls_##testname : public fixture {                             \
       public:                                                           \
-        virtual const char * name() override { return #testname; }  \
+        virtual const char * name() override { return #testname; }      \
         virtual bool run(JS::HandleObject global) override
 
 #define END_FIXTURE_TEST(fixture, testname)                             \
@@ -409,6 +411,11 @@ class TestJSPrincipals : public JSPrincipals
     {
         refcount = rc;
     }
+
+    bool write(JSContext* cx, JSStructuredCloneWriter* writer) override {
+        MOZ_ASSERT(false, "not implemented");
+        return false;
+    }
 };
 
 #ifdef JS_GC_ZEAL
@@ -419,19 +426,29 @@ class TestJSPrincipals : public JSPrincipals
 class AutoLeaveZeal
 {
     JSContext* cx_;
-    uint8_t zeal_;
+    uint32_t zealBits_;
     uint32_t frequency_;
 
   public:
     explicit AutoLeaveZeal(JSContext* cx) : cx_(cx) {
         uint32_t dummy;
-        JS_GetGCZeal(cx_, &zeal_, &frequency_, &dummy);
+        JS_GetGCZealBits(cx_, &zealBits_, &frequency_, &dummy);
         JS_SetGCZeal(cx_, 0, 0);
-        JS::PrepareForFullGC(JS_GetRuntime(cx_));
-        JS::GCForReason(JS_GetRuntime(cx_), GC_SHRINK, JS::gcreason::DEBUG_GC);
+        JS::PrepareForFullGC(cx_);
+        JS::GCForReason(cx_, GC_SHRINK, JS::gcreason::DEBUG_GC);
     }
     ~AutoLeaveZeal() {
-        JS_SetGCZeal(cx_, zeal_, frequency_);
+        for (size_t i = 0; i < sizeof(zealBits_) * 8; i++) {
+            if (zealBits_ & (1 << i))
+                JS_SetGCZeal(cx_, i, frequency_);
+        }
+
+#ifdef DEBUG
+        uint32_t zealBitsAfter, frequencyAfter, dummy;
+        JS_GetGCZealBits(cx_, &zealBitsAfter, &frequencyAfter, &dummy);
+        MOZ_ASSERT(zealBitsAfter == zealBits_);
+        MOZ_ASSERT(frequencyAfter == frequency_);
+#endif
     }
 };
 #endif /* JS_GC_ZEAL */

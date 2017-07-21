@@ -14,6 +14,5 @@ var test = (function () {
 try {
   evalWithCache(test, {});
 } catch (x) {
-  assertEq(x.message.contains("AsmJS"), true);
-  assertEq(x.message.contains("XDR"), true);
+  assertEq(x.message.includes("Asm.js is not supported by XDR"), true);
 }

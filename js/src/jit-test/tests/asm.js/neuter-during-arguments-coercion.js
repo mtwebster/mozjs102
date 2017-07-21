@@ -1,4 +1,3 @@
-// |jit-test| test-also-noasmjs
 load(libdir + "asm.js");
 
 function f(stdlib, foreign, buffer)
@@ -15,7 +14,7 @@ function f(stdlib, foreign, buffer)
 if (isAsmJSCompilationAvailable())
   assertEq(isAsmJSModule(f), true);
 
-var i32 = new Int32Array(4096);
+var i32 = new Int32Array(65536);
 var buffer = i32.buffer;
 var set = f(this, null, buffer);
 if (isAsmJSCompilationAvailable())
@@ -23,6 +22,6 @@ if (isAsmJSCompilationAvailable())
 
 try
 {
-  set({ valueOf: function() { neuter(buffer, "same-data"); return 17; } });
+  set({ valueOf() { detachArrayBuffer(buffer); return 17; } });
 }
 catch (e) { /* if an exception thrown, swallow */ }

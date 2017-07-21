@@ -12,16 +12,17 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Move.h"
 
+#include "jsapi.h"
 #include "jspubtd.h"
 
+#include "js/GCAPI.h"
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 
 namespace js {
 class Debugger;
-}
+} // namespace js
 
 namespace JS {
 namespace dbg {
@@ -149,7 +150,7 @@ class Builder {
         // A rooted reference to our value.
         PersistentRooted<T> value;
 
-        BuiltThing(JSContext* cx, Builder& owner_, T value_ = js::GCMethods<T>::initial())
+        BuiltThing(JSContext* cx, Builder& owner_, T value_ = GCPolicy<T>::initial())
           : owner(owner_), value(cx, value_)
         {
             owner.assertBuilt(value_);
@@ -256,9 +257,33 @@ class BuilderOrigin : public Builder {
 // and returns the number of bytes allocated to that block. SpiderMonkey itself
 // doesn't know which function is appropriate to use, but the embedding does.
 
-// Tell Debuggers in |runtime| to use |mallocSizeOf| to find the size of
+// Tell Debuggers in |cx| to use |mallocSizeOf| to find the size of
 // malloc'd blocks.
-void SetDebuggerMallocSizeOf(JSRuntime* runtime, mozilla::MallocSizeOf mallocSizeOf);
+JS_PUBLIC_API(void)
+SetDebuggerMallocSizeOf(JSContext* cx, mozilla::MallocSizeOf mallocSizeOf);
+
+// Get the MallocSizeOf function that the given context is using to find the
+// size of malloc'd blocks.
+JS_PUBLIC_API(mozilla::MallocSizeOf)
+GetDebuggerMallocSizeOf(JSContext* cx);
+
+
+
+// Debugger and Garbage Collection Events
+// --------------------------------------
+//
+// The Debugger wants to report about its debuggees' GC cycles, however entering
+// JS after a GC is troublesome since SpiderMonkey will often do something like
+// force a GC and then rely on the nursery being empty. If we call into some
+// Debugger's hook after the GC, then JS runs and the nursery won't be
+// empty. Instead, we rely on embedders to call back into SpiderMonkey after a
+// GC and notify Debuggers to call their onGarbageCollection hook.
+
+
+// For each Debugger that observed a debuggee involved in the given GC event,
+// call its `onGarbageCollection` hook.
+JS_PUBLIC_API(bool)
+FireOnGarbageCollectionHook(JSContext* cx, GarbageCollectionEvent::Ptr&& data);
 
 
 
@@ -294,7 +319,63 @@ onPromiseSettled(JSContext* cx, HandleObject promise);
 
 // Return true if the given value is a Debugger object, false otherwise.
 JS_PUBLIC_API(bool)
-IsDebugger(JS::Value val);
+IsDebugger(JSObject& obj);
+
+// Append each of the debuggee global objects observed by the Debugger object
+// |dbgObj| to |vector|. Returns true on success, false on failure.
+JS_PUBLIC_API(bool)
+GetDebuggeeGlobals(JSContext* cx, JSObject& dbgObj, AutoObjectVector& vector);
+
+
+// Hooks for reporting where JavaScript execution began.
+//
+// Our performance tools would like to be able to label blocks of JavaScript
+// execution with the function name and source location where execution began:
+// the event handler, the callback, etc.
+//
+// Construct an instance of this class on the stack, providing a JSContext
+// belonging to the runtime in which execution will occur. Each time we enter
+// JavaScript --- specifically, each time we push a JavaScript stack frame that
+// has no older JS frames younger than this AutoEntryMonitor --- we will
+// call the appropriate |Entry| member function to indicate where we've begun
+// execution.
+
+class MOZ_STACK_CLASS AutoEntryMonitor {
+    JSRuntime* runtime_;
+    AutoEntryMonitor* savedMonitor_;
+
+  public:
+    explicit AutoEntryMonitor(JSContext* cx);
+    ~AutoEntryMonitor();
+
+    // SpiderMonkey reports the JavaScript entry points occuring within this
+    // AutoEntryMonitor's scope to the following member functions, which the
+    // embedding is expected to override.
+    //
+    // It is important to note that |asyncCause| is owned by the caller and its
+    // lifetime must outlive the lifetime of the AutoEntryMonitor object. It is
+    // strongly encouraged that |asyncCause| be a string constant or similar
+    // statically allocated string.
+
+    // We have begun executing |function|. Note that |function| may not be the
+    // actual closure we are running, but only the canonical function object to
+    // which the script refers.
+    virtual void Entry(JSContext* cx, JSFunction* function,
+                       HandleValue asyncStack,
+                       const char* asyncCause) = 0;
+
+    // Execution has begun at the entry point of |script|, which is not a
+    // function body. (This is probably being executed by 'eval' or some
+    // JSAPI equivalent.)
+    virtual void Entry(JSContext* cx, JSScript* script,
+                       HandleValue asyncStack,
+                       const char* asyncCause) = 0;
+
+    // Execution of the function or script has ended.
+    virtual void Exit(JSContext* cx) { }
+};
+
+
 
 } // namespace dbg
 } // namespace JS

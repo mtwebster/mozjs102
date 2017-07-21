@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -31,6 +31,7 @@ e.g. raw/browsersearch.json, raw-pt-rBR/browsersearch.json.
 '''
 
 from __future__ import (
+    absolute_import,
     print_function,
     unicode_literals,
 )
@@ -38,7 +39,6 @@ from __future__ import (
 import argparse
 import codecs
 import json
-import re
 import sys
 import os
 

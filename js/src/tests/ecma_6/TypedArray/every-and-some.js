@@ -1,17 +1,5 @@
-const constructors = [
-    Int8Array,
-    Uint8Array,
-    Uint8ClampedArray,
-    Int16Array,
-    Uint16Array,
-    Int32Array,
-    Uint32Array,
-    Float32Array,
-    Float64Array
-];
-
 // Tests for TypedArray#every.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.every.length, 1);
 
     // Basic tests.
@@ -127,11 +115,12 @@ for (var constructor of constructors) {
     }).every(() => true), true);
 }
 
-assertEq(new Float32Array([undefined, , NaN]).every(v => Object.is(v, NaN)), true);
-assertEq(new Float64Array([undefined, , NaN]).every(v => Object.is(v, NaN)), true);
+for (let constructor of anyTypedArrayConstructors.filter(isFloatConstructor)) {
+    assertEq(new constructor([undefined, , NaN]).every(v => Object.is(v, NaN)), true);
+}
 
 // Tests for TypedArray#some.
-for (var constructor of constructors) {
+for (var constructor of anyTypedArrayConstructors) {
     assertEq(constructor.prototype.some.length, 1);
 
     // Basic tests.
@@ -252,8 +241,9 @@ for (var constructor of constructors) {
     }).some(() => false), false);
 }
 
-assertEq(new Float32Array([undefined, , NaN]).some(v => v === v), false);
-assertEq(new Float64Array([undefined, , NaN]).some(v => v === v), false);
+for (let constructor of anyTypedArrayConstructors.filter(isFloatConstructor)) {
+    assertEq(new constructor([undefined, , NaN]).some(v => v === v), false);
+}
 
 if (typeof reportCompare === "function")
     reportCompare(true, true);

@@ -9,6 +9,7 @@
 #include "jsopcode.h"
 #include "jit/JitSpewer.h"
 #include "jsopcodeinlines.h"
+#include "jsscriptinlines.h"
 
 using namespace js;
 using namespace js::jit;
@@ -16,7 +17,7 @@ using namespace js::jit;
 BytecodeAnalysis::BytecodeAnalysis(TempAllocator& alloc, JSScript* script)
   : script_(script),
     infos_(alloc),
-    usesScopeChain_(false),
+    usesEnvironmentChain_(false),
     hasTryFinally_(false),
     hasSetArg_(false)
 {
@@ -45,10 +46,12 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
     if (!infos_.growByUninitialized(script_->length()))
         return false;
 
-    // We need a scope chain if the function is heavyweight.
-    usesScopeChain_ = (script_->functionDelazifying() &&
-                       script_->functionDelazifying()->isHeavyweight());
-    MOZ_ASSERT_IF(script_->hasAnyAliasedBindings(), usesScopeChain_);
+    // Initialize the env chain slot if either the function needs some
+    // EnvironmentObject (like a CallObject) or the script uses the env
+    // chain. The latter case is handled below.
+    usesEnvironmentChain_ = script_->module() || script_->initialEnvironmentShape() ||
+                            (script_->functionDelazifying() &&
+                             script_->functionDelazifying()->needsSomeEnvironmentObject());
 
     jsbytecode* end = script_->codeEnd();
 
@@ -65,7 +68,7 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
         unsigned offset = script_->pcToOffset(pc);
 
         JitSpew(JitSpew_BaselineOp, "Analyzing op @ %d (end=%d): %s",
-                int(script_->pcToOffset(pc)), int(script_->length()), js_CodeName[op]);
+                int(script_->pcToOffset(pc)), int(script_->length()), CodeName[op]);
 
         // If this bytecode info has not yet been initialized, it's not reachable.
         if (!infos_[offset].initialized)
@@ -130,7 +133,7 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
             jssrcnote* sn = GetSrcNote(gsn, script_, pc);
             MOZ_ASSERT(SN_TYPE(sn) == SRC_TRY);
 
-            jsbytecode* endOfTry = pc + js_GetSrcNoteOffset(sn, 0);
+            jsbytecode* endOfTry = pc + GetSrcNoteOffset(sn, 0);
             MOZ_ASSERT(JSOp(*endOfTry) == JSOP_GOTO);
 
             jsbytecode* afterTry = endOfTry + GET_JUMP_OFFSET(endOfTry);
@@ -155,7 +158,9 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
 
           case JSOP_GETNAME:
           case JSOP_BINDNAME:
+          case JSOP_BINDVAR:
           case JSOP_SETNAME:
+          case JSOP_STRICTSETNAME:
           case JSOP_DELNAME:
           case JSOP_GETALIASEDVAR:
           case JSOP_SETALIASEDVAR:
@@ -163,9 +168,14 @@ BytecodeAnalysis::init(TempAllocator& alloc, GSNCache& gsn)
           case JSOP_LAMBDA_ARROW:
           case JSOP_DEFFUN:
           case JSOP_DEFVAR:
-          case JSOP_DEFCONST:
-          case JSOP_SETCONST:
-            usesScopeChain_ = true;
+            usesEnvironmentChain_ = true;
+            break;
+
+          case JSOP_GETGNAME:
+          case JSOP_SETGNAME:
+          case JSOP_STRICTSETGNAME:
+            if (script_->hasNonSyntacticScope())
+                usesEnvironmentChain_ = true;
             break;
 
           case JSOP_FINALLY:

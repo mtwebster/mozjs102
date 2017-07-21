@@ -80,6 +80,78 @@ class TestCcacheStats(unittest.TestCase):
     max cache size                       8.6 GB
     """
 
+    STAT4 = """
+    cache directory                     /Users/tlin/.ccache
+    primary config                      /Users/tlin/.ccache/ccache.conf
+    secondary config      (readonly)    /usr/local/Cellar/ccache/3.2.1/etc/ccache.conf
+    cache hit (direct)                 21039
+    cache hit (preprocessed)            2315
+    cache miss                         39370
+    called for link                     3651
+    called for preprocessing            6693
+    compile failed                       723
+    ccache internal error                  1
+    preprocessor error                   588
+    bad compiler arguments               128
+    unsupported source language           99
+    autoconf compile/link               3669
+    unsupported compiler option          187
+    no input file                       1711
+    files in cache                     18313
+    cache size                           6.3 GB
+    max cache size                       6.0 GB
+    """
+
+    STAT5 = """
+    cache directory                     /Users/tlin/.ccache
+    primary config                      /Users/tlin/.ccache/ccache.conf
+    secondary config      (readonly)    /usr/local/Cellar/ccache/3.2.1/etc/ccache.conf
+    cache hit (direct)                 21039
+    cache hit (preprocessed)            2315
+    cache miss                         39372
+    called for link                     3653
+    called for preprocessing            6693
+    compile failed                       723
+    ccache internal error                  1
+    preprocessor error                   588
+    bad compiler arguments               128
+    unsupported source language           99
+    autoconf compile/link               3669
+    unsupported compiler option          187
+    no input file                       1711
+    files in cache                     17411
+    cache size                           6.0 GB
+    max cache size                       6.0 GB
+    """
+
+    STAT6 = """
+    cache directory                     /Users/tlin/.ccache
+    primary config                      /Users/tlin/.ccache/ccache.conf
+    secondary config      (readonly)    /usr/local/Cellar/ccache/3.3.2/etc/ccache.conf
+    cache hit (direct)                319287
+    cache hit (preprocessed)          125987
+    cache miss                        749959
+    cache hit rate                     37.25 %
+    called for link                    87978
+    called for preprocessing          418591
+    multiple source files               1861
+    compiler produced no output          122
+    compiler produced empty output       174
+    compile failed                     14330
+    ccache internal error                  1
+    preprocessor error                  9459
+    can't use precompiled header           4
+    bad compiler arguments              2077
+    unsupported source language        18195
+    autoconf compile/link              51485
+    unsupported compiler option          322
+    no input file                     309538
+    cleanups performed                     1
+    files in cache                     17358
+    cache size                          15.4 GB
+    max cache size                      17.2 GB
+    """
+
     def test_parse_garbage_stats_message(self):
         self.assertRaises(ValueError, CCacheStats, self.STAT_GARBAGE)
 
@@ -116,6 +188,21 @@ class TestCcacheStats(unittest.TestCase):
         self.assertTrue(stat3)
         self.assertTrue(stats_diff)
 
+    def test_cache_size_shrinking(self):
+        stat4 = CCacheStats(self.STAT4)
+        stat5 = CCacheStats(self.STAT5)
+        stats_diff = stat5 - stat4
+        self.assertTrue(stat4)
+        self.assertTrue(stat5)
+        self.assertTrue(stats_diff)
+
+    def test_stats_version33(self):
+        stat3 = CCacheStats(self.STAT3)
+        stat6 = CCacheStats(self.STAT6)
+        stats_diff = stat6 - stat3
+        self.assertTrue(stat6)
+        self.assertTrue(stat3)
+        self.assertTrue(stats_diff)
 
 if __name__ == '__main__':
     main()

@@ -3,6 +3,8 @@
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import re
+import sys
+import traceback
 
 __all__ = ['parse', 'ParseError', 'ExpressionParser']
 
@@ -21,6 +23,10 @@ __all__ = ['parse', 'ParseError', 'ExpressionParser']
 #       | expr '||' expr
 #       | expr '==' expr
 #       | expr '!=' expr
+#       | expr '<' expr
+#       | expr '>' expr
+#       | expr '<=' expr
+#       | expr '>=' expr
 # literal := BOOL
 #          | INT
 #          | STRING
@@ -39,87 +45,144 @@ __all__ = ['parse', 'ParseError', 'ExpressionParser']
 # - lbp: left binding power
 # - rbp: right binding power
 
+
 class ident_token(object):
+
     def __init__(self, scanner, value):
         self.value = value
+
     def nud(self, parser):
         # identifiers take their value from the value mappings passed
         # to the parser
         return parser.value(self.value)
 
+
 class literal_token(object):
+
     def __init__(self, scanner, value):
         self.value = value
+
     def nud(self, parser):
         return self.value
 
+
 class eq_op_token(object):
     "=="
+
     def led(self, parser, left):
         return left == parser.expression(self.lbp)
 
+
 class neq_op_token(object):
     "!="
+
     def led(self, parser, left):
         return left != parser.expression(self.lbp)
 
+
+class lt_op_token(object):
+    "<"
+
+    def led(self, parser, left):
+        return left < parser.expression(self.lbp)
+
+
+class gt_op_token(object):
+    ">"
+
+    def led(self, parser, left):
+        return left > parser.expression(self.lbp)
+
+
+class le_op_token(object):
+    "<="
+
+    def led(self, parser, left):
+        return left <= parser.expression(self.lbp)
+
+
+class ge_op_token(object):
+    ">="
+
+    def led(self, parser, left):
+        return left >= parser.expression(self.lbp)
+
+
 class not_op_token(object):
     "!"
+
     def nud(self, parser):
         return not parser.expression(100)
 
+
 class and_op_token(object):
     "&&"
+
     def led(self, parser, left):
         right = parser.expression(self.lbp)
         return left and right
 
+
 class or_op_token(object):
     "||"
+
     def led(self, parser, left):
         right = parser.expression(self.lbp)
         return left or right
 
+
 class lparen_token(object):
     "("
+
     def nud(self, parser):
         expr = parser.expression()
         parser.advance(rparen_token)
         return expr
 
+
 class rparen_token(object):
     ")"
+
 
 class end_token(object):
     """always ends parsing"""
 
-### derived literal tokens
+# derived literal tokens
+
 
 class bool_token(literal_token):
+
     def __init__(self, scanner, value):
-        value = {'true':True, 'false':False}[value]
+        value = {'true': True, 'false': False}[value]
         literal_token.__init__(self, scanner, value)
 
+
 class int_token(literal_token):
+
     def __init__(self, scanner, value):
         literal_token.__init__(self, scanner, int(value))
 
+
 class string_token(literal_token):
+
     def __init__(self, scanner, value):
         literal_token.__init__(self, scanner, value[1:-1])
 
 precedence = [(end_token, rparen_token),
               (or_op_token,),
               (and_op_token,),
-              (eq_op_token, neq_op_token),
+              (lt_op_token, gt_op_token, le_op_token, ge_op_token,
+               eq_op_token, neq_op_token),
               (lparen_token,),
               ]
 for index, rank in enumerate(precedence):
     for token in rank:
-        token.lbp = index # lbp = lowest left binding power
+        token.lbp = index  # lbp = lowest left binding power
+
 
 class ParseError(Exception):
     """error parsing conditional expression"""
+
 
 class ExpressionParser(object):
     """
@@ -128,7 +191,7 @@ class ExpressionParser(object):
     The expression language can be described as follows::
 
         EXPRESSION ::= LITERAL | '(' EXPRESSION ')' | '!' EXPRESSION | EXPRESSION OP EXPRESSION
-        OP ::= '==' | '!=' | '&&' | '||'
+        OP ::= '==' | '!=' | '<' | '>' | '<=' | '>=' | '&&' | '||'
         LITERAL ::= BOOL | INT | IDENT | STRING
         BOOL ::= 'true' | 'false'
         INT ::= [0-9]+
@@ -179,12 +242,16 @@ class ExpressionParser(object):
                 (r'("[^"]*")|(\'[^\']*\')', string_token),
                 (r"==", eq_op_token()),
                 (r"!=", neq_op_token()),
+                (r"<=", le_op_token()),
+                (r">=", ge_op_token()),
+                (r"<", lt_op_token()),
+                (r">", gt_op_token()),
                 (r"\|\|", or_op_token()),
                 (r"!", not_op_token()),
                 (r"&&", and_op_token()),
                 (r"\(", lparen_token()),
                 (r"\)", rparen_token()),
-                (r"\s+", None), # skip whitespace
+                (r"\s+", None),  # skip whitespace
             ])
         tokens, remainder = ExpressionParser.scanner.scan(self.text)
         for t in tokens:
@@ -207,7 +274,7 @@ class ExpressionParser(object):
         to the next token.
         """
         if not isinstance(self.token, expected):
-            raise Exception, "Unexpected token!"
+            raise Exception("Unexpected token!")
         self.token = self.iter.next()
 
     def expression(self, rbp=0):
@@ -235,7 +302,12 @@ class ExpressionParser(object):
             self.token = self.iter.next()
             return self.expression()
         except:
-            raise ParseError("could not parse: %s; variables: %s" % (self.text, self.valuemapping))
+            extype, ex, tb = sys.exc_info()
+            formatted = ''.join(traceback.format_exception_only(extype, ex))
+            raise ParseError("could not parse: "
+                             "%s\nexception: %svariables: %s" % (self.text,
+                                                                 formatted,
+                                                                 self.valuemapping)), None, tb
 
     __call__ = parse
 

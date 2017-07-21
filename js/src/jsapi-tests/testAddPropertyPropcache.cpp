@@ -10,16 +10,20 @@
 static int callCount = 0;
 
 static bool
-AddProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::MutableHandleValue vp)
+AddProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, JS::HandleValue v)
 {
     callCount++;
     return true;
 }
 
+static const JSClassOps AddPropertyClassOps = {
+    AddProperty
+};
+
 static const JSClass AddPropertyClass = {
     "AddPropertyTester",
     0,
-    AddProperty
+    &AddPropertyClassOps
 };
 
 BEGIN_TEST(testAddPropertyHook)
@@ -32,13 +36,13 @@ BEGIN_TEST(testAddPropertyHook)
 
     JS::RootedObject obj(cx, JS_NewPlainObject(cx));
     CHECK(obj);
-    JS::RootedValue proto(cx, OBJECT_TO_JSVAL(obj));
+    JS::RootedValue proto(cx, JS::ObjectValue(*obj));
     JS_InitClass(cx, global, obj, &AddPropertyClass, nullptr, 0, nullptr, nullptr, nullptr,
                  nullptr);
 
     obj = JS_NewArrayObject(cx, 0);
     CHECK(obj);
-    JS::RootedValue arr(cx, OBJECT_TO_JSVAL(obj));
+    JS::RootedValue arr(cx, JS::ObjectValue(*obj));
 
     CHECK(JS_DefineProperty(cx, global, "arr", arr,
                             JSPROP_ENUMERATE,
