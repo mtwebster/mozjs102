@@ -2,5 +2,3 @@
 # As of July 2017, there is not an official release of SpiderMonkey 52
 # This tarball was downloaded from
 # https://treeherder.mozilla.org/#/jobs?repo=mozilla-esr52&filter-searchStr=sm-tc
-# https://archive.mozilla.org/pub/firefox/releases/52([\d\.]+)esr/source/firefox-([\d\.]+)esr.source\.tar\.bz2 \
-#	debian sh debian/repack.stub
