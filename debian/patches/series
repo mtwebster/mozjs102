@@ -6,4 +6,6 @@ hurd-support.patch
 copy-headers.patch
 pkg-config-version.patch
 fix-symbols-visibility.patch
+fix-no-symlink-install-manifest.patch
+include-configure-script.patch
 tests-skip-on-all-64-bit-archs.patch
