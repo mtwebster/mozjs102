@@ -6,6 +6,4 @@ hurd-support.patch
 copy-headers.patch
 pkg-config-version.patch
 fix-symbols-visibility.patch
-include-configure-script.patch
-pre-generate-old-configure.patch
 tests-skip-on-all-64-bit-archs.patch

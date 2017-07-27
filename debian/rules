@@ -35,13 +35,13 @@ override_dh_clean:
 	rm -f  $(CURDIR)/js/src/js52-config $(CURDIR)/js/src/mozjs-52.pc \
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
-	# rm -f $(CURDIR)/js/src/configure
+	rm -f $(CURDIR)/js/src/configure
 
 # dh_auto_configure does not properly handle autoconf2.13 generated configure
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 override_dh_auto_configure:
-	cd $(SRCDIR) && SHELL=/bin/sh && PYTHON=python && $(SHELL) configure \
+	cd $(SRCDIR) && SHELL=/bin/sh && autoconf2.13 && PYTHON=python ./configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--build=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \
