@@ -49,6 +49,7 @@ mozjs52 (52.2.1-1) UNRELEASED; urgency=medium
   * Add patches from https://github.com/ptomato/mozjs :
     - tests-skip-on-all-64-bit-archs.patch
     - fix-no-symlink-install-manifest.patch
+    - Take-both-with-wrapped-and-unwrapped-enclosing-environments.patch
 
  -- Jeremy Bicha <jbicha@ubuntu.com>  Sat, 15 Apr 2017 13:07:59 -0400
 
