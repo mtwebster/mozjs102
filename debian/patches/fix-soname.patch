@@ -9,11 +9,11 @@ Bug-Debian: http://bugs.debian.org/746705
  config/rules.mk | 5 +++--
  1 file changed, 3 insertions(+), 2 deletions(-)
 
-diff --git a/config/rules.mk b/config/rules.mk
-index a21128c..4b40fa0 100644
---- a/config/rules.mk
-+++ b/config/rules.mk
-@@ -418,15 +418,16 @@ endif # AIX
+Index: mozjs52-52.2.1~artful1/config/rules.mk
+===================================================================
+--- mozjs52-52.2.1~artful1.orig/config/rules.mk
++++ mozjs52-52.2.1~artful1/config/rules.mk
+@@ -418,7 +418,7 @@ endif # AIX
  #
  # Linux: add -Bsymbolic flag for components
  #
@@ -22,13 +22,13 @@ index a21128c..4b40fa0 100644
  ifdef IS_COMPONENT
  EXTRA_DSO_LDOPTS += -Wl,-Bsymbolic
  endif
- ifdef LD_VERSION_SCRIPT
+@@ -426,7 +426,8 @@ ifdef LD_VERSION_SCRIPT
  EXTRA_DSO_LDOPTS += -Wl,--version-script,$(LD_VERSION_SCRIPT)
-+EXTRA_DSO_LDOPTS += -Wl,-soname,lib$(LIBRARY_NAME).so.0
  EXTRA_DEPS += $(LD_VERSION_SCRIPT)
  endif
 -endif
 +#endif
++EXTRA_DSO_LDOPTS += -Wl,-soname,lib$(JS_LIBRARY_NAME).so.0
  
  ifdef SYMBOLS_FILE
  ifeq ($(OS_TARGET),WINNT)
