@@ -38,6 +38,7 @@ mozjs52 (52.2.1-1) UNRELEASED; urgency=medium
   * Migrate to automatic -dbgsym packages
   * Drop debian/README.source because it only listed removed files
     Use Files-Excluded in debian/copyright instead
+  * Update debian/copyright based on debian/copyright for Firefox
   * Refresh patches
   * Drop obsolete patches:
     - install-js-config-h.patch
