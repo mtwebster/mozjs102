@@ -81,10 +81,6 @@ override_dh_fixperms:
 override_dh_gnome:
 	dh_gnome --no-gnome-versions
 
-override_dh_strip:
-	dh_strip -p libmozjs-52-0 --dbgsym-migration=libmozjs-52-0-dbg
-	dh_strip
-
 # Don't fail the build on arches where the tests are known to fail
 override_dh_auto_test:
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))

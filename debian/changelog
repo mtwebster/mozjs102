@@ -1,4 +1,4 @@
-mozjs52 (52.2.1-1) UNRELEASED; urgency=medium
+mozjs52 (52.2.1-1) unstable; urgency=medium
 
   [ Rico Tzschichholz]
   * New upstream release (Closes: #860396) (LP: #1662094)
@@ -51,6 +51,10 @@ mozjs52 (52.2.1-1) UNRELEASED; urgency=medium
     - tests-skip-on-all-64-bit-archs.patch
     - fix-no-symlink-install-manifest.patch
     - Take-both-with-wrapped-and-unwrapped-enclosing-environments.patch
+
+  [ Jordi Mallach ]
+  * Remove override to dh_strip as the package is new and there's no
+    need to migrate from -dbg.
 
  -- Jeremy Bicha <jbicha@ubuntu.com>  Sat, 15 Apr 2017 13:07:59 -0400
 
