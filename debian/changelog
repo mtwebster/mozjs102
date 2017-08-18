@@ -19,6 +19,7 @@ mozjs52 (52.2.1-1) unstable; urgency=medium
   * Switch maintainer to Debian GNOME team
   * debian/control:
     - Build-Depend on libicu-dev, libreadline-dev and python-dev
+    - Drop Build-Depends on libnspr4-dev
   * debian/rules: Copy these build flags from Fedora:
     --with-intl-api
     --with-system-icu
@@ -32,6 +33,7 @@ mozjs52 (52.2.1-1) unstable; urgency=medium
   * debian/rules:
     - Build with --enable-tests but don't make tests fatal yet
     - Build --without-system-icu since we don't have icu 58 yet
+    - Build with --enable-posix-nspr-emulation
   * Drop the libmozjs*-bin package, see Mozilla #1339931
   * Don't install .a file
   * Bump dh compat to 10 but disable autoreconf
