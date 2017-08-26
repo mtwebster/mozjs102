@@ -30,7 +30,7 @@ mozjs52 (52.3.1-1) unstable; urgency=medium
   * debian/rules:
     - Build with --enable-tests but don't make tests fatal yet
     - Build --without-system-icu since we don't have icu 58 yet
-    - Build with --enable-posix-nspr-emulation
+    - Build --with-system-nspr
   * Have -dev package install the js binary, see Mozilla #1339931
   * Don't install .a file
   * Bump dh compat to 10 but disable autoreconf
