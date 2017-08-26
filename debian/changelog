@@ -8,9 +8,6 @@ mozjs52 (52.3.1-1) unstable; urgency=medium
   * Add patches:
     - copy-headers.patch:
       + Copy headers instead of symlinking
-    - install-js-config-h.patch
-    - pkg-config-version.patch:
-      + Add major version to pkg-config, shell and js-config filenames
   * Drop patches:
     - aarch64-support.patch, applied in new version
     - fix-perl-5.22.patch, this perl script doesn't exist in new version
@@ -51,8 +48,6 @@ mozjs52 (52.3.1-1) unstable; urgency=medium
     - Disable-js-JIT-on-x32.patch
   * Add patches from https://github.com/ptomato/mozjs :
     - tests-skip-on-all-64-bit-archs.patch
-    - fix-no-symlink-install-manifest.patch
-    - Take-both-with-wrapped-and-unwrapped-enclosing-environments.patch
 
   [ Jordi Mallach ]
   * Remove override to dh_strip as the package is new and there's no
