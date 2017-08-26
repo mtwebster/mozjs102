@@ -1,4 +1,4 @@
-mozjs52 (52.2.1-1) unstable; urgency=medium
+mozjs52 (52.3.1-1) unstable; urgency=medium
 
   [ Rico Tzschichholz]
   * New upstream release (Closes: #860396) (LP: #1662094)
