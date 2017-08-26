@@ -31,7 +31,7 @@ mozjs52 (52.3.1-1) unstable; urgency=medium
     - Build with --enable-tests but don't make tests fatal yet
     - Build --without-system-icu since we don't have icu 58 yet
     - Build with --enable-posix-nspr-emulation
-  * Drop the libmozjs*-bin package, see Mozilla #1339931
+  * Have -dev package install the js binary, see Mozilla #1339931
   * Don't install .a file
   * Bump dh compat to 10 but disable autoreconf
   * Migrate to automatic -dbgsym packages
@@ -55,7 +55,7 @@ mozjs52 (52.3.1-1) unstable; urgency=medium
   * Remove override to dh_strip as the package is new and there's no
     need to migrate from -dbg.
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Sat, 15 Apr 2017 13:07:59 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Fri, 25 Aug 2017 22:07:59 -0400
 
 mozjs24 (24.2.0-5.1) unstable; urgency=medium
 

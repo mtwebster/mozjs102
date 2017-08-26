@@ -71,7 +71,6 @@ override_dh_install:
 		ln -s libmozjs-52.so.0.0.0 libmozjs-52.so.0 && \
 		ln -s libmozjs-52.so.0 libmozjs-52.so
 	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/libmozjs-52.a
-	rm debian/tmp/usr/bin/js52
 	dh_install --fail-missing
 
 override_dh_fixperms:
