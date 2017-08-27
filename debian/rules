@@ -47,13 +47,11 @@ override_dh_auto_configure:
 		--prefix=/usr \
 		--libdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
 		--without-system-icu \
-		--with-system-nspr \
+		--enable-posix-nspr-emulation \
 		--with-system-zlib \
 		--enable-tests \
 		--disable-strip \
-		--enable-ctypes \
 		--enable-threadsafe \
-		--enable-system-ffi \
 		--with-intl-api \
 		--enable-readline \
 		--enable-xterm-updates \

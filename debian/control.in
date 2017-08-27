@@ -7,8 +7,6 @@ Build-Depends: debhelper (>= 10),
                gnome-pkg-tools,
                autoconf2.13,
                libicu-dev,
-               libnspr4-dev (>= 2:4.9.2),
-               libffi-dev,
                libreadline-dev,
                zlib1g-dev (>= 1:1.2.3),
                pkg-config,
@@ -33,8 +31,6 @@ Package: libmozjs-52-dev
 Architecture: any
 Section: libdevel
 Depends: libmozjs-52-0 (= ${binary:Version}),
-         libffi-dev,
-         libnspr4-dev (>= 2:4.9.2),
          ${misc:Depends},
          ${shlibs:Depends}
 Description: SpiderMonkey JavaScript library - development headers
