@@ -660,7 +660,7 @@ Copyright: 2004-2007 The Dojo Foundation
            2005 Bob Ippolito.
            2007 Apple Inc.
            2007 John Resig
-License: BSD-2-clause and GPL-2 or Expat and AFL-2.1+ or BSD-3-clause-JSF
+License: BSD-2-clause, and GPL-2 or Expat, and AFL-2.1+ or BSD-3-clause-JSF, and Expat
 
 Files: js/src/aclocal.m4
   nsprpub/config/nspr.m4
