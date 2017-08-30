@@ -1,7 +1,11 @@
 mozjs52 (52.3.1-2) UNRELEASED; urgency=medium
 
+  [ Iain Lane ]
   * debian/rules: Pass -fno-schedule-insns on armhf to prevent runtime
     failures. See: https://bugzilla.mozilla.org/show_bug.cgi?id=1337263
+
+  [ Jeremy Bicha ]
+  * Make tests fatal except on ppc64el and kfreebsd.
 
  -- Iain Lane <laney@debian.org>  Wed, 30 Aug 2017 16:17:02 +0100
 

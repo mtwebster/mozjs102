@@ -86,9 +86,9 @@ override_dh_gnome:
 # Don't fail the build on arches where the tests are known to fail
 override_dh_auto_test:
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
-#ifeq (,$(filter $(DEB_HOST_ARCH),arm64 ppc64el s390x))
-#	make -C $(SRCDIR) -k check-jstests
-#else
+ifeq (,$(filter $(DEB_HOST_ARCH),kfreebsd-i386,kfreebsd-amd64,ppc64el))
+	make -C $(SRCDIR) -k check-jstests
+else
 	make -C $(SRCDIR) -k check-jstests || true
-#endif
+endif
 endif
