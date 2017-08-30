@@ -1,3 +1,10 @@
+mozjs52 (52.3.1-2) UNRELEASED; urgency=medium
+
+  * debian/rules: Pass -fno-schedule-insns on armhf to prevent runtime
+    failures. See: https://bugzilla.mozilla.org/show_bug.cgi?id=1337263
+
+ -- Iain Lane <laney@debian.org>  Wed, 30 Aug 2017 16:17:02 +0100
+
 mozjs52 (52.3.1-1) unstable; urgency=medium
 
   [ Rico Tzschichholz]
