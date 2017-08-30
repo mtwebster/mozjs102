@@ -1,3 +1,9 @@
+mozjs52 (52.3.1-3) unstable; urgency=medium
+
+  * debian/rules: Fix dh_auto_test override logic
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 30 Aug 2017 16:11:57 -0400
+
 mozjs52 (52.3.1-2) unstable; urgency=medium
 
   [ Iain Lane ]
