@@ -1,6 +1,10 @@
 mozjs52 (52.3.1-4) UNRELEASED; urgency=medium
 
+  [ Jeremy Bicha ]
   * Drop obsolete Ubuntu-specific --enable-thumb2 rule
+
+  [ Iain Lane ]
+  * Fix --build= to --target=, as the former doesn't exist.
 
  -- Jeremy Bicha <jbicha@debian.org>  Thu, 31 Aug 2017 14:06:42 -0400
 

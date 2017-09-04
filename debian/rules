@@ -38,7 +38,7 @@ override_dh_clean:
 override_dh_auto_configure:
 	cd $(SRCDIR) && SHELL=/bin/sh && PYTHON=python && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
-		--build=$(DEB_BUILD_GNU_TYPE) \
+		--target=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \
 		--libdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
 		--without-system-icu \
