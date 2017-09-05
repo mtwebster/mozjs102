@@ -1,4 +1,4 @@
-mozjs52 (52.3.1-4) UNRELEASED; urgency=medium
+mozjs52 (52.3.1-4) unstable; urgency=medium
 
   [ Jeremy Bicha ]
   * Drop obsolete Ubuntu-specific --enable-thumb2 rule
@@ -13,7 +13,7 @@ mozjs52 (52.3.1-4) UNRELEASED; urgency=medium
     - Use "-fno-schedule-insns2
       -fno-lifetime-dse-fno-delete-null-pointer-checks" on all architectures.
 
- -- Jeremy Bicha <jbicha@debian.org>  Thu, 31 Aug 2017 14:06:42 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Tue, 05 Sep 2017 04:07:55 -0400
 
 mozjs52 (52.3.1-3) unstable; urgency=medium
 
