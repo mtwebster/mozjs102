@@ -10,14 +10,13 @@ DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 SRCDIR = $(CURDIR)/js/src
 
-ifneq (,$(findstring $(DEB_BUILD_ARCH),armel))
-        CONFIGURE_FLAGS += --disable-methodjit
+DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
+        DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns
+        DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns
 endif
-
-ifneq (,$(findstring $(DEB_BUILD_ARCH),armhf))
-        export DEB_CFLAGS_MAINT_APPEND = -fno-schedule-insns
-        export DEB_CXXFLAGS_MAINT_APPEND = -fno-schedule-insns
-endif
+export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
 %:
 	dh $@ --sourcedirectory=$(SRCDIR) --with gnome,pkgkde-symbolshelper --without autoreconf
