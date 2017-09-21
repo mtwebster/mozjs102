@@ -7,6 +7,10 @@
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+# mozjs' build process does not seem to be compatible with other shells
+# like zsh
+export SHELL = /bin/sh
+export PYTHON = python
 
 SRCDIR = $(CURDIR)/js/src
 
@@ -35,7 +39,7 @@ override_dh_clean:
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 override_dh_auto_configure:
-	cd $(SRCDIR) && SHELL=/bin/sh && PYTHON=python && $(SHELL) configure \
+	cd $(SRCDIR) && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--target=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \

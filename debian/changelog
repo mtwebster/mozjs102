@@ -1,3 +1,10 @@
+mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
+
+  * Export SHELL and PYTHON for all stages of the build process
+    (Closes: #876354)
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
+
 mozjs52 (52.3.1-4) unstable; urgency=medium
 
   [ Jeremy Bicha ]
