@@ -2,6 +2,10 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
 
   * Export SHELL and PYTHON for all stages of the build process
     (Closes: #876354)
+  * d/p/Allow-to-override-ICU_DATA_FILE-from-the-environment.patch:
+    Add patch from firefox-esr to allow ICU_DATA_FILE to be forced in
+    the environment. We need to use a big-endian version on BE
+    architectures.
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 

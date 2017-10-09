@@ -9,3 +9,4 @@ remove-nspr-dependency.patch
 tests-skip-on-all-64-bit-archs.patch
 include-configure-script.patch
 pre-generate-old-configure.patch
+Allow-to-override-ICU_DATA_FILE-from-the-environment.patch
