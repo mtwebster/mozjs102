@@ -9,6 +9,8 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
   * d/p/Add-intl-icu_sources_data.py-from-firefox-esr.patch:
     Add patch importing intl/icu_sources_data.py from firefox-esr_52.4.0esr-2
     so we can regenerate the ICU_DATA_FILE
+  * d/p/Fix-crashes-in-AtomicOperations-none-on-s390x.patch:
+    Add patch from firefox-esr to fix atomic operations crashes on s390x
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
