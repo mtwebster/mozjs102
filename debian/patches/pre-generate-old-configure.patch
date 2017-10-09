@@ -1,7 +1,6 @@
-From 86961b5dda54078d3a304f6f7811a7ccad6b08f9 Mon Sep 17 00:00:00 2001
 From: Philip Chimento <philip@endlessm.com>
 Date: Mon, 17 Jul 2017 14:52:34 -0700
-Subject: [PATCH] build: Pre-generate old-configure
+Subject: build: Pre-generate old-configure
 
 This avoids a build-time dependency on autoconf 2.13. Generated with:
 autoconf213 --localdir=js/src js/src/old-configure.in >js/src/old-configure
@@ -19,7 +18,7 @@ during the build process if we are in a git checkout.
  create mode 100644 js/src/old-configure
 
 diff --git a/build/moz.configure/old.configure b/build/moz.configure/old.configure
-index b32c3f7b..3febf711 100644
+index b32c3f7..3febf71 100644
 --- a/build/moz.configure/old.configure
 +++ b/build/moz.configure/old.configure
 @@ -98,6 +98,9 @@ def prepare_configure(old_configure, mozconfig, autoconf, build_env, shell,
@@ -33,7 +32,7 @@ index b32c3f7b..3febf711 100644
          log.info('Refreshing %s with %s', old_configure, autoconf)
          script = subprocess.check_output([
 diff --git a/js/src/configure b/js/src/configure
-index f1ef8c49..a1d952ec 100755
+index f1ef8c4..a1d952e 100755
 --- a/js/src/configure
 +++ b/js/src/configure
 @@ -1,5 +1,7 @@
@@ -46,7 +45,7 @@ index f1ef8c49..a1d952ec 100755
  export OLD_CONFIGURE="$SRCDIR"/old-configure
 diff --git a/js/src/old-configure b/js/src/old-configure
 new file mode 100644
-index 00000000..de0f8779
+index 0000000..de0f877
 --- /dev/null
 +++ b/js/src/old-configure
 @@ -0,0 +1,10946 @@

@@ -1,10 +1,16 @@
+From: Pino Toscano <pino@debian.org>
+Date: Sun, 27 Jul 2014 19:04:08 +0200
+Subject: Hurd support
+
 ---
- js/src/wasm/WasmSignalHandlers.cpp |    2 +-
+ js/src/wasm/WasmSignalHandlers.cpp | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
+diff --git a/js/src/wasm/WasmSignalHandlers.cpp b/js/src/wasm/WasmSignalHandlers.cpp
+index 78d2136..ecc3bb9 100644
 --- a/js/src/wasm/WasmSignalHandlers.cpp
 +++ b/js/src/wasm/WasmSignalHandlers.cpp
-@@ -115,7 +115,7 @@
+@@ -130,7 +130,7 @@ class AutoSetHandlingSegFault
  #  define EPC_sig(p) ((p)->sc_pc)
  #  define RFP_sig(p) ((p)->sc_regs[30])
  # endif

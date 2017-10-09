@@ -1,5 +1,6 @@
 mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
 
+  * Regenerate patches
   * Export SHELL and PYTHON for all stages of the build process
     (Closes: #876354)
   * d/p/Allow-to-override-ICU_DATA_FILE-from-the-environment.patch:

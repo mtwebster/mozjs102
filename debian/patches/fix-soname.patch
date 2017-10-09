@@ -1,5 +1,5 @@
-From: Laszlo Boszormenyi (GCS) <gcs@debian.org>
-Date: Fri, 02 May 2014 22:20:45 +0200
+From: "Laszlo Boszormenyi (GCS)" <gcs@debian.org>
+Date: Fri, 2 May 2014 22:20:45 +0200
 Subject: fix soname
 
 Add soname switch to linker, regardless of Operating System
@@ -9,10 +9,10 @@ Bug-Debian: http://bugs.debian.org/746705
  config/rules.mk | 5 +++--
  1 file changed, 3 insertions(+), 2 deletions(-)
 
-Index: mozjs52-52.2.1~artful1/config/rules.mk
-===================================================================
---- mozjs52-52.2.1~artful1.orig/config/rules.mk
-+++ mozjs52-52.2.1~artful1/config/rules.mk
+diff --git a/config/rules.mk b/config/rules.mk
+index a21128c..e6ef35a 100644
+--- a/config/rules.mk
++++ b/config/rules.mk
 @@ -418,7 +418,7 @@ endif # AIX
  #
  # Linux: add -Bsymbolic flag for components
