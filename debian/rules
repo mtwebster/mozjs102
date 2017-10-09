@@ -7,6 +7,7 @@
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+DEB_HOST_ARCH_ENDIAN ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_ENDIAN)
 # mozjs' build process does not seem to be compatible with other shells
 # like zsh
 export SHELL = /bin/sh
@@ -21,6 +22,13 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
         DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns
 endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
+
+ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
+ICU_DATA_FILE = icudt58l.dat
+else
+ICU_DATA_FILE = icudt58b.dat
+endif
+export ICU_DATA_FILE
 
 %:
 	dh $@ --sourcedirectory=$(SRCDIR) --with gnome,pkgkde-symbolshelper --without autoreconf
@@ -39,6 +47,7 @@ override_dh_clean:
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 override_dh_auto_configure:
+	python intl/icu_sources_data.py "$(CURDIR)"
 	cd $(SRCDIR) && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--target=$(DEB_BUILD_GNU_TYPE) \
