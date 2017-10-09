@@ -20,6 +20,10 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
   * d/p/tests-For-tests-that-are-skipped-on-64-bit-mips64-is-also.patch:
     Count mips64 as a 64-bit architecture for the purposes of skipping
     tests
+  * d/rules: Run a "hello, world" program before running the test suite.
+    If mozjs fails to initialize on a platform, the diagnostics given
+    are fairly useless; try something much simpler before we go to the
+    effort of running the full test suite.
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
