@@ -17,6 +17,9 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
     Add patch from firefox-esr to fix atomic operations crashes on s390x
   * d/p/icu_sources_data-Write-command-output-to-our-stderr.patch:
     Make sure output from icu_sources_data.py ends up in buildd logs
+  * d/p/tests-For-tests-that-are-skipped-on-64-bit-mips64-is-also.patch:
+    Count mips64 as a 64-bit architecture for the purposes of skipping
+    tests
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
