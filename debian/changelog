@@ -15,6 +15,8 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
     Avoid needing the mozpack module to generate the ICU_DATA_FILE
   * d/p/Fix-crashes-in-AtomicOperations-none-on-s390x.patch:
     Add patch from firefox-esr to fix atomic operations crashes on s390x
+  * d/p/icu_sources_data-Write-command-output-to-our-stderr.patch:
+    Make sure output from icu_sources_data.py ends up in buildd logs
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
