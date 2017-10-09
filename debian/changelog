@@ -6,6 +6,9 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
     Add patch from firefox-esr to allow ICU_DATA_FILE to be forced in
     the environment. We need to use a big-endian version on BE
     architectures.
+  * d/p/Add-intl-icu_sources_data.py-from-firefox-esr.patch:
+    Add patch importing intl/icu_sources_data.py from firefox-esr_52.4.0esr-2
+    so we can regenerate the ICU_DATA_FILE
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
