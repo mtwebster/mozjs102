@@ -28,10 +28,10 @@ else
 		(ppc64el)
 			echo "Ignoring test failure, https://bugs.debian.org/878319"
 			;;
-		(s390x|powerpc64)
+		(s390x|ppc64)
 			echo "Ignoring test failure, https://bugs.debian.org/878286"
 			;;
-		(powerpc|s390x|powerpc64)
+		(powerpc|s390x|ppc64)
 			echo "Ignoring test failure, https://bugs.debian.org/878285"
 			;;
 		(*)
