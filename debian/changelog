@@ -34,6 +34,7 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
     non-fatal on architectures with known issues (downgrades severity
     of: #877428, #878284, #878285, #878286)
   * d/rules: Skip build-time tests if cross-compiling
+  * d/rules: Run icu build with VERBOSE=1 to see compilation commands
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 

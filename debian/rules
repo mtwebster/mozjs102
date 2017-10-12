@@ -48,7 +48,7 @@ override_dh_clean:
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 override_dh_auto_configure:
-	python intl/icu_sources_data.py "$(CURDIR)"
+	VERBOSE=1 python intl/icu_sources_data.py "$(CURDIR)"
 	cd $(SRCDIR) && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--target=$(DEB_BUILD_GNU_TYPE) \
