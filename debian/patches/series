@@ -13,3 +13,4 @@ Fix-crashes-in-AtomicOperations-none-on-s390x.patch
 icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
 icu_sources_data-Write-command-output-to-our-stderr.patch
 tests-For-tests-that-are-skipped-on-64-bit-mips64-is-also.patch
+Don-t-include-xlocale.patch
