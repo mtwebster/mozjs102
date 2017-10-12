@@ -4,6 +4,7 @@
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
 
+DEB_HOST_ARCH  ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
@@ -85,13 +86,10 @@ override_dh_fixperms:
 override_dh_gnome:
 	dh_gnome --no-gnome-versions
 
-# Don't fail the build on arches where the tests are known to fail
 override_dh_auto_test:
+	@:
+ifeq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
-	./js/src/js/src/js -e 'print("Hello, world")'
-ifeq (,$(filter $(DEB_HOST_ARCH),kfreebsd-i386 kfreebsd-amd64 ppc64el))
-	make -C $(SRCDIR) -k check-jstests
-else
-	make -C $(SRCDIR) -k check-jstests || true
+	SRCDIR=${SRCDIR} DEB_HOST_ARCH=${DEB_HOST_ARCH} $(CURDIR)/debian/test.sh
 endif
 endif

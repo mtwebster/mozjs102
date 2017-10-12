@@ -30,6 +30,10 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
     are fairly useless; try something much simpler before we go to the
     effort of running the full test suite. Failure to run this program
     causes FTBFS, to make sure we won't ship completely useless builds.
+  * d/test.sh: Wrap build-time tests, making test-suite failures
+    non-fatal on architectures with known issues (downgrades severity
+    of: #877428, #878284, #878285, #878286)
+  * d/rules: Skip build-time tests if cross-compiling
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
