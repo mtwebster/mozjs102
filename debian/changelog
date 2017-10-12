@@ -1,4 +1,6 @@
-mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
+mozjs52 (52.3.1-5) unstable; urgency=medium
+
+  * Team upload
 
   [ Simon McVittie ]
   * Regenerate patches
@@ -40,7 +42,7 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
   [ Jeremy Bicha ]
   * Add Don-t-include-xlocale.patch: Fix build with glibc >= 2.26
 
- -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
+ -- Simon McVittie <smcv@debian.org>  Fri, 13 Oct 2017 00:24:00 +0100
 
 mozjs52 (52.3.1-4) unstable; urgency=medium
 
