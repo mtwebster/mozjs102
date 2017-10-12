@@ -28,7 +28,8 @@ mozjs52 (52.3.1-5) UNRELEASED; urgency=medium
   * d/rules: Run a "hello, world" program before running the test suite.
     If mozjs fails to initialize on a platform, the diagnostics given
     are fairly useless; try something much simpler before we go to the
-    effort of running the full test suite.
+    effort of running the full test suite. Failure to run this program
+    causes FTBFS, to make sure we won't ship completely useless builds.
 
  -- Simon McVittie <smcv@debian.org>  Thu, 21 Sep 2017 10:10:10 +0100
 
