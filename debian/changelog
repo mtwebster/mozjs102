@@ -1,3 +1,11 @@
+mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
+
+  * Disable JIT on mips* and sparc*. Upstream describe it as unsupported,
+    and a slow interpreter is better than a broken JIT.
+    (Might close: #878519, #877428, #878284)
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 15 Oct 2017 11:34:57 +0100
+
 mozjs52 (52.3.1-5) unstable; urgency=medium
 
   * Team upload
