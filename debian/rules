@@ -25,7 +25,7 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
 endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
-ifneq (,$(filter mips% sparc%,$(DEB_HOST_ARCH)))
+ifeq ($(DEB_HOST_ARCH),mips)
 CONFIGURE_FLAGS += --disable-ion
 endif
 
