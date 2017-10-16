@@ -52,7 +52,11 @@ override_dh_clean:
 # dh_auto_configure does not properly handle autoconf2.13 generated configure
 # scripts, so we call configure ourselves.
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
+# The bundled copy of icu prefers clang, which we need to override to
+# use gcc because clang doesn't support our DEB_CFLAGS_MAINT_APPEND
 override_dh_auto_configure:
+	CC=$${CC:-$(DEB_HOST_GNU_TYPE)-gcc} \
+	CXX=$${CXX:-$(DEB_HOST_GNU_TYPE)-g++} \
 	VERBOSE=1 python intl/icu_sources_data.py "$(CURDIR)"
 	cd $(SRCDIR) && $(SHELL) configure \
 		--host=$(DEB_HOST_GNU_TYPE) \

@@ -3,6 +3,8 @@ mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
   * Disable JIT on mips. Upstream describe it as unsupported, and a slow
     interpreter is better than a broken JIT.
     (Might close: #878519, #878284)
+  * Explicitly select gcc/g++ even if clang is installed, overriding ICU's
+    configure.ac (Closes: #878669)
 
  -- Simon McVittie <smcv@debian.org>  Sun, 15 Oct 2017 11:34:57 +0100
 
