@@ -5,6 +5,12 @@ mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
     (Might close: #878519, #878284)
   * Explicitly select gcc/g++ even if clang is installed, overriding ICU's
     configure.ac (Closes: #878669)
+  * Select an atomic operation implementation based on CPU detection
+    macros like __mips__, not just the JIT that is configured, so that
+    builds with the JIT disabled won't use known-broken atomic
+    operations. This also means we'll fail to build with a #error
+    instead of quietly using atomic operations that will fail at
+    runtime.
 
  -- Simon McVittie <smcv@debian.org>  Sun, 15 Oct 2017 11:34:57 +0100
 

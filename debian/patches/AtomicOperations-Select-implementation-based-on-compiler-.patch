@@ -1,0 +1,64 @@
+From: Simon McVittie <smcv@debian.org>
+Date: Mon, 16 Oct 2017 08:32:28 +0100
+Subject: AtomicOperations: Select implementation based on compiler
+ architecture
+
+Selecting an implementation based on the JIT in use resulted in
+the use of jit/none/AtomicOperations-none.h (which just crash at
+runtime) on architectures that hadn't specifically been patched,
+if the JIT has been disabled at configure time. Look at the compiler
+identification to select an implementation, and make the build fail
+with a #error if there is none suitable, instead of producing a binary
+that quietly doesn't work.
+
+Signed-off-by: Simon McVittie <smcv@debian.org>
+---
+ js/src/jit/AtomicOperations.h | 30 +++++++-----------------------
+ 1 file changed, 7 insertions(+), 23 deletions(-)
+
+diff --git a/js/src/jit/AtomicOperations.h b/js/src/jit/AtomicOperations.h
+index 4aec697..8fe5078 100644
+--- a/js/src/jit/AtomicOperations.h
++++ b/js/src/jit/AtomicOperations.h
+@@ -320,34 +320,18 @@ AtomicOperations::isLockfree(int32_t size)
+ } // namespace jit
+ } // namespace js
+ 
+-#if defined(JS_CODEGEN_ARM)
++#if defined(JS_CODEGEN_ARM) || defined(__arm__)
+ # include "jit/arm/AtomicOperations-arm.h"
+-#elif defined(JS_CODEGEN_ARM64)
++#elif defined(JS_CODEGEN_ARM64) || defined(__aarch64__)
+ # include "jit/arm64/AtomicOperations-arm64.h"
+-#elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
++#elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64) || defined(__mips__)
+ # include "jit/mips-shared/AtomicOperations-mips-shared.h"
+-#elif defined(__ppc__) || defined(__PPC__)
++#elif defined(__ppc__) || defined(__PPC__) || defined(__ppc64__) || defined(__PPC64__) || defined(__ppc64le__) || defined(__PPC64LE__)
+ # include "jit/none/AtomicOperations-ppc.h"
+-#elif defined(__sparc__)
++#elif defined(__sparc__) || defined(__s390__)
++// The sparc file is more or less generic and works on s390x.
+ # include "jit/none/AtomicOperations-sparc.h"
+-#elif defined(JS_CODEGEN_NONE)
+-  // You can disable the JIT with --disable-ion but you must still
+-  // provide the atomic operations that will be used by the JS engine.
+-  // When the JIT is disabled the operations are simply safe-for-races
+-  // C++ realizations of atomics.  These operations cannot be written
+-  // in portable C++, hence the default here is to crash.  See the
+-  // top of the file for more guidance.
+-# if defined(__ppc64__) || defined(__PPC64__) || defined(__ppc64le__) || defined(__PPC64LE__)
+-#  include "jit/none/AtomicOperations-ppc.h"
+-# elif defined(__aarch64__)
+-#  include "jit/arm64/AtomicOperations-arm64.h"
+-# elif defined(__s390__)
+-  // The sparc file is more or less generic and works on s390x.
+-#  include "jit/none/AtomicOperations-sparc.h"
+-# else
+-#  include "jit/none/AtomicOperations-none.h" // These MOZ_CRASH() always
+-# endif
+-#elif defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
++#elif defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64) || defined(__x86_64__) || defined(__i386__)
+ # include "jit/x86-shared/AtomicOperations-x86-shared.h"
+ #else
+ # error "Atomic operations must be defined for this platform"
