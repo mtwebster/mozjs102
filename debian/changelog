@@ -1,3 +1,10 @@
+mozjs52 (52.3.1-7) UNRELEASED; urgency=medium
+
+  * Add tests-snans-be.patch:
+    - Fix sort_snans.js test on big endian (Closes: #878285)
+
+ -- Adrian Bunk <bunk@debian.org>  Fri, 20 Oct 2017 11:57:45 -0400
+
 mozjs52 (52.3.1-6) unstable; urgency=medium
 
   [ Adrian Bunk ]
