@@ -1,0 +1,16 @@
+Description: Use AtomicOperations-sparc.h instead of AtomicOperations-none.h
+Author: Adrian Bunk <bunk@debian.org>
+Bug-Debian: https://bugs.debian.org/878284
+
+--- mozjs52-52.3.1.orig/js/src/jit/AtomicOperations.h
++++ mozjs52-52.3.1/js/src/jit/AtomicOperations.h
+@@ -342,7 +342,8 @@ AtomicOperations::isLockfree(int32_t siz
+ # elif defined(__aarch64__)
+ #  include "jit/arm64/AtomicOperations-arm64.h"
+ # else
+-#  include "jit/none/AtomicOperations-none.h" // These MOZ_CRASH() always
++  // The sparc file is more or less generic
++#  include "jit/none/AtomicOperations-sparc.h"
+ # endif
+ #elif defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+ # include "jit/x86-shared/AtomicOperations-x86-shared.h"
