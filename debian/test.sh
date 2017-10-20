@@ -22,9 +22,6 @@ else
 		(mips64el)
 			echo "Ignoring test failure, https://bugs.debian.org/877428"
 			;;
-		(mips)
-			echo "Ignoring test failure, https://bugs.debian.org/878284"
-			;;
 		(ppc64el)
 			echo "Ignoring test failure, https://bugs.debian.org/878319"
 			;;
