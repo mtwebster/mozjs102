@@ -1,0 +1,22 @@
+From 512e1382506bc5264c61704848c1b42b87af874f Mon Sep 17 00:00:00 2001
+From: Jeremy Bicha <jbicha@debian.org>
+Date: Fri, 20 Oct 2017 19:48:33 -0400
+Subject: Alpha architecture is 64-bit
+
+---
+ python/mozbuild/mozbuild/configure/constants.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/python/mozbuild/mozbuild/configure/constants.py b/python/mozbuild/mozbuild/configure/constants.py
+index dfc7cf8a..3a652b2d 100644
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
+@@ -40,7 +40,7 @@ Kernel = EnumString.subclass(
+ 
+ CPU_bitness = {
+     'aarch64': 64,
+-    'Alpha': 32,
++    'Alpha': 64,
+     'arm': 32,
+     'hppa': 32,
+     'ia64': 64,

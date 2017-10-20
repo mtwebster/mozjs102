@@ -1,3 +1,10 @@
+mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
+
+  * Add Alpha-architecture-is-64-bit.patch:
+    - The Alpha architecture is not 32-bit, thanks Adrian Bunk
+
+ -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
+
 mozjs52 (52.3.1-7) unstable; urgency=medium
 
   [ Adrian Bunk ]

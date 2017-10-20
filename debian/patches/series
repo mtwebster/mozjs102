@@ -16,3 +16,4 @@ tests-For-tests-that-are-skipped-on-64-bit-mips64-is-also.patch
 Don-t-include-xlocale.patch
 tests-increase-timeout.patch
 tests-snans-be.patch
+Alpha-architecture-is-64-bit.patch
