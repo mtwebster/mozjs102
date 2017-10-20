@@ -1,8 +1,4 @@
-mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
-
-  [ Simon McVittie ]
-  * Explicitly select gcc/g++ even if clang is installed, overriding ICU's
-    configure.ac (Closes: #878669)
+mozjs52 (52.3.1-6) unstable; urgency=medium
 
   [ Adrian Bunk ]
   * Disable ion JIT on mips (Closes: #878519, #878284)
@@ -11,9 +7,17 @@ mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
     always use AtomicOperations-sparc.h instead of AtomicOperations-none.h
   * Add tests-increase-timeout.patch:
     - Set timeout to 600 seconds instead of 300 for slower buildds
-  * Stop ignoring test failures on mips (Closes: #878284)
+  * Stop ignoring test failures on mips
 
- -- Simon McVittie <smcv@debian.org>  Sun, 15 Oct 2017 11:34:57 +0100
+  [ Jeremy Bicha ]
+  * Much thanks to Adrian Bunk for all of his help in fixing mozjs
+    build problems!
+
+  [ Simon McVittie ]
+  * Explicitly select gcc/g++ even if clang is installed, overriding ICU's
+    configure.ac (Closes: #878669)
+
+ -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 09:03:39 -0400
 
 mozjs52 (52.3.1-5) unstable; urgency=medium
 
