@@ -1,13 +1,11 @@
 mozjs52 (52.3.1-6) UNRELEASED; urgency=medium
 
   [ Simon McVittie ]
-  * Disable JIT on mips. Upstream describe it as unsupported, and a slow
-    interpreter is better than a broken JIT.
-    (Might close: #878519, #878284)
   * Explicitly select gcc/g++ even if clang is installed, overriding ICU's
     configure.ac (Closes: #878669)
 
   [ Adrian Bunk ]
+  * Disable ion JIT on mips (Closes: #878519, #878284)
   * Rename Fix-crashes-in-AtomicOperations-none-on-s390x.patch to
     Fix-crashes-in-AtomicOperations-none.patch and modify it to
     always use AtomicOperations-sparc.h instead of AtomicOperations-none.h
