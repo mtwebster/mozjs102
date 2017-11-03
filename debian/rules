@@ -36,6 +36,12 @@ ifeq ($(DEB_HOST_ARCH),mips)
 CONFIGURE_FLAGS += --disable-ion
 endif
 
+ifeq ($(DEB_HOST_ARCH),sh4)
+CONFIGURE_FLAGS += --disable-pie
+else
+CONFIGURE_FLAGS += --enable-pie
+endif
+
 ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
 ICU_DATA_FILE = icudt58l.dat
 else
@@ -82,7 +88,6 @@ override_dh_auto_configure:
 		--enable-shared-js \
 		--enable-gcgenerational \
 		--disable-optimize \
-		--enable-pie \
 		$(CONFIGURE_FLAGS)
 
 override_dh_install:
