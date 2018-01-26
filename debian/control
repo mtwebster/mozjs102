@@ -7,7 +7,7 @@ Section: libs
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@debian.org>
-Build-Depends: debhelper (>= 10),
+Build-Depends: debhelper (>= 10.3),
                gnome-pkg-tools,
                autoconf2.13,
                libicu-dev,
