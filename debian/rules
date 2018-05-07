@@ -17,8 +17,15 @@ export PYTHON = python
 SRCDIR = $(CURDIR)/js/src
 CONFIGURE_FLAGS =
 
-DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
-DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+# ia64 currently has toolchain issues, so relax the link optimization
+# -fno-schedule-insns2 breaks gcc on ia64, so leave it enabled
+ifneq (,$(findstring $(DEB_BUILD_ARCH),ia64))
+	DEB_CFLAGS_MAINT_APPEND += -G0 -fno-lifetime-dse -fno-delete-null-pointer-checks
+	DEB_CXXFLAGS_MAINT_APPEND += -G0 -fno-lifetime-dse -fno-delete-null-pointer-checks
+else
+	DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+	DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+endif
 ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
         DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns
         DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns
