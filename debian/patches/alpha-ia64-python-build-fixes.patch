@@ -1,0 +1,39 @@
+Description: Python build fixes for alpha and ia64
+ Backported upstream Python build fixes for alpha and ia64,
+ taken from Mozilla bug 1326496.
+ See: https://bugzilla.mozilla.org/show_bug.cgi?id=1326496
+Author: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Bug-Debian: https://bugs.debian.org/878285
+Last-Update: 2018-05-07
+
+--- mozjs52-52.3.1.orig/python/mozbuild/mozbuild/configure/constants.py
++++ mozjs52-52.3.1/python/mozbuild/mozbuild/configure/constants.py
+@@ -40,7 +40,7 @@ Kernel = EnumString.subclass(
+ 
+ CPU_bitness = {
+     'aarch64': 64,
+-    'Alpha': 32,
++    'Alpha': 64,
+     'arm': 32,
+     'hppa': 32,
+     'ia64': 64,
+--- mozjs52-52.3.1.orig/testing/mozbase/mozinfo/mozinfo/mozinfo.py
++++ mozjs52-52.3.1/testing/mozbase/mozinfo/mozinfo/mozinfo.py
+@@ -15,7 +15,7 @@ import platform
+ import re
+ import sys
+ from .string_version import StringVersion
+-
++from ctypes.util import find_library
+ 
+ # keep a copy of the os module since updating globals overrides this
+ _os = os
+@@ -150,7 +150,7 @@ if info['os'] == 'linux':
+     import errno
+     PR_SET_SECCOMP = 22
+     SECCOMP_MODE_FILTER = 2
+-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0)
++    ctypes.CDLL(find_library("c"), use_errno=True).prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, 0)
+     info['has_sandbox'] = ctypes.get_errno() == errno.EFAULT
+ else:
+     info['has_sandbox'] = True

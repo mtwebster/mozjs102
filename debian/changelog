@@ -1,6 +1,11 @@
 mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
 
+  [ Jeremy Bicha ]
   * Update Vcs fields for migration to https://salsa.debian.org/
+
+  [ John Paul Adrian Glaubitz ]
+  * Add patch to fix Python build issues on alpha and ia64:
+    - alpha-ia64-python-build-fixes.patch (Closes: #879589, #887496)
 
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
 
