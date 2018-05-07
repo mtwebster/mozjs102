@@ -19,3 +19,4 @@ tests-snans-be.patch
 alpha-ia64-python-build-fixes.patch
 sh4-support.patch
 m68k-support.patch
+sparc64-support.patch
