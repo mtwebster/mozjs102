@@ -8,6 +8,8 @@ mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
     - alpha-ia64-python-build-fixes.patch (Closes: #879589, #887496)
   * Add patch to add build support for sh4:
     - sh4-support.patch (Closes: #880692)
+  * Refresh patch for build support for m68k:
+    - m68k-support.patch (Closes: #880693)
 
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
 
