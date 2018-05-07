@@ -17,3 +17,4 @@ Don-t-include-xlocale.patch
 tests-increase-timeout.patch
 tests-snans-be.patch
 alpha-ia64-python-build-fixes.patch
+sh4-support.patch
