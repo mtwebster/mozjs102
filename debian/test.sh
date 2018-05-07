@@ -28,6 +28,9 @@ else
 		(s390x|ppc64)
 			echo "Ignoring test failure, https://bugs.debian.org/878286"
 			;;
+		(ia64)
+			echo "Ignoring test failure, https://bugs.debian.org/897117"
+			;;
 		(*)
 			echo "Test failure is considered serious, causing FTBFS"
 			exit 1
