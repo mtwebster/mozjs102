@@ -13,6 +13,8 @@ mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
   * Add patch to add build support for sparc64:
     - sparc64-support.patch (Closes: #887494)
   * Ignore testsuite failures on ia64 (Closes: #897117)
+  * Add patch to add build support for ia64:
+    - ia64-support.patch (Closes: #897178)
 
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
 
