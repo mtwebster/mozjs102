@@ -17,6 +17,10 @@ mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
   * Add patch to add build support for ia64:
     - ia64-support.patch (Closes: #897178)
 
+  [ Simon McVittie ]
+  * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
+    Remove patches that are no longer listed in d/p/series
+
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
 
 mozjs52 (52.3.1-7) unstable; urgency=medium
