@@ -1,10 +1,17 @@
-Description: Increase the test timeout for slower buildds
-Author: Adrian Bunk <bunk@debian.org>
-Bug-Debian: https://bugs.debian.org/878284
+From: Adrian Bunk <bunk@debian.org>
+Date: Tue, 3 Jul 2018 10:03:37 +0100
+Subject: Increase the test timeout for slower buildds
 
---- mozjs52-52.3.1.orig/js/src/Makefile.in
-+++ mozjs52-52.3.1/js/src/Makefile.in
-@@ -104,7 +104,7 @@ check:: check-style check-masm check-js-
+Bug-Debian: https://bugs.debian.org/878284
+---
+ js/src/Makefile.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/js/src/Makefile.in b/js/src/Makefile.in
+index ab06620..2608990 100644
+--- a/js/src/Makefile.in
++++ b/js/src/Makefile.in
+@@ -104,7 +104,7 @@ check:: check-style check-masm check-js-msg
  
  check-jstests:
  	$(wildcard $(RUN_TEST_PROGRAM)) $(PYTHON) -u $(srcdir)/tests/jstests.py \
@@ -13,4 +20,3 @@ Bug-Debian: https://bugs.debian.org/878284
  		$(JSTESTS_EXTRA_ARGS) \
  		$(DIST)/bin/$(JS_SHELL_NAME)$(BIN_SUFFIX)
  
-

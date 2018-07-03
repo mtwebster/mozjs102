@@ -6,7 +6,7 @@ A configure script is not included in the SpiderMonkey tarball by
 default. Also, we have to account for JHbuild passing extra unknown
 options like --disable-Werror.
 
-https://bugzilla.mozilla.org/show_bug.cgi?id=1379540
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1379540
 ---
  js/src/configure                               | 9 +++++++++
  python/mozbuild/mozbuild/configure/__init__.py | 2 +-

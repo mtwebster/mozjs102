@@ -1,14 +1,26 @@
-Description: Add support for m68k
- Based on the patches sent to Firefox upstream.
- See: https://bugzilla.mozilla.org/show_bug.cgi?id=1325771
- .
-Author: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
-Last-Update: 2017-11-03
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Tue, 3 Jul 2018 10:03:37 +0100
+Subject: Add support for m68k
 
-Index: mozjs52-52.3.1/js/src/gc/Heap.h
-===================================================================
---- mozjs52-52.3.1.orig/js/src/gc/Heap.h
-+++ mozjs52-52.3.1/js/src/gc/Heap.h
+Based on the patches sent to Firefox upstream.
+
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1325771
+Last-Update: 2017-11-03
+---
+ js/src/gc/Heap.h                                                 | 2 +-
+ js/src/jit/AtomicOperations.h                                    | 2 ++
+ js/src/jsfriendapi.h                                             | 2 +-
+ mfbt/double-conversion/utils.h                                   | 2 ++
+ mfbt/tests/TestPair.cpp                                          | 9 +++++++--
+ mfbt/tests/TestPoisonArea.cpp                                    | 3 +++
+ python/mozbuild/mozbuild/configure/constants.py                  | 2 ++
+ .../mozbuild/mozbuild/test/configure/test_toolchain_configure.py | 2 ++
+ 8 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/js/src/gc/Heap.h b/js/src/gc/Heap.h
+index 2a9390e..4e08bc9 100644
+--- a/js/src/gc/Heap.h
++++ b/js/src/gc/Heap.h
 @@ -282,7 +282,7 @@ struct Cell
    protected:
      inline uintptr_t address() const;
@@ -18,11 +30,11 @@ Index: mozjs52-52.3.1/js/src/gc/Heap.h
  
  // A GC TenuredCell gets behaviors that are valid for things in the Tenured
  // heap, such as access to the arena and mark bits.
-Index: mozjs52-52.3.1/js/src/jit/AtomicOperations.h
-===================================================================
---- mozjs52-52.3.1.orig/js/src/jit/AtomicOperations.h
-+++ mozjs52-52.3.1/js/src/jit/AtomicOperations.h
-@@ -326,6 +326,8 @@ AtomicOperations::isLockfree(int32_t siz
+diff --git a/js/src/jit/AtomicOperations.h b/js/src/jit/AtomicOperations.h
+index a3e44ea..13617ee 100644
+--- a/js/src/jit/AtomicOperations.h
++++ b/js/src/jit/AtomicOperations.h
+@@ -326,6 +326,8 @@ AtomicOperations::isLockfree(int32_t size)
  # include "jit/arm64/AtomicOperations-arm64.h"
  #elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
  # include "jit/mips-shared/AtomicOperations-mips-shared.h"
@@ -31,10 +43,10 @@ Index: mozjs52-52.3.1/js/src/jit/AtomicOperations.h
  #elif defined(__ppc__) || defined(__PPC__)
  # include "jit/none/AtomicOperations-ppc.h"
  #elif defined(__sh__)
-Index: mozjs52-52.3.1/js/src/jsfriendapi.h
-===================================================================
---- mozjs52-52.3.1.orig/js/src/jsfriendapi.h
-+++ mozjs52-52.3.1/js/src/jsfriendapi.h
+diff --git a/js/src/jsfriendapi.h b/js/src/jsfriendapi.h
+index b1c7cb0..2b6b956 100644
+--- a/js/src/jsfriendapi.h
++++ b/js/src/jsfriendapi.h
 @@ -571,7 +571,7 @@ public:
      uint32_t          slotInfo;
  
@@ -44,10 +56,10 @@ Index: mozjs52-52.3.1/js/src/jsfriendapi.h
  
  /**
   * This layout is shared by all native objects. For non-native objects, the
-Index: mozjs52-52.3.1/mfbt/double-conversion/utils.h
-===================================================================
---- mozjs52-52.3.1.orig/mfbt/double-conversion/utils.h
-+++ mozjs52-52.3.1/mfbt/double-conversion/utils.h
+diff --git a/mfbt/double-conversion/utils.h b/mfbt/double-conversion/utils.h
+index 15dd4bf..eaaaa45 100644
+--- a/mfbt/double-conversion/utils.h
++++ b/mfbt/double-conversion/utils.h
 @@ -69,6 +69,8 @@
  #else
  #undef DOUBLE_CONVERSION_CORRECT_DOUBLE_OPERATIONS
@@ -57,57 +69,10 @@ Index: mozjs52-52.3.1/mfbt/double-conversion/utils.h
  #else
  #error Target architecture was not detected as supported by Double-Conversion.
  #endif
-Index: mozjs52-52.3.1/mfbt/tests/TestPoisonArea.cpp
-===================================================================
---- mozjs52-52.3.1.orig/mfbt/tests/TestPoisonArea.cpp
-+++ mozjs52-52.3.1/mfbt/tests/TestPoisonArea.cpp
-@@ -133,6 +133,9 @@
- #elif defined _ARCH_PPC || defined _ARCH_PWR || defined _ARCH_PWR2
- #define RETURN_INSTR 0x4E800020 /* blr */
- 
-+#elif defined __m68k__
-+#define RETURN_INSTR 0x4E754E75 /* rts; rts */
-+
- #elif defined __sparc || defined __sparcv9
- #define RETURN_INSTR 0x81c3e008 /* retl */
- 
-Index: mozjs52-52.3.1/python/mozbuild/mozbuild/configure/constants.py
-===================================================================
---- mozjs52-52.3.1.orig/python/mozbuild/mozbuild/configure/constants.py
-+++ mozjs52-52.3.1/python/mozbuild/mozbuild/configure/constants.py
-@@ -44,6 +44,7 @@ CPU_bitness = {
-     'arm': 32,
-     'hppa': 32,
-     'ia64': 64,
-+    'm68k': 32,
-     'mips32': 32,
-     'mips64': 64,
-     'ppc': 32,
-@@ -87,6 +88,7 @@ CPU_preprocessor_checks = OrderedDict((
-     ('mips64', '__mips64'),
-     ('mips32', '__mips__'),
-     ('sh4', '__sh__'),
-+    ('m68k', '__m68k__'),
- ))
- 
- assert sorted(CPU_preprocessor_checks.keys()) == sorted(CPU.POSSIBLE_VALUES)
-Index: mozjs52-52.3.1/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
-===================================================================
---- mozjs52-52.3.1.orig/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
-+++ mozjs52-52.3.1/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
-@@ -1039,6 +1039,8 @@ class LinuxCrossCompileToolchainTest(Bas
-         },
-         'sh4-unknown-linux-gnu': little_endian + {
-             '__sh__': 1,
-+        'm68k-unknown-linux-gnu': big_endian + {
-+            '__m68k__': 1,
-         },
-     }
- 
-Index: mozjs52-52.3.1/mfbt/tests/TestPair.cpp
-===================================================================
---- mozjs52-52.3.1.orig/mfbt/tests/TestPair.cpp
-+++ mozjs52-52.3.1/mfbt/tests/TestPair.cpp
+diff --git a/mfbt/tests/TestPair.cpp b/mfbt/tests/TestPair.cpp
+index f1fa9c5..41b463a 100644
+--- a/mfbt/tests/TestPair.cpp
++++ b/mfbt/tests/TestPair.cpp
 @@ -29,14 +29,19 @@ using mozilla::Pair;
    static_assert(sizeof(name##_2) == (size), \
                  "Pair<" #T2 ", " #T1 "> has an unexpected size");
@@ -130,4 +95,50 @@ Index: mozjs52-52.3.1/mfbt/tests/TestPair.cpp
  INSTANTIATE(EmptyClass, NonEmpty, both3, 1);
  
  struct A { char dummy; explicit A(int) {} };
-
+diff --git a/mfbt/tests/TestPoisonArea.cpp b/mfbt/tests/TestPoisonArea.cpp
+index 76af23f..1876b6e 100644
+--- a/mfbt/tests/TestPoisonArea.cpp
++++ b/mfbt/tests/TestPoisonArea.cpp
+@@ -133,6 +133,9 @@
+ #elif defined _ARCH_PPC || defined _ARCH_PWR || defined _ARCH_PWR2
+ #define RETURN_INSTR 0x4E800020 /* blr */
+ 
++#elif defined __m68k__
++#define RETURN_INSTR 0x4E754E75 /* rts; rts */
++
+ #elif defined __sparc || defined __sparcv9
+ #define RETURN_INSTR 0x81c3e008 /* retl */
+ 
+diff --git a/python/mozbuild/mozbuild/configure/constants.py b/python/mozbuild/mozbuild/configure/constants.py
+index 668713f..056ac45 100644
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
+@@ -44,6 +44,7 @@ CPU_bitness = {
+     'arm': 32,
+     'hppa': 32,
+     'ia64': 64,
++    'm68k': 32,
+     'mips32': 32,
+     'mips64': 64,
+     'ppc': 32,
+@@ -87,6 +88,7 @@ CPU_preprocessor_checks = OrderedDict((
+     ('mips64', '__mips64'),
+     ('mips32', '__mips__'),
+     ('sh4', '__sh__'),
++    ('m68k', '__m68k__'),
+ ))
+ 
+ assert sorted(CPU_preprocessor_checks.keys()) == sorted(CPU.POSSIBLE_VALUES)
+diff --git a/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py b/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
+index 77b24e9..ed40c39 100644
+--- a/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
++++ b/python/mozbuild/mozbuild/test/configure/test_toolchain_configure.py
+@@ -1039,6 +1039,8 @@ class LinuxCrossCompileToolchainTest(BaseToolchainTest):
+         },
+         'sh4-unknown-linux-gnu': little_endian + {
+             '__sh__': 1,
++        'm68k-unknown-linux-gnu': big_endian + {
++            '__m68k__': 1,
+         },
+     }
+ 

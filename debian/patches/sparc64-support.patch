@@ -1,12 +1,20 @@
-Description: Add support for sparc64
-Author: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Tue, 3 Jul 2018 10:03:37 +0100
+Subject: Add support for sparc64
+
 Forwarded: https://bugzilla.mozilla.org/show_bug.cgi?id=1275204
 Last-Update: 2017-06-18
+---
+ js/src/gc/Memory.cpp                               |  6 ++--
+ js/src/jsapi-tests/testGCAllocator.cpp             |  6 ++--
+ memory/jemalloc/src/include/jemalloc/internal/mb.h |  2 +-
+ memory/mozjemalloc/jemalloc.c                      | 32 ++++++++++++++++++----
+ 4 files changed, 34 insertions(+), 12 deletions(-)
 
-Index: firefox-esr-52.2.0esr/js/src/gc/Memory.cpp
-===================================================================
---- firefox-esr-52.2.0esr.orig/js/src/gc/Memory.cpp
-+++ firefox-esr-52.2.0esr/js/src/gc/Memory.cpp
+diff --git a/js/src/gc/Memory.cpp b/js/src/gc/Memory.cpp
+index 26da754..bd1808a 100644
+--- a/js/src/gc/Memory.cpp
++++ b/js/src/gc/Memory.cpp
 @@ -501,7 +501,7 @@ static inline void*
  MapMemoryAt(void* desired, size_t length, int prot = PROT_READ | PROT_WRITE,
              int flags = MAP_PRIVATE | MAP_ANON, int fd = -1, off_t offset = 0)
@@ -25,7 +33,7 @@ Index: firefox-esr-52.2.0esr/js/src/gc/Memory.cpp
      /*
       * The JS engine assumes that all allocated pointers have their high 17 bits clear,
       * which ia64's mmap doesn't support directly. However, we can emulate it by passing
-@@ -551,7 +551,7 @@ MapMemory(size_t length, int prot = PROT
+@@ -551,7 +551,7 @@ MapMemory(size_t length, int prot = PROT_READ | PROT_WRITE,
          return nullptr;
      }
      return region;
@@ -34,11 +42,11 @@ Index: firefox-esr-52.2.0esr/js/src/gc/Memory.cpp
     /*
      * There might be similar virtual address issue on arm64 which depends on
      * hardware and kernel configurations. But the work around is slightly
-Index: firefox-esr-52.2.0esr/js/src/jsapi-tests/testGCAllocator.cpp
-===================================================================
---- firefox-esr-52.2.0esr.orig/js/src/jsapi-tests/testGCAllocator.cpp
-+++ firefox-esr-52.2.0esr/js/src/jsapi-tests/testGCAllocator.cpp
-@@ -312,7 +312,7 @@ void unmapPages(void* p, size_t size) {
+diff --git a/js/src/jsapi-tests/testGCAllocator.cpp b/js/src/jsapi-tests/testGCAllocator.cpp
+index 2c5c58a..89824e2 100644
+--- a/js/src/jsapi-tests/testGCAllocator.cpp
++++ b/js/src/jsapi-tests/testGCAllocator.cpp
+@@ -312,7 +312,7 @@ void unmapPages(void* p, size_t size) { }
  void*
  mapMemoryAt(void* desired, size_t length)
  {
@@ -65,10 +73,10 @@ Index: firefox-esr-52.2.0esr/js/src/jsapi-tests/testGCAllocator.cpp
      const uintptr_t start = UINT64_C(0x0000070000000000);
      const uintptr_t end   = UINT64_C(0x0000800000000000);
      const uintptr_t step  = js::gc::ChunkSize;
-Index: firefox-esr-52.2.0esr/memory/jemalloc/src/include/jemalloc/internal/mb.h
-===================================================================
---- firefox-esr-52.2.0esr.orig/memory/jemalloc/src/include/jemalloc/internal/mb.h
-+++ firefox-esr-52.2.0esr/memory/jemalloc/src/include/jemalloc/internal/mb.h
+diff --git a/memory/jemalloc/src/include/jemalloc/internal/mb.h b/memory/jemalloc/src/include/jemalloc/internal/mb.h
+index 5384728..e58da5c 100644
+--- a/memory/jemalloc/src/include/jemalloc/internal/mb.h
++++ b/memory/jemalloc/src/include/jemalloc/internal/mb.h
 @@ -76,7 +76,7 @@ mb_write(void)
  	    : "memory" /* Clobbers. */
  	    );
@@ -78,10 +86,10 @@ Index: firefox-esr-52.2.0esr/memory/jemalloc/src/include/jemalloc/internal/mb.h
  JEMALLOC_INLINE void
  mb_write(void)
  {
-Index: firefox-esr-52.2.0esr/memory/mozjemalloc/jemalloc.c
-===================================================================
---- firefox-esr-52.2.0esr.orig/memory/mozjemalloc/jemalloc.c
-+++ firefox-esr-52.2.0esr/memory/mozjemalloc/jemalloc.c
+diff --git a/memory/mozjemalloc/jemalloc.c b/memory/mozjemalloc/jemalloc.c
+index 5d4d83a..fa24658 100644
+--- a/memory/mozjemalloc/jemalloc.c
++++ b/memory/mozjemalloc/jemalloc.c
 @@ -491,7 +491,7 @@ static const bool isthreaded = true;
  #  define SIZEOF_PTR_2POW	3
  #  define NO_TLS

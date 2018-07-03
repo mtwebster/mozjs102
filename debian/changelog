@@ -20,6 +20,7 @@ mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
   [ Simon McVittie ]
   * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
     Remove patches that are no longer listed in d/p/series
+  * d/p/*.patch: Use gbp-pq style for metadata
 
  -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
 

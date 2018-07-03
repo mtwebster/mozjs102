@@ -5,7 +5,7 @@ Subject: build: Remove unnecessary NSPR dependency
 When SpiderMonkey is configured with --enable-posix-nspr-emulation, then
 the dependency on NSPR can be removed from the pkg-config file.
 
-https://bugzilla.mozilla.org/show_bug.cgi?id=1379539
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1379539
 ---
  build/autoconf/nspr-build.m4 | 11 ++++++-----
  js/src/js.pc.in              |  2 +-

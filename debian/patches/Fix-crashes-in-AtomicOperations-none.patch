@@ -1,10 +1,17 @@
-Description: Use AtomicOperations-sparc.h instead of AtomicOperations-none.h
-Author: Adrian Bunk <bunk@debian.org>
-Bug-Debian: https://bugs.debian.org/878284
+From: Adrian Bunk <bunk@debian.org>
+Date: Tue, 3 Jul 2018 10:03:36 +0100
+Subject: Use AtomicOperations-sparc.h instead of AtomicOperations-none.h
 
---- mozjs52-52.3.1.orig/js/src/jit/AtomicOperations.h
-+++ mozjs52-52.3.1/js/src/jit/AtomicOperations.h
-@@ -342,7 +342,8 @@ AtomicOperations::isLockfree(int32_t siz
+Bug-Debian: https://bugs.debian.org/878284
+---
+ js/src/jit/AtomicOperations.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/js/src/jit/AtomicOperations.h b/js/src/jit/AtomicOperations.h
+index 42aee72..f720cb4 100644
+--- a/js/src/jit/AtomicOperations.h
++++ b/js/src/jit/AtomicOperations.h
+@@ -342,7 +342,8 @@ AtomicOperations::isLockfree(int32_t size)
  # elif defined(__aarch64__)
  #  include "jit/arm64/AtomicOperations-arm64.h"
  # else

@@ -5,10 +5,8 @@ Subject: tests: Skip on all 64-bit archs
 Tests that are skipped on x86_64 should be skipped on all 64-bit
 architectures.
 
-https://bugzilla.mozilla.org/show_bug.cgi?id=1357593
-
-Taken from Fedora:
-http://pkgs.fedoraproject.org/cgit/rpms/mozjs38.git/tree/fix-64bit-archs.patch
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1357593
+Origin: vendor, Fedora, http://pkgs.fedoraproject.org/cgit/rpms/mozjs38.git/tree/fix-64bit-archs.patch
 ---
  js/src/tests/js1_5/Array/regress-157652.js   | 2 +-
  js/src/tests/js1_5/Array/regress-330812.js   | 2 +-

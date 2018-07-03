@@ -7,7 +7,7 @@ Otherwise, build fails not being able to find HashBytes.
 Patch ported forward to mozjs52 by Philip Chimento
 <philip.chimento@gmail.com>.
 
-https://bugzilla.mozilla.org/show_bug.cgi?id=1176787
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1176787
 ---
  js/src/old-configure.in | 23 ++++++++++++++---------
  mozglue/build/moz.build |  2 +-

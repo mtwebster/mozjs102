@@ -1,13 +1,22 @@
-Description: Python build fixes for alpha and ia64
- Backported upstream Python build fixes for alpha and ia64,
- taken from Mozilla bug 1326496.
- See: https://bugzilla.mozilla.org/show_bug.cgi?id=1326496
-Author: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Tue, 3 Jul 2018 10:03:37 +0100
+Subject: Python build fixes for alpha and ia64
+
+Backported upstream Python build fixes for alpha and ia64,
+taken from Mozilla bug 1326496.
+
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1326496
 Bug-Debian: https://bugs.debian.org/878285
 Last-Update: 2018-05-07
+---
+ python/mozbuild/mozbuild/configure/constants.py | 2 +-
+ testing/mozbase/mozinfo/mozinfo/mozinfo.py      | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
 
---- mozjs52-52.3.1.orig/python/mozbuild/mozbuild/configure/constants.py
-+++ mozjs52-52.3.1/python/mozbuild/mozbuild/configure/constants.py
+diff --git a/python/mozbuild/mozbuild/configure/constants.py b/python/mozbuild/mozbuild/configure/constants.py
+index dfc7cf8..3a652b2 100644
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
 @@ -40,7 +40,7 @@ Kernel = EnumString.subclass(
  
  CPU_bitness = {
@@ -17,8 +26,10 @@ Last-Update: 2018-05-07
      'arm': 32,
      'hppa': 32,
      'ia64': 64,
---- mozjs52-52.3.1.orig/testing/mozbase/mozinfo/mozinfo/mozinfo.py
-+++ mozjs52-52.3.1/testing/mozbase/mozinfo/mozinfo/mozinfo.py
+diff --git a/testing/mozbase/mozinfo/mozinfo/mozinfo.py b/testing/mozbase/mozinfo/mozinfo/mozinfo.py
+index 81a3030..259611e 100755
+--- a/testing/mozbase/mozinfo/mozinfo/mozinfo.py
++++ b/testing/mozbase/mozinfo/mozinfo/mozinfo.py
 @@ -15,7 +15,7 @@ import platform
  import re
  import sys

@@ -1,6 +1,17 @@
---- mozjs52-52.3.1/js/src/jit/ProcessExecutableMemory.cpp.orig	2017-08-08 12:25:50.000000000 +0200
-+++ mozjs52-52.3.1/js/src/jit/ProcessExecutableMemory.cpp	2018-05-08 12:36:58.638597620 +0200
-@@ -290,9 +290,20 @@
+From: Jason Duerstock <jason.duerstock@gmail.com>
+Date: Sun, 29 Apr 2018 09:16:20 -0400
+Subject: On ia64, retry failed mmap without address hint
+
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=897178
+---
+ js/src/jit/ProcessExecutableMemory.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/js/src/jit/ProcessExecutableMemory.cpp b/js/src/jit/ProcessExecutableMemory.cpp
+index 71c2ab0..31836f1 100644
+--- a/js/src/jit/ProcessExecutableMemory.cpp
++++ b/js/src/jit/ProcessExecutableMemory.cpp
+@@ -290,9 +290,20 @@ ReserveProcessExecutableMemory(size_t bytes)
      void* randomAddr = ComputeRandomAllocationAddress();
      void* p = MozTaggedAnonymousMmap(randomAddr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANON,
                                       -1, 0, "js-executable-memory");
