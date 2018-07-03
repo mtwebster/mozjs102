@@ -1,7 +1,16 @@
-mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
+mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
+
+  * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
+    Remove patches that are no longer listed in d/p/series
+  * d/p/*.patch: Use gbp-pq style for metadata
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
+
+mozjs52 (52.3.1-8) unstable; urgency=medium
 
   [ Jeremy Bicha ]
   * Update Vcs fields for migration to https://salsa.debian.org/
+  * Update debian/gbp.conf
 
   [ John Paul Adrian Glaubitz ]
   * Add patch to fix Python build issues on alpha and ia64:
@@ -17,12 +26,7 @@ mozjs52 (52.3.1-8) UNRELEASED; urgency=medium
   * Add patch to add build support for ia64:
     - ia64-support.patch (Closes: #897178)
 
-  [ Simon McVittie ]
-  * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
-    Remove patches that are no longer listed in d/p/series
-  * d/p/*.patch: Use gbp-pq style for metadata
-
- -- Jeremy Bicha <jbicha@debian.org>  Fri, 20 Oct 2017 19:51:21 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Wed, 30 May 2018 12:01:49 -0400
 
 mozjs52 (52.3.1-7) unstable; urgency=medium
 
