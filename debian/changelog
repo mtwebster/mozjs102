@@ -3,6 +3,13 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
   * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
     Remove patches that are no longer listed in d/p/series
   * d/p/*.patch: Use gbp-pq style for metadata
+  * d/p/Add-disable-layoutex-when-running-ICU-configure.patch:
+    Explicitly disable Paragraph Layout support in bundled ICU. The
+    bundled copy of ICU doesn't have the code for this optional feature,
+    even if we find the icu-le-hb library during configure. In versions
+    of mozjs52 compiled before Debian had icu-le-hb available, we didn't
+    try to build that feature, so not having it is not a regression.
+    Patch from Mike Hommey, via mozilla-unified. (Closes: #902197)
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 

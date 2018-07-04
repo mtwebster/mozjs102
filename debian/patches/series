@@ -21,3 +21,4 @@ sh4-support.patch
 m68k-support.patch
 sparc64-support.patch
 ia64-support.patch
+Add-disable-layoutex-when-running-ICU-configure.patch
