@@ -61,6 +61,7 @@ override_dh_clean:
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
 	# rm -f $(CURDIR)/js/src/configure
+	rm -fr $(CURDIR)/intl/icu/source/autom4te.cache
 
 override_dh_autoreconf:
 	dh_autoreconf $(CURDIR)/debian/autogen.sh

@@ -5,7 +5,9 @@ Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.
 Uploaders: @GNOME_TEAM@
 Build-Depends: debhelper (>= 10.3),
                gnome-pkg-tools,
+               autoconf,
                autoconf2.13,
+               automake,
                libicu-dev,
                libreadline-dev,
                zlib1g-dev (>= 1:1.2.3),
