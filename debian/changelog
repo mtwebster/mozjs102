@@ -10,6 +10,9 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
     of mozjs52 compiled before Debian had icu-le-hb available, we didn't
     try to build that feature, so not having it is not a regression.
     Patch from Mike Hommey, via mozilla-unified. (Closes: #902197)
+  * d/p/ia64-support.patch:
+    Fix IA64 patch so it doesn't leave ReserveProcessExecutableMemory()
+    returning an undefined result on !ia64 machines (Closes: #902961)
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 
