@@ -21,6 +21,8 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
       Drop patches, no longer needed
   * Regenerate intl/icu/source/configure with autoreconf during build
   * d/rules: Delete all *.pyc files during clean
+  * d/copyright: Move "Files: *" paragraph to the top as suggested by
+    lintian
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 

@@ -7,6 +7,10 @@ Files-Excluded:
  js/src/ctypes/libffi/doc/libffi.info
 Comment: This file is derived from Firefox's debian/copyright
 
+Files: *
+License: MPL-2.0
+Copyright: 1998-2010, Mozilla Project
+
 License: MPL-2.0
  On Debian systems, the complete text of the Mozilla Public License 2.0
  can be found in the file `/usr/share/common-licenses/MPL-2.0'.
@@ -575,10 +579,6 @@ License: Zlib
  .
    3. This notice may not be removed or altered from any source
       distribution.
-
-Files: *
-License: MPL-2.0
-Copyright: 1998-2010, Mozilla Project
 
 Files: build/autoconf/codeset.m4
   build/autoconf/config.guess
