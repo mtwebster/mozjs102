@@ -1,4 +1,4 @@
-mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
+mozjs52 (52.3.1-9) unstable; urgency=medium
 
   * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
     Remove patches that are no longer listed in d/p/series
@@ -24,7 +24,7 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
   * d/copyright: Move "Files: *" paragraph to the top as suggested by
     lintian
 
- -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
+ -- Simon McVittie <smcv@debian.org>  Tue, 10 Jul 2018 12:33:30 +0100
 
 mozjs52 (52.3.1-8) unstable; urgency=medium
 
