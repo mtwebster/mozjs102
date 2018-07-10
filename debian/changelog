@@ -13,6 +13,7 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
   * d/p/ia64-support.patch:
     Fix IA64 patch so it doesn't leave ReserveProcessExecutableMemory()
     returning an undefined result on !ia64 machines (Closes: #902961)
+  * Standards-Version: 4.1.5 (no changes required)
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 
