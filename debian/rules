@@ -50,7 +50,7 @@ endif
 export ICU_DATA_FILE
 
 %:
-	dh $@ --sourcedirectory=$(SRCDIR) --with gnome,pkgkde-symbolshelper --without autoreconf
+	dh $@ --sourcedirectory=$(SRCDIR) --with gnome,pkgkde-symbolshelper
 
 override_dh_clean:
 	dh_clean
@@ -61,6 +61,9 @@ override_dh_clean:
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
 	# rm -f $(CURDIR)/js/src/configure
+
+override_dh_autoreconf:
+	dh_autoreconf $(CURDIR)/debian/autogen.sh
 
 # dh_auto_configure does not properly handle autoconf2.13 generated configure
 # scripts, so we call configure ourselves.

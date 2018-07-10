@@ -15,6 +15,10 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
     returning an undefined result on !ia64 machines (Closes: #902961)
   * Standards-Version: 4.1.5 (no changes required)
   * Set Rules-Requires-Root to no
+  * Regenerate js/src/old-configure with autoconf2.13 during build
+    - d/p/pre-generate-old-configure.patch,
+      d/p/Patch-pregenerated-old-configure-to-match-build-autoconf-.patch:
+      Drop patches, no longer needed
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 

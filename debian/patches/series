@@ -5,9 +5,7 @@ disable-mozglue.patch
 remove-nspr-dependency.patch
 tests-skip-on-all-64-bit-archs.patch
 include-configure-script.patch
-pre-generate-old-configure.patch
 Allow-to-override-ICU_DATA_FILE-from-the-environment.patch
-Patch-pregenerated-old-configure-to-match-build-autoconf-.patch
 Add-intl-icu_sources_data.py-from-firefox-esr.patch
 Fix-crashes-in-AtomicOperations-none.patch
 icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
