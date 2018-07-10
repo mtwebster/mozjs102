@@ -54,7 +54,8 @@ export ICU_DATA_FILE
 
 override_dh_clean:
 	dh_clean
-	find $(CURDIR)/js/src/ \( -type l  -o -name \*.pyc \) -exec rm {} \;
+	find $(CURDIR) -name \*.pyc -exec rm {} \;
+	find $(CURDIR)/js/src/ -type l -exec rm {} \;
 	rm -f $(CURDIR)/js/src/config/nsinstall
 	rm -f $(CURDIR)/js/src/dist/bin/.purgecaches
 	rm -f  $(CURDIR)/js/src/js52-config $(CURDIR)/js/src/mozjs-52.pc \

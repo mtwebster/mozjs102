@@ -20,6 +20,7 @@ mozjs52 (52.3.1-9) UNRELEASED; urgency=medium
       d/p/Patch-pregenerated-old-configure-to-match-build-autoconf-.patch:
       Drop patches, no longer needed
   * Regenerate intl/icu/source/configure with autoreconf during build
+  * d/rules: Delete all *.pyc files during clean
 
  -- Simon McVittie <smcv@debian.org>  Wed, 04 Jul 2018 00:22:07 +0100
 
