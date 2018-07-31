@@ -14,6 +14,9 @@ mozjs52 (52.9.1-1) UNRELEASED; urgency=medium
     - --enable-xterm-updates
     - --enable-shared-js
     - --enable-gcgenerational
+  * d/p/m68k-support.path:
+    Update patch from John Paul Adrian Glaubitz to add missing m68k
+    support in build/moz.configure/init.configure (Closes: #903483)
 
  -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 09:21:38 +0100
 
