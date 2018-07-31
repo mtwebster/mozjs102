@@ -8,7 +8,7 @@ Bug-Debian: https://bugs.debian.org/878284
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/Makefile.in b/js/src/Makefile.in
-index ab06620..2608990 100644
+index 3be6a67..0b37208 100644
 --- a/js/src/Makefile.in
 +++ b/js/src/Makefile.in
 @@ -104,7 +104,7 @@ check:: check-style check-masm check-js-msg

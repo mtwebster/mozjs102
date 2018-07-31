@@ -3,6 +3,11 @@ mozjs52 (52.8.1-1) UNRELEASED; urgency=medium
   * New upstream release
     - CVE-2017-7810, CVE-2017-7826, CVE-2018-5089, CVE-2018-5125,
       CVE-2018-5150
+  * d/p/remove-nspr-dependency.patch,
+    d/p/tests-skip-on-all-64-bit-archs.patch:
+    Remove, applied upstream
+  * d/p/include-configure-script.patch:
+    Remove, no longer necessary
 
  -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 08:10:43 +0100
 

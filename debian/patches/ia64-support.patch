@@ -10,7 +10,7 @@ Last-Updated: 2018-07-10
  1 file changed, 11 insertions(+)
 
 diff --git a/js/src/jit/ProcessExecutableMemory.cpp b/js/src/jit/ProcessExecutableMemory.cpp
-index 71c2ab0..89b5dfe 100644
+index 3015415..2c40850 100644
 --- a/js/src/jit/ProcessExecutableMemory.cpp
 +++ b/js/src/jit/ProcessExecutableMemory.cpp
 @@ -290,8 +290,19 @@ ReserveProcessExecutableMemory(size_t bytes)
