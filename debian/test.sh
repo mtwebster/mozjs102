@@ -31,6 +31,9 @@ else
 		(ia64)
 			echo "Ignoring test failure, https://bugs.debian.org/897117"
 			;;
+		(m68k)
+			echo "Ignoring test failure, see https://bugs.debian.org/903483"
+			;;
 		(*)
 			echo "Test failure is considered serious, causing FTBFS"
 			exit 1
