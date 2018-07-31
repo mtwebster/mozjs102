@@ -8,8 +8,14 @@ mozjs52 (52.9.1-1) UNRELEASED; urgency=medium
     Remove, applied upstream
   * d/p/include-configure-script.patch:
     Remove, no longer necessary
+  * d/rules: Drop configure options that no longer do anything
+    - --enable-tests
+    - --enable-threadsafe
+    - --enable-xterm-updates
+    - --enable-shared-js
+    - --enable-gcgenerational
 
- -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 08:42:12 +0100
+ -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 09:21:38 +0100
 
 mozjs52 (52.3.1-9) unstable; urgency=medium
 

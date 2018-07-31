@@ -84,14 +84,9 @@ override_dh_auto_configure:
 		--without-system-icu \
 		--enable-posix-nspr-emulation \
 		--with-system-zlib \
-		--enable-tests \
 		--disable-strip \
-		--enable-threadsafe \
 		--with-intl-api \
 		--enable-readline \
-		--enable-xterm-updates \
-		--enable-shared-js \
-		--enable-gcgenerational \
 		--disable-optimize \
 		$(CONFIGURE_FLAGS)
 
