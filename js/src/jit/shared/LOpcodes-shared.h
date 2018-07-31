@@ -385,7 +385,6 @@
     _(IsObject)                     \
     _(IsObjectAndBranch)            \
     _(HasClass)                     \
-    _(GuardToClass)                 \
     _(RecompileCheck)               \
     _(MemoryBarrier)                \
     _(AssertRangeI)                 \

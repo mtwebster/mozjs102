@@ -117,16 +117,14 @@
     _(IntrinsicDefineDataProperty)  \
     _(IntrinsicObjectHasPrototype)  \
                                     \
-    _(IntrinsicGuardToArrayIterator) \
-    _(IntrinsicGuardToMapIterator)  \
-    _(IntrinsicGuardToSetIterator)  \
+    _(IntrinsicIsArrayIterator)     \
+    _(IntrinsicIsMapIterator)       \
+    _(IntrinsicIsSetIterator)       \
+    _(IntrinsicIsStringIterator)    \
     _(IntrinsicIsListIterator)      \
-    _(IntrinsicGuardToStringIterator) \
                                     \
-    _(IntrinsicGuardToMapObject)    \
     _(IntrinsicGetNextMapEntryForIterator) \
                                     \
-    _(IntrinsicGuardToSetObject)    \
     _(IntrinsicGetNextSetEntryForIterator) \
                                     \
     _(IntrinsicArrayBufferByteLength) \
