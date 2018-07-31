@@ -1,3 +1,11 @@
+mozjs52 (52.8.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+    - CVE-2017-7810, CVE-2017-7826, CVE-2018-5089, CVE-2018-5125,
+      CVE-2018-5150
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 08:10:43 +0100
+
 mozjs52 (52.3.1-9) unstable; urgency=medium
 
   * d/p/Disable-js-JIT-on-x32.patch, d/p/hppa-support.patch:
