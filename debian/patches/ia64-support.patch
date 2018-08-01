@@ -10,10 +10,10 @@ Last-Updated: 2018-07-10
  1 file changed, 11 insertions(+)
 
 diff --git a/js/src/jit/ProcessExecutableMemory.cpp b/js/src/jit/ProcessExecutableMemory.cpp
-index 3015415..2c40850 100644
+index e763a9d..73db802 100644
 --- a/js/src/jit/ProcessExecutableMemory.cpp
 +++ b/js/src/jit/ProcessExecutableMemory.cpp
-@@ -290,8 +290,19 @@ ReserveProcessExecutableMemory(size_t bytes)
+@@ -294,8 +294,19 @@ ReserveProcessExecutableMemory(size_t bytes)
      void* randomAddr = ComputeRandomAllocationAddress();
      void* p = MozTaggedAnonymousMmap(randomAddr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANON,
                                       -1, 0, "js-executable-memory");

@@ -2,6 +2,21 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
 
   * New upstream release branch (Closes: #904991)
     - Adapt packaging for major version 60
+  * Refresh patch series
+    - d/p/disable-mozglue.patch:
+      Drop, appears to be unnecessary now
+    - d/p/Fix-crashes-in-AtomicOperations-none.patch:
+      Drop, unknown architectures compiled on gcc/clang now use
+      js/src/jit/none/AtomicOperations-feeling-lucky.h which appears
+      equivalent to the previous sparc/powerpc implementations
+    - d/p/alpha-ia64-python-build-fixes.patch, d/p/sparc64-support.patch:
+      Drop, appears to have been applied upstream
+    - d/p/Don-t-include-xlocale.patch:
+      Drop, appears to be unnecessary now
+    - d/p/sh4-support.patch, d/p/m68k-support.patch:
+      Drop, partially obsoleted by use of
+      AtomicOperations-feeling-lucky.h; remaining changes need rebasing
+      and re-testing
 
  -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
 

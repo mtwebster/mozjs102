@@ -6,29 +6,20 @@ Add soname switch to linker, regardless of Operating System
 
 Bug-Debian: http://bugs.debian.org/746705
 ---
- config/rules.mk | 5 +++--
- 1 file changed, 3 insertions(+), 2 deletions(-)
+ config/rules.mk | 3 +++
+ 1 file changed, 3 insertions(+)
 
 diff --git a/config/rules.mk b/config/rules.mk
-index a21128c..e6ef35a 100644
+index eb86b0c..1bb3988 100644
 --- a/config/rules.mk
 +++ b/config/rules.mk
-@@ -418,7 +418,7 @@ endif # AIX
- #
- # Linux: add -Bsymbolic flag for components
- #
--ifeq ($(OS_ARCH),Linux)
-+#ifeq ($(OS_ARCH),Linux)
- ifdef IS_COMPONENT
- EXTRA_DSO_LDOPTS += -Wl,-Bsymbolic
+@@ -359,6 +359,9 @@ endif
  endif
-@@ -426,7 +426,8 @@ ifdef LD_VERSION_SCRIPT
- EXTRA_DSO_LDOPTS += -Wl,--version-script,$(LD_VERSION_SCRIPT)
- EXTRA_DEPS += $(LD_VERSION_SCRIPT)
+ EXTRA_DEPS += $(SYMBOLS_FILE)
  endif
--endif
-+#endif
++
 +EXTRA_DSO_LDOPTS += -Wl,-soname,lib$(JS_LIBRARY_NAME).so.0
- 
- ifdef SYMBOLS_FILE
- ifeq ($(OS_TARGET),WINNT)
++
+ #
+ # GNU doesn't have path length limitation
+ #

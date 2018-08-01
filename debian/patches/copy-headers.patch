@@ -9,20 +9,20 @@ Patch ported forward to mozjs52 by Philip Chimento
  1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/python/mozbuild/mozbuild/backend/recursivemake.py b/python/mozbuild/mozbuild/backend/recursivemake.py
-index 132dcf9..33d489a 100644
+index dd9020d..6918ef8 100644
 --- a/python/mozbuild/mozbuild/backend/recursivemake.py
 +++ b/python/mozbuild/mozbuild/backend/recursivemake.py
-@@ -1307,11 +1307,11 @@ class RecursiveMakeBackend(CommonBackend):
+@@ -1427,11 +1427,11 @@ class RecursiveMakeBackend(CommonBackend):
                                  raise Exception("Wildcards are only supported in the filename part of "
                                                  "srcdir-relative or absolute paths.")
  
--                            install_manifest.add_pattern_symlink(basepath, wild, path)
+-                            install_manifest.add_pattern_link(basepath, wild, path)
 +                            install_manifest.add_pattern_copy(basepath, wild, path)
                          else:
--                            install_manifest.add_pattern_symlink(f.srcdir, f, path)
+-                            install_manifest.add_pattern_link(f.srcdir, f, path)
 +                            install_manifest.add_pattern_copy(f.srcdir, f, path)
                      else:
--                        install_manifest.add_symlink(f.full_path, dest)
+-                        install_manifest.add_link(f.full_path, dest)
 +                        install_manifest.add_copy(f.full_path, dest)
                  else:
                      install_manifest.add_optional_exists(dest)
