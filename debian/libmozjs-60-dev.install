@@ -1,0 +1,5 @@
+usr/bin/js60
+usr/bin/js60-config
+usr/include/mozjs-60
+usr/lib/*/libmozjs-60.so
+usr/lib/*/pkgconfig/mozjs-60.pc

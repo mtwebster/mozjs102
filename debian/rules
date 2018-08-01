@@ -58,7 +58,7 @@ override_dh_clean:
 	find $(CURDIR)/js/src/ -type l -exec rm {} \;
 	rm -f $(CURDIR)/js/src/config/nsinstall
 	rm -f $(CURDIR)/js/src/dist/bin/.purgecaches
-	rm -f  $(CURDIR)/js/src/js52-config $(CURDIR)/js/src/mozjs-52.pc \
+	rm -f  $(CURDIR)/js/src/js60-config $(CURDIR)/js/src/mozjs-60.pc \
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
 	# rm -f $(CURDIR)/js/src/configure
@@ -93,11 +93,11 @@ override_dh_auto_configure:
 override_dh_install:
 	# move library and create additional symlinks to standardize the file layout
 	cd $(CURDIR)/debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/ && \
-		mv libjs_static.ajs libmozjs-52.a && \
-		mv libmozjs-52.so libmozjs-52.so.0.0.0 && \
-		ln -s libmozjs-52.so.0.0.0 libmozjs-52.so.0 && \
-		ln -s libmozjs-52.so.0 libmozjs-52.so
-	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/libmozjs-52.a
+		mv libjs_static.ajs libmozjs-60.a && \
+		mv libmozjs-60.so libmozjs-60.so.0.0.0 && \
+		ln -s libmozjs-60.so.0.0.0 libmozjs-60.so.0 && \
+		ln -s libmozjs-60.so.0 libmozjs-60.so
+	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/libmozjs-60.a
 	dh_install
 
 override_dh_missing:
@@ -105,7 +105,7 @@ override_dh_missing:
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod a-x $(CURDIR)/debian/libmozjs-52-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-52.pc
+	chmod a-x $(CURDIR)/debian/libmozjs-60-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-60.pc
 
 override_dh_gnome:
 	dh_gnome --no-gnome-versions

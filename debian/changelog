@@ -1,3 +1,10 @@
+mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release branch (Closes: #904991)
+    - Adapt packaging for major version 60
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
+
 mozjs52 (52.9.1-1) unstable; urgency=medium
 
   * Team upload
