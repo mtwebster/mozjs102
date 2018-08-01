@@ -1,5 +1,6 @@
-mozjs52 (52.9.1-1) UNRELEASED; urgency=medium
+mozjs52 (52.9.1-1) unstable; urgency=medium
 
+  * Team upload
   * New upstream release
     - CVE-2017-7810, CVE-2017-7826, CVE-2018-5089, CVE-2018-5125,
       CVE-2018-5150
@@ -19,7 +20,7 @@ mozjs52 (52.9.1-1) UNRELEASED; urgency=medium
     support in build/moz.configure/init.configure (Closes: #903483)
   * d/test.sh: Ignore test suite failure on m68k for now
 
- -- Simon McVittie <smcv@debian.org>  Tue, 31 Jul 2018 09:21:38 +0100
+ -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 08:22:02 +0100
 
 mozjs52 (52.3.1-9) unstable; urgency=medium
 
