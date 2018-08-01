@@ -9,7 +9,13 @@ Comment: This file is derived from Firefox's debian/copyright
 
 Files: *
 License: MPL-2.0
-Copyright: 1998-2010, Mozilla Project
+Copyright:
+ 1998 Netscape Communications Corporation
+ 1998-2010, Mozilla Project
+ 1992-1993 Simmule Turner
+ 1992-1993 Rich Salz
+ 2005 Sun Microsystems, Inc.
+ 2011-2012 Norbert Lindenberg
 
 License: MPL-2.0
  On Debian systems, the complete text of the Mozilla Public License 2.0
@@ -662,6 +668,10 @@ Copyright: 2004-2007 The Dojo Foundation
            2007 John Resig
 License: BSD-2-clause, and GPL-2 or Expat, and AFL-2.1+ or BSD-3-clause-JSF, and Expat
 
+Files: build/pymake/*
+Copyright: 2009 The Mozilla Foundation
+License: Expat
+
 Files: js/src/aclocal.m4
   nsprpub/config/nspr.m4
 Copyright: Public Domain
@@ -683,9 +693,11 @@ Files: memory/jemalloc/src/test/unit/SFMT.c
 Copyright: 2006-2007 Mutsuo Saito, Makoto Matsumoto and Hiroshima University
 License: BSD-3-clause-Hiroshima-University
 
-Files: memory/mozjemalloc/*
-Copyright: 2006-2008 Jason Evans
-License: BSD-2-clause
+Files: memory/build/mozjemalloc.*
+Copyright:
+ 2006-2008 Jason Evans
+ 2007-2017 Mozilla Foundation
+License: MPL-2.0 and BSD-2-clause
 
 Files: memory/jemalloc/src/bin/jeprof.in
 Copyright: 1998-2007 Google Inc.
@@ -756,6 +768,10 @@ Files: mfbt/double-conversion/*
 Copyright: 2006-2011 the V8 project authors
 License: BSD-3-clause-Google
 
+Files: mfbt/lz4.*
+Copyright: 2011-2017 Yann Collet
+License: BSD-2-clause
+
 Files: modules/fdlibm/*
 Copyright: 1993 Sun Microsystems, Inc.
 License: sunsoft
@@ -771,7 +787,7 @@ License: BSD-2-clause
 
 Files: modules/zlib/*
        js/src/octane/zlib-data.js
-Copyright: 1995-2013 Jean-loup Gailly and Mark Adler
+Copyright: 1995-2017 Jean-loup Gailly and Mark Adler
 License: ZLib
 
 Files: mozglue/build/cpuacct.*
@@ -779,7 +795,9 @@ Copyright: 2010 The Android Open Source Project
 License: BSD-2-clause
 
 Files: intl/icu/*
-Copyright: 1995-2012 International Business Machines Corporation and others
+Copyright:
+ 1995-2016 International Business Machines Corporation and others
+ 2016 and later Unicode, Inc. and others
 License: ICU-IBM
  Permission is hereby granted, free of charge, to any person obtaining a
  copy of this software and associated documentation files (the "Software")
@@ -818,7 +836,9 @@ Files: intl/icu/source/data/unidata/CaseFolding.txt
   intl/icu/source/data/unidata/norm2/nfkc_cf.txt
   intl/icu/source/data/unidata/norm2/uts46.txt
   intl/icu/source/data/unidata/ppucd.txt
-Copyright: 1991-2012 Unicode, Inc.
+  intl/unicharutil/util/nsUnicodePropertyData.cpp
+  intl/unicharutil/util/nsUnicodeScriptCodes.h
+Copyright: 1991-2017 Unicode, Inc.
 License: ICU-Unicode
  Permission is hereby granted, free of charge, to any person obtaining a
  copy of the Unicode data files and any associated documentation (the
@@ -1216,7 +1236,9 @@ Files: js/src/vtune/*
 Copyright: 2005-2012 Intel Corporation
 License: BSD-3-clause-Intel
 
-Files: js/src/vtune/VTuneWrapper.h
+Files:
+ js/src/vtune/VTuneWrapper.h
+ js/src/vtune/VTuneWrapper.cpp
 Copyright: Mozilla Foundation
 License: MPL-2.0
 
@@ -1267,31 +1289,44 @@ Files: python/bitstring/*
 Copyright: 2014 Scott Griffiths
 License: Expat
 
-Files: python/blessings/*
+Files: third_party/python/blessings/*
 Copyright: 2014 Erik Rose
 License: Expat
 
-Files: python/configobj/*
+Files: third_party/python/cbor2/*
+Copyright: 2014 Alex Grönholm
+License: Expat
+
+Files: third_party/python/configobj/*
 Copyright: 2005-2010 Michael Foord, Nicola Larosa
 License: BSD-3-clause-Voidspace
+
+Files: third_party/python/dlmanager/*
+Copyright: Julien Pagès
+License: GPL-unknown
+ license="GPL/LGPL"
 
 Files: python/eme/*
 Copyright: 2014 Adobe Systems Incorporated
 License: MPL-2.0
 
-Files: python/futures/*
+Files: third_party/python/futures/*
 Copyright: 2009 Brian Quinlan
 License: BSD-2-clause
 
-Files: python/jsmin/*
+Files: third_party/python/hglib/*
+Copyright: 2011 Matt Mackall and other contributors
+License: Expat
+
+Files: third_party/python/jsmin/*
 Copyright: 2013 Dave St.Germain
 License: Expat
 
-Files: python/mock-1.0.0/*
-Copyright: 2003-2012 Michael Foord
+Files: third_party/python/mock-1.0.0/*
+Copyright: 2003-2012 Michael Foord and the mock team
 License: BSD-2-clause
 
-Files: python/psutil/*
+Files: third_party/python/psutil/*
 Copyright: 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola'
 License: BSD-3-clause-psutil
 
@@ -1300,49 +1335,53 @@ Files: python/py/*
 Copyright: 2004-2016 Holger Krekel
 License: Expat
 
-Files: python/pyasn1/*
-       python/pyasn1-modules/*
+Files: third_party/python/pyasn1/*
+       third_party/python/pyasn1-modules/*
 Copyright: 2005-2013, Ilya Etingof <ilya@glas.net>
 License: BSD-2-clause
 
-Files: python/pylru/*
+Files: thurd_party/python/pylru/*
 Copyright: 2006, 2009, 2010, 2011 Jay Hutchinson
 License: GPL-2+
 
-Files: python/PyECC/*
+Files: third_party/python/PyECC/*
 Copyright: 2010-2015 Toni Mattis
 License: Expat
 
-Files: python/pystache/*
+Files: third_party/python/pystache/*
 Copyright: 2012 Chris Jerdonek
            2009 Chris Wanstrath
 License: Expat
 
-Files: python/pytoml/*
+Files: third_party/python/pytoml/*
 Copyright: Martin Vejnár
 License: Expat
 
-Files: python/pyyaml/*
+Files: third_party/python/pyyaml/*
 Copyright: Kirill Simonov
 License: Expat
 
-Files: python/redo/*
+Files: third_party/python/redo/*
 Copyright: Ben Hearsum
 License: MPL-2.0
 
-Files: python/requests/*
+Files: third_party/python/requests/*
 Copyright: 2015 Kenneth Reitz
 License: Apache-2.0
 
-Files: python/rsa/*
+Files: third_party/python/rsa/*
 Copyright: 2011 Sybren A. Stüvel
 License: Apache-2.0
 
-Files: python/slugid/*
+Files: third_party/python/six/*
+Copyright: 2010-2015 Benjamin Peterson
+License: Expat
+
+Files: third_party/python/slugid/*
 Copyright: Pete Moore
 License: MPL-2.0
 
-Files: python/virtualenv/*
+Files: third_party/python/virtualenv/*
 Copyright: 2007, 2009 Ian Bicking
            2009 The Open Planning Project
            2011-2016 The virtualenv developers
@@ -1352,9 +1391,13 @@ Files: python/voluptuous/*
 Copyright: 2010 Alec Thomas
 License: BSD-3-clause-SwapOff
 
-Files: python/which/*
+Files: third_party/python/which/*
 Copyright: 2002-2005 ActiveState Corp
 License: Expat
+
+Files: tools/fuzzing/libfuzzer/*
+Copyright: 2003-2016 University of Illinois at Urbana-Champaign
+License: MPL-2.0 and BSD-3-clause
 
 Files: debian/*
 Copyright: 2013- Laszlo Boszormenyi (GCS) <gcs@debian.org>,
