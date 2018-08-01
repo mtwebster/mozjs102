@@ -105,11 +105,11 @@ class LDivOrModI64 : public LCallInstructionHelper<INT64_PIECES, INT64_PIECES*2,
             return mir_->toMod()->canBeNegativeDividend();
         return mir_->toDiv()->canBeNegativeOverflow();
     }
-    wasm::TrapOffset trapOffset() const {
+    wasm::BytecodeOffset bytecodeOffset() const {
         MOZ_ASSERT(mir_->isDiv() || mir_->isMod());
         if (mir_->isMod())
-            return mir_->toMod()->trapOffset();
-        return mir_->toDiv()->trapOffset();
+            return mir_->toMod()->bytecodeOffset();
+        return mir_->toDiv()->bytecodeOffset();
     }
 };
 
@@ -140,11 +140,11 @@ class LUDivOrModI64 : public LCallInstructionHelper<INT64_PIECES, INT64_PIECES*2
             return mir_->toMod()->canBeNegativeDividend();
         return mir_->toDiv()->canBeNegativeOverflow();
     }
-    wasm::TrapOffset trapOffset() const {
+    wasm::BytecodeOffset bytecodeOffset() const {
         MOZ_ASSERT(mir_->isDiv() || mir_->isMod());
         if (mir_->isMod())
-            return mir_->toMod()->trapOffset();
-        return mir_->toDiv()->trapOffset();
+            return mir_->toMod()->bytecodeOffset();
+        return mir_->toDiv()->bytecodeOffset();
     }
 };
 
@@ -160,6 +160,64 @@ class LWasmTruncateToInt64 : public LCallInstructionHelper<INT64_PIECES, 1, 0>
 
     MWasmTruncateToInt64* mir() const {
         return mir_->toWasmTruncateToInt64();
+    }
+};
+
+class LInt64ToFloatingPoint : public LCallInstructionHelper<1, INT64_PIECES, 0>
+{
+  public:
+    LIR_HEADER(Int64ToFloatingPoint);
+
+    explicit LInt64ToFloatingPoint(const LInt64Allocation& in) {
+        setInt64Operand(0, in);
+    }
+
+    MInt64ToFloatingPoint* mir() const {
+        return mir_->toInt64ToFloatingPoint();
+    }
+};
+
+class LWasmAtomicLoadI64 : public LInstructionHelper<INT64_PIECES, 1, 0>
+{
+  public:
+    LIR_HEADER(WasmAtomicLoadI64);
+
+    LWasmAtomicLoadI64(const LAllocation& ptr)
+    {
+        setOperand(0, ptr);
+    }
+
+    const LAllocation* ptr() {
+        return getOperand(0);
+    }
+    const MWasmLoad* mir() const {
+        return mir_->toWasmLoad();
+    }
+};
+
+class LWasmAtomicStoreI64 : public LInstructionHelper<0, 1 + INT64_PIECES, 1>
+{
+  public:
+    LIR_HEADER(WasmAtomicStoreI64);
+
+    LWasmAtomicStoreI64(const LAllocation& ptr, const LInt64Allocation& value, const LDefinition& tmp)
+    {
+        setOperand(0, ptr);
+        setInt64Operand(1, value);
+        setTemp(0, tmp);
+    }
+
+    const LAllocation* ptr() {
+        return getOperand(0);
+    }
+    const LInt64Allocation value() {
+        return getInt64Operand(1);
+    }
+    const LDefinition* tmp() {
+        return getTemp(0);
+    }
+    const MWasmStore* mir() const {
+        return mir_->toWasmStore();
     }
 };
 

@@ -4,10 +4,14 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import os
 import shutil
 import tempfile
 import unittest
+
+import mozunit
 
 from manifestparser import convert, ManifestParser
 
@@ -43,7 +47,7 @@ class TestSymlinkConversion(unittest.TestCase):
             parser = convert([stub], relative_to='.')
             self.assertEqual([i['name'] for i in parser.tests],
                              files)
-        except:
+        except BaseException:
             raise
         finally:
             shutil.rmtree(stub)
@@ -136,4 +140,4 @@ class TestSymlinkConversion(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    mozunit.main()

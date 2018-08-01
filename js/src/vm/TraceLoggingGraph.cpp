@@ -14,13 +14,15 @@
 #endif
 
 #include "mozilla/EndianUtils.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/ScopeExit.h"
 
-#include "jsstr.h"
+#include "builtin/String.h"
 
 #include "js/UniquePtr.h"
 #include "threading/LockGuard.h"
 #include "threading/Thread.h"
+#include "util/Text.h"
 #include "vm/TraceLogging.h"
 
 #ifndef DEFAULT_TRACE_LOG_DIR
@@ -178,6 +180,12 @@ TraceLoggerGraphState::nextLoggerId()
     return numLoggers++;
 }
 
+size_t
+TraceLoggerGraphState::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const
+{
+    return 0;
+}
+
 static bool
 EnsureTraceLoggerGraphState()
 {
@@ -194,6 +202,12 @@ EnsureTraceLoggerGraphState()
     }
 
     return true;
+}
+
+size_t
+js::SizeOfTraceLogGraphState(mozilla::MallocSizeOf mallocSizeOf)
+{
+    return traceLoggerGraphState ? traceLoggerGraphState->sizeOfIncludingThis(mallocSizeOf) : 0;
 }
 
 void
@@ -629,10 +643,8 @@ TraceLoggerGraph::addTextId(uint32_t id, const char* text)
         return;
 
     // Assume ids are given in order. Which is currently true.
-#ifdef DEBUG
-    MOZ_ASSERT(id == nextTextId);
-    nextTextId++;
-#endif
+    MOZ_ASSERT(id == nextTextId_);
+    nextTextId_++;
 
     if (id > 0) {
         int written = fprintf(dictFile, ",\n");
@@ -644,6 +656,19 @@ TraceLoggerGraph::addTextId(uint32_t id, const char* text)
 
     if (!js::FileEscapedString(dictFile, text, strlen(text), '"'))
         failed = true;
+}
+
+size_t
+TraceLoggerGraph::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
+    size_t size = 0;
+    size += tree.sizeOfExcludingThis(mallocSizeOf);
+    size += stack.sizeOfExcludingThis(mallocSizeOf);
+    return size;
+}
+
+size_t
+TraceLoggerGraph::sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
+    return mallocSizeOf(this) + sizeOfExcludingThis(mallocSizeOf);
 }
 
 #undef getpid

@@ -11,6 +11,8 @@
 // platforms, so include it here to avoid inadvertent build bustage.
 #include "jit/JitSpewer.h"
 
+#include "jit/shared/Architecture-shared.h"
+
 namespace js {
 namespace jit {
 
@@ -58,7 +60,6 @@ class Registers
     static const SetType NonVolatileMask = 0;
     static const SetType NonAllocatableMask = 0;
     static const SetType AllocatableMask = 0;
-    static const SetType TempMask = 0;
     static const SetType JSCallMask = 0;
     static const SetType CallMask = 0;
 };
@@ -131,6 +132,20 @@ struct FloatRegister
     uint32_t numAlignedAliased() const { MOZ_CRASH(); }
     void alignedAliased(uint32_t, FloatRegister*) { MOZ_CRASH(); }
     SetType alignedOrDominatedAliasedSet() const { MOZ_CRASH(); }
+
+    static constexpr RegTypeName DefaultType = RegTypeName::Float64;
+
+    template <RegTypeName = DefaultType>
+    static SetType LiveAsIndexableSet(SetType s) {
+        return SetType(0);
+    }
+
+    template <RegTypeName Name = DefaultType>
+    static SetType AllocatableAsIndexableSet(SetType s) {
+        static_assert(Name != RegTypeName::Any, "Allocatable set are not iterable");
+        return SetType(0);
+    }
+
     template <typename T> static T ReduceSetForPush(T) { MOZ_CRASH(); }
     uint32_t getRegisterDumpOffsetInBytes() { MOZ_CRASH(); }
     static uint32_t SetSize(SetType x) { MOZ_CRASH(); }

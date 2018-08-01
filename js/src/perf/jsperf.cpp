@@ -5,8 +5,9 @@
 
 #include "perf/jsperf.h"
 
-#include "jscntxt.h" /* for error messages */
-#include "jsobj.h" /* for unwrapping without a context */
+#include "gc/FreeOp.h"
+#include "vm/JSContext.h" /* for error messages */
+#include "vm/JSObject.h" /* for unwrapping without a context */
 
 using namespace js;
 using JS::PerfMeasurement;
@@ -166,7 +167,6 @@ static const JSClassOps pm_classOps = {
     nullptr,
     nullptr,
     nullptr,
-    nullptr,
     pm_finalize
 };
 
@@ -262,8 +262,7 @@ RegisterPerfMeasurement(JSContext* cx, HandleObject globalArg)
         return 0;
 
     for (const pm_const* c = pm_consts; c->name; c++) {
-        if (!JS_DefineProperty(cx, ctor, c->name, c->value, PM_CATTRS,
-                               JS_STUBGETTER, JS_STUBSETTER))
+        if (!JS_DefineProperty(cx, ctor, c->name, c->value, PM_CATTRS))
             return 0;
     }
 

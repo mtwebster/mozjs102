@@ -13,16 +13,16 @@
 #include "mozilla/TaggedAnonymousMemory.h"
 #include "mozilla/XorShift128PlusRNG.h"
 
+#include <errno.h>
+
 #include "jsfriendapi.h"
 #include "jsmath.h"
 #include "jsutil.h"
-#include "jswin.h"
-
-#include <errno.h>
 
 #include "gc/Memory.h"
 #include "threading/LockGuard.h"
 #include "threading/Mutex.h"
+#include "util/Windows.h"
 #include "vm/MutexIDs.h"
 
 #ifdef XP_WIN
@@ -31,6 +31,10 @@
 #else
 # include <sys/mman.h>
 # include <unistd.h>
+#endif
+
+#ifdef MOZ_VALGRIND
+# include <valgrind/valgrind.h>
 #endif
 
 using namespace js;
@@ -156,13 +160,8 @@ RegisterExecutableMemory(void* p, size_t bytes, size_t pageSize)
     // XXX NB: The profiler believes this function is only called from the main
     // thread. If that ever becomes untrue, the profiler must be updated
     // immediately.
-    AcquireStackWalkWorkaroundLock();
-
-    bool success = RtlAddFunctionTable(&r->runtimeFunction, 1, reinterpret_cast<DWORD64>(p));
-
-    ReleaseStackWalkWorkaroundLock();
-
-    return success;
+    AutoSuppressStackWalking suppress;
+    return RtlAddFunctionTable(&r->runtimeFunction, 1, reinterpret_cast<DWORD64>(p));
 }
 
 static void
@@ -173,11 +172,8 @@ UnregisterExecutableMemory(void* p, size_t bytes, size_t pageSize)
     // XXX NB: The profiler believes this function is only called from the main
     // thread. If that ever becomes untrue, the profiler must be updated
     // immediately.
-    AcquireStackWalkWorkaroundLock();
-
+    AutoSuppressStackWalking suppress;
     RtlDeleteFunctionTable(&r->runtimeFunction);
-
-    ReleaseStackWalkWorkaroundLock();
 }
 # endif
 
@@ -213,7 +209,10 @@ ReserveProcessExecutableMemory(size_t bytes)
         }
 
         p = (uint8_t*)p + pageSize;
+        bytes -= pageSize;
     }
+
+    RegisterJitCodeRegion((uint8_t*)p, bytes);
 # endif
 
     return p;
@@ -223,6 +222,8 @@ static void
 DeallocateProcessExecutableMemory(void* addr, size_t bytes)
 {
 # ifdef HAVE_64BIT_BUILD
+    UnregisterJitCodeRegion((uint8_t*)addr, bytes);
+
     if (sJitExceptionHandler) {
         size_t pageSize = gc::SystemPageSize();
         addr = (uint8_t*)addr - pageSize;
@@ -244,11 +245,14 @@ ProtectionSettingToFlags(ProtectionSetting protection)
     MOZ_CRASH();
 }
 
-static void
+static MOZ_MUST_USE bool
 CommitPages(void* addr, size_t bytes, ProtectionSetting protection)
 {
-    if (!VirtualAlloc(addr, bytes, MEM_COMMIT, ProtectionSettingToFlags(protection)))
-        MOZ_CRASH("CommitPages failed");
+    void* p = VirtualAlloc(addr, bytes, MEM_COMMIT, ProtectionSettingToFlags(protection));
+    if (!p)
+        return false;
+    MOZ_RELEASE_ASSERT(p == addr);
+    return true;
 }
 
 static void
@@ -305,6 +309,22 @@ DeallocateProcessExecutableMemory(void* addr, size_t bytes)
 static unsigned
 ProtectionSettingToFlags(ProtectionSetting protection)
 {
+#ifdef MOZ_VALGRIND
+    // If we're configured for Valgrind and running on it, use a slacker
+    // scheme that doesn't change execute permissions, since doing so causes
+    // Valgrind a lot of extra overhead re-JITting code that loses and later
+    // regains execute permission.  See bug 1338179.
+    if (RUNNING_ON_VALGRIND) {
+      switch (protection) {
+        case ProtectionSetting::Protected:  return PROT_NONE;
+        case ProtectionSetting::Writable:   return PROT_READ | PROT_WRITE | PROT_EXEC;
+        case ProtectionSetting::Executable: return PROT_READ | PROT_EXEC;
+      }
+      MOZ_CRASH();
+    }
+    // If we get here, we're configured for Valgrind but not running on
+    // it, so use the standard scheme.
+#endif
     switch (protection) {
       case ProtectionSetting::Protected:  return PROT_NONE;
       case ProtectionSetting::Writable:   return PROT_READ | PROT_WRITE;
@@ -313,13 +333,16 @@ ProtectionSettingToFlags(ProtectionSetting protection)
     MOZ_CRASH();
 }
 
-static void
+static MOZ_MUST_USE bool
 CommitPages(void* addr, size_t bytes, ProtectionSetting protection)
 {
     void* p = MozTaggedAnonymousMmap(addr, bytes, ProtectionSettingToFlags(protection),
                                      MAP_FIXED | MAP_PRIVATE | MAP_ANON,
                                      -1, 0, "js-executable-memory");
-    MOZ_RELEASE_ASSERT(addr == p);
+    if (p == MAP_FAILED)
+        return false;
+    MOZ_RELEASE_ASSERT(p == addr);
+    return true;
 }
 
 static void
@@ -477,7 +500,7 @@ class ProcessExecutableMemory
     }
 
     void* allocate(size_t bytes, ProtectionSetting protection);
-    void deallocate(void* addr, size_t bytes);
+    void deallocate(void* addr, size_t bytes, bool decommit);
 };
 
 void*
@@ -542,12 +565,16 @@ ProcessExecutableMemory::allocate(size_t bytes, ProtectionSetting protection)
     }
 
     // Commit the pages after releasing the lock.
-    CommitPages(p, bytes, protection);
+    if (!CommitPages(p, bytes, protection)) {
+        deallocate(p, bytes, /* decommit = */ false);
+        return nullptr;
+    }
+
     return p;
 }
 
 void
-ProcessExecutableMemory::deallocate(void* addr, size_t bytes)
+ProcessExecutableMemory::deallocate(void* addr, size_t bytes, bool decommit)
 {
     MOZ_ASSERT(initialized());
     MOZ_ASSERT(addr);
@@ -561,7 +588,8 @@ ProcessExecutableMemory::deallocate(void* addr, size_t bytes)
     size_t numPages = bytes / ExecutableCodePageSize;
 
     // Decommit before taking the lock.
-    DecommitPages(addr, bytes);
+    if (decommit)
+        DecommitPages(addr, bytes);
 
     LockGuard<Mutex> guard(lock_);
     MOZ_ASSERT(numPages <= pagesAllocated_);
@@ -587,7 +615,7 @@ js::jit::AllocateExecutableMemory(size_t bytes, ProtectionSetting protection)
 void
 js::jit::DeallocateExecutableMemory(void* addr, size_t bytes)
 {
-    execMemory.deallocate(addr, bytes);
+    execMemory.deallocate(addr, bytes, /* decommit = */ true);
 }
 
 bool
@@ -602,11 +630,18 @@ js::jit::ReleaseProcessExecutableMemory()
     execMemory.release();
 }
 
+size_t
+js::jit::LikelyAvailableExecutableMemory()
+{
+    // Round down available memory to the closest MB.
+    return MaxCodeBytesPerProcess - AlignBytes(execMemory.bytesAllocated(), 0x100000U);
+}
+
 bool
 js::jit::CanLikelyAllocateMoreExecutableMemory()
 {
-    // Use a 16 MB buffer.
-    static const size_t BufferSize = 16 * 1024 * 1024;
+    // Use a 8 MB buffer.
+    static const size_t BufferSize = 8 * 1024 * 1024;
 
     MOZ_ASSERT(execMemory.bytesAllocated() <= MaxCodeBytesPerProcess);
 

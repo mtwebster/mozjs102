@@ -9,6 +9,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/BufferList.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/Move.h"
 
 #include <stdint.h>
@@ -18,17 +19,131 @@
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
+#include "js/Vector.h"
 
-struct JSRuntime;
+/*
+ * API for safe passing of structured data, HTML 2018 Feb 21 section 2.7.
+ * <https://html.spec.whatwg.org/multipage/structured-data.html>
+ *
+ * This is a serialization scheme for JS values, somewhat like JSON. It
+ * preserves some aspects of JS objects (strings, numbers, own data properties
+ * with string keys, array elements) but not others (methods, getters and
+ * setters, prototype chains). Unlike JSON, structured data:
+ *
+ * -   can contain cyclic references.
+ *
+ * -   handles Maps, Sets, and some other object types.
+ *
+ * -   supports *transferring* objects of certain types from one realm to
+ *     another, rather than cloning them.
+ *
+ * -   is specified by a living standard, and continues to evolve.
+ *
+ * -   is encoded in a nonstandard binary format, and is never exposed to Web
+ *     content in its serialized form. It's used internally by the browser to
+ *     send data from one thread/realm/domain to another, not across the
+ *     network.
+ */
+
 struct JSStructuredCloneReader;
 struct JSStructuredCloneWriter;
 
-// API for the HTML5 internal structured cloning algorithm.
+/**
+ * The structured-clone serialization format version number.
+ *
+ * When serialized data is stored as bytes, e.g. in your Firefox profile, later
+ * versions of the engine may have to read it. When you upgrade Firefox, we
+ * don't crawl through your whole profile converting all saved data from the
+ * previous version of the serialization format to the latest version. So it is
+ * normal to have data in old formats stored in your profile.
+ *
+ * The JS engine can *write* data only in the current format version.
+ *
+ * It can *read* any data written in the current version, and data written for
+ * DifferentProcess scope in earlier versions.
+ *
+ *
+ * ## When to bump this version number
+ *
+ * When making a change so drastic that the JS engine needs to know whether
+ * it's reading old or new serialized data in order to handle both correctly,
+ * increment this version number. Make sure the engine can still read all
+ * old data written with previous versions.
+ *
+ * If StructuredClone.cpp doesn't contain code that distinguishes between
+ * version 8 and version 9, there should not be a version 9.
+ *
+ * Do not increment for changes that only affect SameProcess encoding.
+ *
+ * Increment only for changes that would otherwise break old serialized data.
+ * Do not increment for new data types. (Rationale: Modulo bugs, older versions
+ * of the JS engine can already correctly throw errors when they encounter new,
+ * unrecognized features. A version number bump does not actually help them.)
+ */
+#define JS_STRUCTURED_CLONE_VERSION 8
 
 namespace JS {
 
+/**
+ * Indicates the "scope of validity" of serialized data.
+ *
+ * Writing plain JS data produces an array of bytes that can be copied and
+ * read in another process or whatever. The serialized data is Plain Old Data.
+ * However, HTML also supports `Transferable` objects, which, when cloned, can
+ * be moved from the source object into the clone, like when you take a
+ * photograph of someone and it steals their soul.
+ * See <https://developer.mozilla.org/en-US/docs/Web/API/Transferable>.
+ * We support cloning and transferring objects of many types.
+ *
+ * For example, when we transfer an ArrayBuffer (within a process), we "detach"
+ * the ArrayBuffer, embed the raw buffer pointer in the serialized data, and
+ * later install it in a new ArrayBuffer in the destination realm. Ownership
+ * of that buffer memory is transferred from the original ArrayBuffer to the
+ * serialized data and then to the clone.
+ *
+ * This only makes sense within a single address space. When we transfer an
+ * ArrayBuffer to another process, the contents of the buffer must be copied
+ * into the serialized data. (The original ArrayBuffer is still detached,
+ * though, for consistency; in some cases the caller shouldn't know or care if
+ * the recipient is in the same process.)
+ *
+ * ArrayBuffers are actually a lucky case; some objects (like MessagePorts)
+ * can't reasonably be stored by value in serialized data -- it's pointers or
+ * nothing.
+ *
+ * So there is a tradeoff between scope of validity -- how far away the
+ * serialized data may be sent and still make sense -- and efficiency or
+ * features. The read and write algorithms therefore take an argument of this
+ * type, allowing the user to control those trade-offs.
+ */
 enum class StructuredCloneScope : uint32_t {
+    /**
+     * The most restrictive scope, with greatest efficiency and features.
+     *
+     * When writing, this means we're writing for an audience in the same
+     * process and same thread. The caller promises that the serialized data
+     * will **not** be shipped off to a different thread/process or stored in a
+     * database. It's OK to produce serialized data that contains pointers.  In
+     * Rust terms, the serialized data will be treated as `!Send`.
+     *
+     * When reading, this means: Accept transferred objects and buffers
+     * (pointers). The caller promises that the serialized data was written
+     * using this API (otherwise, the serialized data may contain bogus
+     * pointers, leading to undefined behavior).
+     */
     SameProcessSameThread,
+
+    /**
+     * When writing, this means: The caller promises that the serialized data
+     * will **not** be shipped off to a different process or stored in a
+     * database. However, it may be shipped to another thread. It's OK to
+     * produce serialized data that contains pointers to data that is safe to
+     * send across threads, such as array buffers. In Rust terms, the
+     * serialized data will be treated as `Send` but not `Copy`.
+     *
+     * When reading, this means the same thing as SameProcessSameThread;
+     * the distinction only matters when writing.
+     */
     SameProcessDifferentThread,
 
     /**
@@ -41,6 +156,8 @@ enum class StructuredCloneScope : uint32_t {
      *
      * Transferable objects are limited to ArrayBuffers, whose contents are
      * copied into the serialized data (rather than just writing a pointer).
+     *
+     * When reading, this means: Do not accept pointers.
      */
     DifferentProcess,
 
@@ -117,10 +234,6 @@ class CloneDataPolicy
 };
 
 } /* namespace JS */
-
-namespace js {
-template <typename T, typename AllocPolicy> struct BufferIterator;
-}
 
 /**
  * Read structured data from the reader r. This hook is used to read a value
@@ -200,12 +313,6 @@ typedef bool (*TransferStructuredCloneOp)(JSContext* cx,
 typedef void (*FreeTransferStructuredCloneOp)(uint32_t tag, JS::TransferableOwnership ownership,
                                               void* content, uint64_t extraData, void* closure);
 
-// The maximum supported structured-clone serialization format version.
-// Increment this when anything at all changes in the serialization format.
-// (Note that this does not need to be bumped for Transferable-only changes,
-// since they are never saved to persistent storage.)
-#define JS_STRUCTURED_CLONE_VERSION 8
-
 struct JSStructuredCloneCallbacks {
     ReadStructuredCloneOp read;
     WriteStructuredCloneOp write;
@@ -220,6 +327,30 @@ enum OwnTransferablePolicy {
     IgnoreTransferablesIfAny,
     NoTransferables
 };
+
+namespace js
+{
+    class SharedArrayRawBuffer;
+
+    class SharedArrayRawBufferRefs
+    {
+      public:
+        SharedArrayRawBufferRefs() = default;
+        SharedArrayRawBufferRefs(SharedArrayRawBufferRefs&& other) = default;
+        SharedArrayRawBufferRefs& operator=(SharedArrayRawBufferRefs&& other);
+        ~SharedArrayRawBufferRefs();
+
+        MOZ_MUST_USE bool acquire(JSContext* cx, SharedArrayRawBuffer* rawbuf);
+        MOZ_MUST_USE bool acquireAll(JSContext* cx, const SharedArrayRawBufferRefs& that);
+        void takeOwnership(SharedArrayRawBufferRefs&&);
+        void releaseAll();
+
+      private:
+        js::Vector<js::SharedArrayRawBuffer*, 0, js::SystemAllocPolicy> refs_;
+    };
+
+    template <typename T, typename AllocPolicy> struct BufferIterator;
+}
 
 /**
  * JSStructuredCloneData represents structured clone data together with the
@@ -241,9 +372,10 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
     // Unassigned and transition once to something else.
     JS::StructuredCloneScope scope_;
 
-    const JSStructuredCloneCallbacks* callbacks_;
-    void* closure_;
-    OwnTransferablePolicy ownTransferables_;
+    const JSStructuredCloneCallbacks* callbacks_ = nullptr;
+    void* closure_ = nullptr;
+    OwnTransferablePolicy ownTransferables_ = OwnTransferablePolicy::NoTransferables;
+    js::SharedArrayRawBufferRefs refsHeld_;
 
     friend struct JSStructuredCloneWriter;
     friend class JS_PUBLIC_API(JSAutoStructuredCloneBuffer);
@@ -252,9 +384,9 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
   public:
     // The constructor must be infallible but SystemAllocPolicy is not, so both
     // the initial size and initial capacity of the BufferList must be zero.
-    explicit JSStructuredCloneData(JS::StructuredCloneScope aScope)
+    explicit JSStructuredCloneData(JS::StructuredCloneScope scope)
         : bufList_(0, 0, kStandardCapacity, js::SystemAllocPolicy())
-        , scope_(aScope)
+        , scope_(scope)
         , callbacks_(nullptr)
         , closure_(nullptr)
         , ownTransferables_(OwnTransferablePolicy::NoTransferables)
@@ -262,9 +394,9 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
 
     // Steal the raw data from a BufferList. In this case, we don't know the
     // scope and none of the callback info is assigned yet.
-    JSStructuredCloneData(BufferList&& buffers, JS::StructuredCloneScope aScope)
+    JSStructuredCloneData(BufferList&& buffers, JS::StructuredCloneScope scope)
         : bufList_(mozilla::Move(buffers))
-        , scope_(aScope)
+        , scope_(scope)
         , callbacks_(nullptr)
         , closure_(nullptr)
         , ownTransferables_(OwnTransferablePolicy::NoTransferables)
@@ -285,13 +417,15 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
         ownTransferables_ = policy;
     }
 
+    bool Init(size_t initialCapacity = 0) { return bufList_.Init(0, initialCapacity); }
+
     JS::StructuredCloneScope scope() const { return scope_; }
 
-    void initScope(JS::StructuredCloneScope aScope) {
+    void initScope(JS::StructuredCloneScope scope) {
         MOZ_ASSERT(Size() == 0, "initScope() of nonempty JSStructuredCloneData");
         if (scope_ != JS::StructuredCloneScope::Unassigned)
-            MOZ_ASSERT(scope_ == aScope, "Cannot change scope after it has been initialized");
-        scope_ = aScope;
+            MOZ_ASSERT(scope_ == scope, "Cannot change scope after it has been initialized");
+        scope_ = scope;
     }
 
     size_t Size() const { return bufList_.Size(); }
@@ -327,6 +461,10 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
         return true;
     }
 
+    char* AllocateBytes(size_t maxSize, size_t* size) {
+        return bufList_.AllocateBytes(maxSize, size);
+    }
+
     void Clear() {
         discardTransferables();
         bufList_.Clear();
@@ -360,22 +498,38 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API(JSStructuredCloneData) {
 
     // Append the entire contents of other's bufList_ to our own.
     bool Append(const JSStructuredCloneData& other) {
-        MOZ_ASSERT(scope_ == other.scope_);
+        MOZ_ASSERT(scope_ == other.scope());
         return other.ForEachDataChunk([&](const char* data, size_t size) {
             return AppendBytes(data, size);
         });
     }
 
+    size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
+        return bufList_.SizeOfExcludingThis(mallocSizeOf);
+    }
+
     void discardTransferables();
 };
 
-/** Note: if the *data contains transferable objects, it can be read only once. */
+/**
+ * Implements StructuredDeserialize and StructuredDeserializeWithTransfer.
+ *
+ * Note: If `data` contains transferable objects, it can be read only once.
+ */
 JS_PUBLIC_API(bool)
 JS_ReadStructuredClone(JSContext* cx, JSStructuredCloneData& data, uint32_t version,
                        JS::StructuredCloneScope scope,
                        JS::MutableHandleValue vp,
                        const JSStructuredCloneCallbacks* optionalCallbacks, void* closure);
 
+/**
+ * Implements StructuredSerialize, StructuredSerializeForStorage, and
+ * StructuredSerializeWithTransfer.
+ *
+ * Note: If the scope is DifferentProcess then the cloneDataPolicy must deny
+ * shared-memory objects, or an error will be signaled if a shared memory object
+ * is seen.
+ */
 JS_PUBLIC_API(bool)
 JS_WriteStructuredClone(JSContext* cx, JS::HandleValue v, JSStructuredCloneData* data,
                         JS::StructuredCloneScope scope,
@@ -408,9 +562,9 @@ class JS_PUBLIC_API(JSAutoStructuredCloneBuffer) {
     uint32_t version_;
 
   public:
-    JSAutoStructuredCloneBuffer(JS::StructuredCloneScope aScope,
+    JSAutoStructuredCloneBuffer(JS::StructuredCloneScope scope,
                                 const JSStructuredCloneCallbacks* callbacks, void* closure)
-        : scope_(aScope), data_(aScope), version_(JS_STRUCTURED_CLONE_VERSION)
+        : scope_(scope), data_(scope), version_(JS_STRUCTURED_CLONE_VERSION)
     {
         data_.setCallbacks(callbacks, closure, OwnTransferablePolicy::NoTransferables);
     }
@@ -459,6 +613,16 @@ class JS_PUBLIC_API(JSAutoStructuredCloneBuffer) {
                JS::CloneDataPolicy cloneDataPolicy,
                const JSStructuredCloneCallbacks* optionalCallbacks=nullptr, void* closure=nullptr);
 
+    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf)
+    {
+        return data_.SizeOfExcludingThis(mallocSizeOf);
+    }
+
+    size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf)
+    {
+        return mallocSizeOf(this) + sizeOfExcludingThis(mallocSizeOf);
+    }
+
   private:
     // Copy and assignment are not supported.
     JSAutoStructuredCloneBuffer(const JSAutoStructuredCloneBuffer& other) = delete;
@@ -473,6 +637,7 @@ class JS_PUBLIC_API(JSAutoStructuredCloneBuffer) {
 #define JS_SCERR_TRANSFERABLE 1
 #define JS_SCERR_DUP_TRANSFERABLE 2
 #define JS_SCERR_UNSUPPORTED_TYPE 3
+#define JS_SCERR_SHMEM_TRANSFERABLE 4
 
 JS_PUBLIC_API(bool)
 JS_ReadUint32Pair(JSStructuredCloneReader* r, uint32_t* p1, uint32_t* p2);

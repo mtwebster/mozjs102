@@ -30,9 +30,9 @@ class TwoByteCharsZ;
 class UTF8Chars;
 class UTF8CharsZ;
 
-class AutoValueVector;
-class AutoIdVector;
-class AutoObjectVector;
+using AutoValueVector = AutoVector<Value>;
+using AutoIdVector = AutoVector<jsid>;
+using AutoObjectVector = AutoVector<JSObject*>;
 
 using ValueVector = JS::GCVector<JS::Value>;
 using IdVector = JS::GCVector<jsid>;
@@ -46,8 +46,8 @@ class MOZ_STACK_CLASS SourceBufferHolder;
 class HandleValueArray;
 
 class ObjectOpResult;
+class PropertyResult;
 
-class Symbol;
 enum class SymbolCode: uint32_t;
 
 } // namespace JS
@@ -81,6 +81,10 @@ using JS::UTF8Chars;
 using JS::UTF8CharsZ;
 using JS::UniqueChars;
 using JS::UniqueTwoByteChars;
+
+using JS::Result;
+using JS::Ok;
+using JS::OOM;
 
 using JS::AutoValueVector;
 using JS::AutoIdVector;
@@ -151,6 +155,7 @@ using JS::FalseHandleValue;
 using JS::HandleValueArray;
 
 using JS::ObjectOpResult;
+using JS::PropertyResult;
 
 using JS::Zone;
 

@@ -10,6 +10,7 @@
 #include "mozilla/Alignment.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/HashFunctions.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Move.h"
@@ -161,8 +162,6 @@
 // corrupted. While it is the deserializer's responsibility to check the basic
 // structure of the snapshot file, the analyses should be prepared for ubi::Node
 // graphs constructed from snapshots to be even more bizarre.
-
-class JSAtom;
 
 namespace JS {
 namespace ubi {
@@ -426,7 +425,7 @@ class StackFrame {
         using Lookup = JS::ubi::StackFrame;
 
         static js::HashNumber hash(const Lookup& lookup) {
-            return lookup.identifier();
+            return mozilla::HashGeneric(lookup.identifier());
         }
 
         static bool match(const StackFrame& key, const Lookup& lookup) {
@@ -814,7 +813,7 @@ class Node {
     // This simply uses the stock PointerHasher on the ubi::Node's pointer.
     // We specialize DefaultHasher below to make this the default.
     class HashPolicy {
-        typedef js::PointerHasher<void*, mozilla::tl::FloorLog2<sizeof(void*)>::value> PtrHash;
+        typedef js::PointerHasher<void*> PtrHash;
 
       public:
         typedef Node Lookup;

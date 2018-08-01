@@ -7,8 +7,8 @@
 #ifndef vm_AsyncFunction_h
 #define vm_AsyncFunction_h
 
-#include "jscntxt.h"
-#include "jsobj.h"
+#include "vm/JSContext.h"
+#include "vm/JSObject.h"
 
 namespace js {
 
@@ -22,6 +22,9 @@ bool
 IsWrappedAsyncFunction(JSFunction* fun);
 
 JSObject*
+WrapAsyncFunctionWithProto(JSContext* cx, HandleFunction unwrapped, HandleObject proto);
+
+JSObject*
 WrapAsyncFunction(JSContext* cx, HandleFunction unwrapped);
 
 MOZ_MUST_USE bool
@@ -31,9 +34,6 @@ AsyncFunctionAwaitedFulfilled(JSContext* cx, Handle<PromiseObject*> resultPromis
 MOZ_MUST_USE bool
 AsyncFunctionAwaitedRejected(JSContext* cx, Handle<PromiseObject*> resultPromise,
                              HandleValue generatorVal, HandleValue reason);
-
-MOZ_MUST_USE bool
-CheckAsyncResumptionValue(JSContext* cx, HandleValue v);
 
 } // namespace js
 

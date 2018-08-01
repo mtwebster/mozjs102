@@ -210,40 +210,6 @@ class LTableSwitchV : public LInstructionHelper<0, BOX_PIECES, 3>
     }
 };
 
-class LGuardShape : public LInstructionHelper<0, 1, 1>
-{
-  public:
-    LIR_HEADER(GuardShape);
-
-    LGuardShape(const LAllocation& in, const LDefinition& temp) {
-        setOperand(0, in);
-        setTemp(0, temp);
-    }
-    const MGuardShape* mir() const {
-        return mir_->toGuardShape();
-    }
-    const LDefinition* tempInt() {
-        return getTemp(0);
-    }
-};
-
-class LGuardObjectGroup : public LInstructionHelper<0, 1, 1>
-{
-  public:
-    LIR_HEADER(GuardObjectGroup);
-
-    LGuardObjectGroup(const LAllocation& in, const LDefinition& temp) {
-        setOperand(0, in);
-        setTemp(0, temp);
-    }
-    const MGuardObjectGroup* mir() const {
-        return mir_->toGuardObjectGroup();
-    }
-    const LDefinition* tempInt() {
-        return getTemp(0);
-    }
-};
-
 class LMulI : public LBinaryMath<0>
 {
   public:
@@ -276,25 +242,11 @@ class LUDivOrMod : public LBinaryMath<0>
         return mir_->toDiv()->trapOnError();
     }
 
-    wasm::TrapOffset trapOffset() const {
+    wasm::BytecodeOffset bytecodeOffset() const {
         MOZ_ASSERT(mir_->isDiv() || mir_->isMod());
         if (mir_->isMod())
-            return mir_->toMod()->trapOffset();
-        return mir_->toDiv()->trapOffset();
-    }
-};
-
-class LInt64ToFloatingPoint : public LInstructionHelper<1, INT64_PIECES, 0>
-{
-  public:
-    LIR_HEADER(Int64ToFloatingPoint);
-
-    explicit LInt64ToFloatingPoint(const LInt64Allocation& in) {
-        setInt64Operand(0, in);
-    }
-
-    MInt64ToFloatingPoint* mir() const {
-        return mir_->toInt64ToFloatingPoint();
+            return mir_->toMod()->bytecodeOffset();
+        return mir_->toDiv()->bytecodeOffset();
     }
 };
 
@@ -308,7 +260,7 @@ class LWasmUnalignedLoadBase : public details::LWasmLoadBase<NumDefs, 2>
     typedef LWasmLoadBase<NumDefs, 2> Base;
 
     explicit LWasmUnalignedLoadBase(const LAllocation& ptr, const LDefinition& valueHelper)
-      : Base(ptr)
+      : Base(ptr, LAllocation())
     {
         Base::setTemp(0, LDefinition::BogusTemp());
         Base::setTemp(1, valueHelper);
@@ -401,6 +353,78 @@ class LWasmUnalignedStoreI64 : public details::LWasmUnalignedStoreBase<1 + INT64
         return getInt64Operand(ValueIndex);
     }
 };
+
+class LWasmCompareExchangeI64 : public LInstructionHelper<INT64_PIECES, 1 + INT64_PIECES + INT64_PIECES, 0>
+{
+  public:
+    LIR_HEADER(WasmCompareExchangeI64);
+
+    LWasmCompareExchangeI64(const LAllocation& ptr, const LInt64Allocation& oldValue, const LInt64Allocation& newValue)
+    {
+        setOperand(0, ptr);
+        setInt64Operand(1, oldValue);
+        setInt64Operand(1 + INT64_PIECES, newValue);
+    }
+
+    const LAllocation* ptr() {
+        return getOperand(0);
+    }
+    const LInt64Allocation oldValue() {
+        return getInt64Operand(1);
+    }
+    const LInt64Allocation newValue() {
+        return getInt64Operand(1 + INT64_PIECES);
+    }
+    const MWasmCompareExchangeHeap* mir() const {
+        return mir_->toWasmCompareExchangeHeap();
+    }
+};
+
+class LWasmAtomicExchangeI64 : public LInstructionHelper<INT64_PIECES, 1 + INT64_PIECES, 0>
+{
+  public:
+    LIR_HEADER(WasmAtomicExchangeI64);
+
+    LWasmAtomicExchangeI64(const LAllocation& ptr, const LInt64Allocation& value)
+    {
+        setOperand(0, ptr);
+        setInt64Operand(1, value);
+    }
+
+    const LAllocation* ptr() {
+        return getOperand(0);
+    }
+    const LInt64Allocation value() {
+        return getInt64Operand(1);
+    }
+    const MWasmAtomicExchangeHeap* mir() const {
+        return mir_->toWasmAtomicExchangeHeap();
+    }
+};
+
+class LWasmAtomicBinopI64 : public LInstructionHelper<INT64_PIECES, 1 + INT64_PIECES, 2>
+{
+  public:
+    LIR_HEADER(WasmAtomicBinopI64);
+
+    LWasmAtomicBinopI64(const LAllocation& ptr, const LInt64Allocation& value)
+    {
+        setOperand(0, ptr);
+        setInt64Operand(1, value);
+    }
+
+    const LAllocation* ptr() {
+        return getOperand(0);
+    }
+    const LInt64Allocation value() {
+        return getInt64Operand(1);
+    }
+
+    const MWasmAtomicBinopHeap* mir() const {
+        return mir_->toWasmAtomicBinopHeap();
+    }
+};
+
 
 } // namespace jit
 } // namespace js

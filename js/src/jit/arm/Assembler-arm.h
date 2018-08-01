@@ -12,39 +12,46 @@
 #include "mozilla/MathAlgorithms.h"
 
 #include "jit/arm/Architecture-arm.h"
+#include "jit/arm/disasm/Disasm-arm.h"
 #include "jit/CompactBuffer.h"
 #include "jit/IonCode.h"
 #include "jit/JitCompartment.h"
 #include "jit/shared/Assembler-shared.h"
+#include "jit/shared/Disassembler-shared.h"
 #include "jit/shared/IonAssemblerBufferWithConstantPools.h"
+
+union PoolHintPun;
 
 namespace js {
 namespace jit {
+
+using LiteralDoc = DisassemblerSpew::LiteralDoc;
+using LabelDoc = DisassemblerSpew::LabelDoc;
 
 // NOTE: there are duplicates in this list! Sometimes we want to specifically
 // refer to the link register as a link register (bl lr is much clearer than bl
 // r14). HOWEVER, this register can easily be a gpr when it is not busy holding
 // the return address.
-static constexpr Register r0  = { Registers::r0 };
-static constexpr Register r1  = { Registers::r1 };
-static constexpr Register r2  = { Registers::r2 };
-static constexpr Register r3  = { Registers::r3 };
-static constexpr Register r4  = { Registers::r4 };
-static constexpr Register r5  = { Registers::r5 };
-static constexpr Register r6  = { Registers::r6 };
-static constexpr Register r7  = { Registers::r7 };
-static constexpr Register r8  = { Registers::r8 };
-static constexpr Register r9  = { Registers::r9 };
-static constexpr Register r10 = { Registers::r10 };
-static constexpr Register r11 = { Registers::r11 };
-static constexpr Register r12 = { Registers::ip };
-static constexpr Register ip  = { Registers::ip };
-static constexpr Register sp  = { Registers::sp };
-static constexpr Register r14 = { Registers::lr };
-static constexpr Register lr  = { Registers::lr };
-static constexpr Register pc  = { Registers::pc };
+static constexpr Register r0  { Registers::r0 };
+static constexpr Register r1  { Registers::r1 };
+static constexpr Register r2  { Registers::r2 };
+static constexpr Register r3  { Registers::r3 };
+static constexpr Register r4  { Registers::r4 };
+static constexpr Register r5  { Registers::r5 };
+static constexpr Register r6  { Registers::r6 };
+static constexpr Register r7  { Registers::r7 };
+static constexpr Register r8  { Registers::r8 };
+static constexpr Register r9  { Registers::r9 };
+static constexpr Register r10 { Registers::r10 };
+static constexpr Register r11 { Registers::r11 };
+static constexpr Register r12 { Registers::ip };
+static constexpr Register ip  { Registers::ip };
+static constexpr Register sp  { Registers::sp };
+static constexpr Register r14 { Registers::lr };
+static constexpr Register lr  { Registers::lr };
+static constexpr Register pc  { Registers::pc };
 
-static constexpr Register ScratchRegister = {Registers::ip};
+static constexpr Register ScratchRegister {Registers::ip};
 
 // Helper class for ScratchRegister usage. Asserts that only one piece
 // of code thinks it has exclusive ownership of the scratch register.
@@ -61,7 +68,6 @@ struct SecondScratchRegisterScope : public AutoRegisterScope
 };
 
 static constexpr Register OsrFrameReg = r3;
-static constexpr Register ArgumentsRectifierReg = r8;
 static constexpr Register CallTempReg0 = r5;
 static constexpr Register CallTempReg1 = r6;
 static constexpr Register CallTempReg2 = r7;
@@ -73,8 +79,7 @@ static constexpr Register IntArgReg0 = r0;
 static constexpr Register IntArgReg1 = r1;
 static constexpr Register IntArgReg2 = r2;
 static constexpr Register IntArgReg3 = r3;
-static constexpr Register GlobalReg = r10;
-static constexpr Register HeapReg = r11;
+static constexpr Register HeapReg = r10;
 static constexpr Register CallTempNonArgRegs[] = { r5, r6, r7, r8 };
 static const uint32_t NumCallTempNonArgRegs =
     mozilla::ArrayLength(CallTempNonArgRegs);
@@ -108,11 +113,26 @@ class ABIArgGenerator
     uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
 };
 
+bool IsUnaligned(const wasm::MemoryAccessDesc& access);
+
+// These registers may be volatile or nonvolatile.
 static constexpr Register ABINonArgReg0 = r4;
 static constexpr Register ABINonArgReg1 = r5;
 static constexpr Register ABINonArgReg2 = r6;
+
+// This register may be volatile or nonvolatile. Avoid d15 which is the
+// ScratchDoubleReg.
+static constexpr FloatRegister ABINonArgDoubleReg { FloatRegisters::d8, VFPRegister::Double };
+
+// These registers may be volatile or nonvolatile.
+// Note: these three registers are all guaranteed to be different
 static constexpr Register ABINonArgReturnReg0 = r4;
 static constexpr Register ABINonArgReturnReg1 = r5;
+
+// This register is guaranteed to be clobberable during the prologue and
+// epilogue of an ABI call which must preserve both ABI argument, return
+// and non-volatile registers.
+static constexpr Register ABINonArgReturnVolatileReg = lr;
 
 // TLS pointer argument register for WebAssembly functions. This must not alias
 // any other register used for passing function arguments or return values.
@@ -127,19 +147,19 @@ static constexpr Register WasmTableCallIndexReg = ABINonArgReg2;
 
 static constexpr Register PreBarrierReg = r1;
 
-static constexpr Register InvalidReg = { Registers::invalid_reg };
+static constexpr Register InvalidReg { Registers::invalid_reg };
 static constexpr FloatRegister InvalidFloatReg;
 
 static constexpr Register JSReturnReg_Type = r3;
 static constexpr Register JSReturnReg_Data = r2;
 static constexpr Register StackPointer = sp;
-static constexpr Register FramePointer = InvalidReg;
+static constexpr Register FramePointer = r11;
 static constexpr Register ReturnReg = r0;
 static constexpr Register64 ReturnReg64(r1, r0);
 static constexpr FloatRegister ReturnFloat32Reg = { FloatRegisters::d0, VFPRegister::Single };
 static constexpr FloatRegister ReturnDoubleReg = { FloatRegisters::d0, VFPRegister::Double};
 static constexpr FloatRegister ReturnSimd128Reg = InvalidFloatReg;
-static constexpr FloatRegister ScratchFloat32Reg = { FloatRegisters::d30, VFPRegister::Single };
+static constexpr FloatRegister ScratchFloat32Reg = { FloatRegisters::s30, VFPRegister::Single };
 static constexpr FloatRegister ScratchDoubleReg = { FloatRegisters::d15, VFPRegister::Double };
 static constexpr FloatRegister ScratchSimd128Reg = InvalidFloatReg;
 static constexpr FloatRegister ScratchUIntReg = { FloatRegisters::d15, VFPRegister::UInt };
@@ -158,11 +178,6 @@ struct ScratchDoubleScope : public AutoFloatRegisterScope
     { }
 };
 
-// A bias applied to the GlobalReg to allow the use of instructions with small
-// negative immediate offsets which doubles the range of global data that can be
-// accessed with a single instruction.
-static const int32_t WasmGlobalRegBias = 1024;
-
 // Registers used in the GenerateFFIIonExit Enable Activation block.
 static constexpr Register WasmIonExitRegCallee = r4;
 static constexpr Register WasmIonExitRegE0 = r0;
@@ -172,6 +187,7 @@ static constexpr Register WasmIonExitRegE1 = r1;
 // None of these may be the second scratch register (lr).
 static constexpr Register WasmIonExitRegReturnData = r2;
 static constexpr Register WasmIonExitRegReturnType = r3;
+static constexpr Register WasmIonExitTlsReg = r9;
 static constexpr Register WasmIonExitRegD0 = r0;
 static constexpr Register WasmIonExitRegD1 = r1;
 static constexpr Register WasmIonExitRegD2 = r4;
@@ -412,7 +428,7 @@ bool condsAreSafe(ALUOp op);
 // variant of it.
 ALUOp getDestVariant(ALUOp op);
 
-static const ValueOperand JSReturnOperand = ValueOperand(JSReturnReg_Type, JSReturnReg_Data);
+static constexpr ValueOperand JSReturnOperand{JSReturnReg_Type, JSReturnReg_Data};
 static const ValueOperand softfpReturnOperand = ValueOperand(r1, r0);
 
 // All of these classes exist solely to shuffle data into the various operands.
@@ -1127,12 +1143,11 @@ PatchJump(CodeLocationJump& jump_, CodeLocationLabel label,
           ReprotectCode reprotect = DontReprotect);
 
 static inline void
-PatchBackedge(CodeLocationJump& jump_, CodeLocationLabel label, JitRuntime::BackedgeTarget target)
+PatchBackedge(CodeLocationJump& jump_, CodeLocationLabel label, JitZoneGroup::BackedgeTarget target)
 {
     PatchJump(jump_, label);
 }
 
-class InstructionIterator;
 class Assembler;
 typedef js::jit::AssemblerBufferWithConstantPools<1024, 4, Instruction, Assembler> ARMBuffer;
 
@@ -1239,22 +1254,27 @@ class Assembler : public AssemblerShared
 
   protected:
     // Shim around AssemblerBufferWithConstantPools::allocEntry.
-    BufferOffset allocEntry(size_t numInst, unsigned numPoolEntries,
-                            uint8_t* inst, uint8_t* data, ARMBuffer::PoolEntry* pe = nullptr,
-                            bool markAsBranch = false, bool loadToPC = false);
+    BufferOffset allocLiteralLoadEntry(size_t numInst, unsigned numPoolEntries,
+                                       PoolHintPun& php, uint8_t* data,
+                                       const LiteralDoc& doc = LiteralDoc(),
+                                       ARMBuffer::PoolEntry* pe = nullptr,
+                                       bool loadToPC = false);
 
     Instruction* editSrc(BufferOffset bo) {
         return m_buffer.getInst(bo);
     }
 
 #ifdef JS_DISASM_ARM
-    static void spewInst(Instruction* i);
+    typedef disasm::EmbeddedVector<char, disasm::ReasonableBufferSize> DisasmBuffer;
+
+    static void disassembleInstruction(const Instruction* i, DisasmBuffer& buffer);
+
+    void initDisassembler();
+    void finishDisassembler();
     void spew(Instruction* i);
-    void spewBranch(Instruction* i, Label* target);
-    void spewData(BufferOffset addr, size_t numInstr, bool loadToPC);
-    void spewLabel(Label* label);
-    void spewRetarget(Label* label, Label* target);
-    void spewTarget(Label* l);
+    void spewBranch(Instruction* i, const LabelDoc& target);
+    void spewLiteralLoad(PoolHintPun& php, bool loadToPC, const Instruction* offs,
+                         const LiteralDoc& doc);
 #endif
 
   public:
@@ -1288,40 +1308,11 @@ class Assembler : public AssemblerShared
 
     CompactBufferWriter jumpRelocations_;
     CompactBufferWriter dataRelocations_;
-    CompactBufferWriter preBarriers_;
 
     ARMBuffer m_buffer;
 
 #ifdef JS_DISASM_ARM
-  private:
-    class SpewNodes {
-        struct Node {
-            uint32_t key;
-            uint32_t value;
-            Node* next;
-        };
-
-        Node* nodes;
-
-    public:
-        SpewNodes() : nodes(nullptr) {}
-        ~SpewNodes();
-
-        bool lookup(uint32_t key, uint32_t* value);
-        bool add(uint32_t key, uint32_t value);
-        bool remove(uint32_t key);
-    };
-
-    SpewNodes spewNodes_;
-    uint32_t spewNext_;
-    Sprinter* printer_;
-
-    bool spewDisabled();
-    uint32_t spewResolve(Label* l);
-    uint32_t spewProbe(Label* l);
-    uint32_t spewDefine(Label* l);
-    void spew(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3);
-    void spew(const char* fmt, va_list args);
+    DisassemblerSpew spew_;
 #endif
 
   public:
@@ -1329,14 +1320,20 @@ class Assembler : public AssemblerShared
     // For the nopFill use a branch to the next instruction: 0xeaffffff.
     Assembler()
       : m_buffer(1, 1, 8, GetPoolMaxOffset(), 8, 0xe320f000, 0xeaffffff, GetNopFill()),
-#ifdef JS_DISASM_ARM
-        spewNext_(1000),
-        printer_(nullptr),
-#endif
         isFinished(false),
         dtmActive(false),
         dtmCond(Always)
-    { }
+    {
+#ifdef JS_DISASM_ARM
+        initDisassembler();
+#endif
+    }
+
+    ~Assembler() {
+#ifdef JS_DISASM_ARM
+        finishDisassembler();
+#endif
+    }
 
     // We need to wait until an AutoJitContextAlloc is created by the
     // MacroAssembler, before allocating any space.
@@ -1348,24 +1345,20 @@ class Assembler : public AssemblerShared
     static Condition UnsignedCondition(Condition cond);
     static Condition ConditionWithoutEqual(Condition cond);
 
+    static DoubleCondition InvertCondition(DoubleCondition cond);
+
     // MacroAssemblers hold onto gcthings, so they are traced by the GC.
     void trace(JSTracer* trc);
     void writeRelocation(BufferOffset src) {
         jumpRelocations_.writeUnsigned(src.getOffset());
     }
 
-    // As opposed to x86/x64 version, the data relocation has to be executed
-    // before to recover the pointer, and not after.
-    void writeDataRelocation(ImmGCPtr ptr) {
+    void writeDataRelocation(BufferOffset offset, ImmGCPtr ptr) {
         if (ptr.value) {
             if (gc::IsInsideNursery(ptr.value))
                 embedsNurseryPointers_ = true;
-            if (ptr.value)
-                dataRelocations_.writeUnsigned(nextOffset().getOffset());
+            dataRelocations_.writeUnsigned(offset.getOffset());
         }
-    }
-    void writePrebarrierOffset(CodeOffset label) {
-        preBarriers_.writeUnsigned(label.offset());
     }
 
     enum RelocBranchStyle {
@@ -1389,13 +1382,13 @@ class Assembler : public AssemblerShared
 
     static uintptr_t GetPointer(uint8_t*);
     template <class Iter>
-    static const uint32_t* GetPtr32Target(Iter* iter, Register* dest = nullptr, RelocStyle* rs = nullptr);
+    static const uint32_t* GetPtr32Target(Iter iter, Register* dest = nullptr, RelocStyle* rs = nullptr);
 
     bool oom() const;
 
     void setPrinter(Sprinter* sp) {
 #ifdef JS_DISASM_ARM
-        printer_ = sp;
+        spew_.setPrinter(sp);
 #endif
     }
 
@@ -1405,30 +1398,53 @@ class Assembler : public AssemblerShared
 
   private:
     bool isFinished;
+
+  protected:
+    LabelDoc refLabel(const Label* label) {
+#ifdef JS_DISASM_ARM
+        return spew_.refLabel(label);
+#else
+        return LabelDoc();
+#endif
+    }
+
   public:
     void finish();
-    bool asmMergeWith(Assembler& other);
-    void executableCopy(void* buffer);
+    bool appendRawCode(const uint8_t* code, size_t numBytes);
+    bool reserve(size_t size);
+    bool swapBuffer(wasm::Bytes& bytes);
     void copyJumpRelocationTable(uint8_t* dest);
     void copyDataRelocationTable(uint8_t* dest);
-    void copyPreBarrierTable(uint8_t* dest);
 
     // Size of the instruction stream, in bytes, after pools are flushed.
     size_t size() const;
     // Size of the jump relocation table, in bytes.
     size_t jumpRelocationTableBytes() const;
     size_t dataRelocationTableBytes() const;
-    size_t preBarrierTableBytes() const;
 
     // Size of the data table, in bytes.
     size_t bytesNeeded() const;
 
-    // Write a blob of binary into the instruction stream *OR* into a
-    // destination address.
-    BufferOffset writeInst(uint32_t x);
+    // Write a single instruction into the instruction stream.  Very hot,
+    // inlined for performance
+    MOZ_ALWAYS_INLINE BufferOffset writeInst(uint32_t x) {
+        BufferOffset offs = m_buffer.putInt(x);
+#ifdef JS_DISASM_ARM
+        spew(m_buffer.getInstOrNull(offs));
+#endif
+        return offs;
+    }
 
-    // As above, but also mark the instruction as a branch.
-    BufferOffset writeBranchInst(uint32_t x, Label* documentation = nullptr);
+    // As above, but also mark the instruction as a branch.  Very hot, inlined
+    // for performance
+    MOZ_ALWAYS_INLINE BufferOffset
+    writeBranchInst(uint32_t x, const LabelDoc& documentation) {
+        BufferOffset offs = m_buffer.putInt(x);
+#ifdef JS_DISASM_ARM
+        spewBranch(m_buffer.getInstOrNull(offs), documentation);
+#endif
+        return offs;
+    }
 
     // Write a placeholder NOP for a branch into the instruction stream
     // (in order to adjust assembler addresses and mark it as a branch), it will
@@ -1440,7 +1456,7 @@ class Assembler : public AssemblerShared
     static void WriteInstStatic(uint32_t x, uint32_t* dest);
 
   public:
-    void writeCodePointer(CodeOffset* label);
+    void writeCodePointer(CodeLabel* label);
 
     void haltingAlign(int alignment);
     void nopAlign(int alignment);
@@ -1545,30 +1561,39 @@ class Assembler : public AssemblerShared
     BufferOffset as_Imm32Pool(Register dest, uint32_t value, Condition c = Always);
     // Make a patchable jump that can target the entire 32 bit address space.
     BufferOffset as_BranchPool(uint32_t value, RepatchLabel* label,
-                               ARMBuffer::PoolEntry* pe = nullptr, Condition c = Always,
-                               Label* documentation = nullptr);
+                               const LabelDoc& documentation,
+                               ARMBuffer::PoolEntry* pe = nullptr, Condition c = Always);
 
     // Load a 64 bit floating point immediate from a pool into a register.
-    BufferOffset as_FImm64Pool(VFPRegister dest, wasm::RawF64 value, Condition c = Always);
+    BufferOffset as_FImm64Pool(VFPRegister dest, double value, Condition c = Always);
     // Load a 32 bit floating point immediate from a pool into a register.
-    BufferOffset as_FImm32Pool(VFPRegister dest, wasm::RawF32 value, Condition c = Always);
+    BufferOffset as_FImm32Pool(VFPRegister dest, float value, Condition c = Always);
 
-    // Atomic instructions: ldrex, ldrexh, ldrexb, strex, strexh, strexb.
+    // Atomic instructions: ldrexd, ldrex, ldrexh, ldrexb, strexd, strex, strexh, strexb.
     //
-    // The halfword and byte versions are available from ARMv6K forward.
+    // The doubleword, halfword, and byte versions are available from ARMv6K forward.
     //
     // The word versions are available from ARMv6 forward and can be used to
     // implement the halfword and byte versions on older systems.
+
+    // LDREXD rt, rt2, [rn].  Constraint: rt even register, rt2=rt+1.
+    BufferOffset as_ldrexd(Register rt, Register rt2, Register rn, Condition c = Always);
 
     // LDREX rt, [rn]
     BufferOffset as_ldrex(Register rt, Register rn, Condition c = Always);
     BufferOffset as_ldrexh(Register rt, Register rn, Condition c = Always);
     BufferOffset as_ldrexb(Register rt, Register rn, Condition c = Always);
 
+    // STREXD rd, rt, rt2, [rn].  Constraint: rt even register, rt2=rt+1.
+    BufferOffset as_strexd(Register rd, Register rt, Register rt2, Register rn, Condition c = Always);
+
     // STREX rd, rt, [rn].  Constraint: rd != rn, rd != rt.
     BufferOffset as_strex(Register rd, Register rt, Register rn, Condition c = Always);
     BufferOffset as_strexh(Register rd, Register rt, Register rn, Condition c = Always);
     BufferOffset as_strexb(Register rd, Register rt, Register rn, Condition c = Always);
+
+    // CLREX
+    BufferOffset as_clrex();
 
     // Memory synchronization.
     // These are available from ARMv7 forward.
@@ -1581,6 +1606,9 @@ class Assembler : public AssemblerShared
     BufferOffset as_dmb_trap();
     BufferOffset as_isb_trap();
 
+    // Speculation barrier
+    BufferOffset as_csdb();
+
     // Control flow stuff:
 
     // bx can *only* branch to a register never to an immediate.
@@ -1591,7 +1619,7 @@ class Assembler : public AssemblerShared
     BufferOffset as_b(BOffImm off, Condition c, Label* documentation = nullptr);
 
     BufferOffset as_b(Label* l, Condition c = Always);
-    BufferOffset as_b(wasm::TrapDesc target, Condition c = Always);
+    BufferOffset as_b(wasm::OldTrapDesc target, Condition c = Always);
     BufferOffset as_b(BOffImm off, Condition c, BufferOffset inst);
 
     // blx can go to either an immediate or a register. When blx'ing to a
@@ -1699,7 +1727,7 @@ class Assembler : public AssemblerShared
     bool nextLink(BufferOffset b, BufferOffset* next);
     void bind(Label* label, BufferOffset boff = BufferOffset());
     void bind(RepatchLabel* label);
-    void bindLater(Label* label, wasm::TrapDesc target);
+    void bindLater(Label* label, wasm::OldTrapDesc target);
     uint32_t currentOffset() {
         return nextOffset().getOffset();
     }
@@ -1707,14 +1735,10 @@ class Assembler : public AssemblerShared
     // I'm going to pretend this doesn't exist for now.
     void retarget(Label* label, void* target, Relocation::Kind reloc);
 
-    void Bind(uint8_t* rawCode, CodeOffset* label, const void* address);
-
-    // See Bind
-    size_t labelToPatchOffset(CodeOffset label) {
-        return label.offset();
-    }
+    static void Bind(uint8_t* rawCode, const CodeLabel& label);
 
     void as_bkpt();
+    BufferOffset as_illegal_trap();
 
   public:
     static void TraceJumpRelocations(JSTracer* trc, JitCode* code, CompactBufferReader& reader);
@@ -1729,6 +1753,8 @@ class Assembler : public AssemblerShared
     static bool SupportsSimd() {
         return js::jit::SupportsSimd;
     }
+
+    static bool HasRoundInstruction(RoundingMode mode) { return false; }
 
   protected:
     void addPendingJump(BufferOffset src, ImmPtr target, Relocation::Kind kind) {
@@ -1748,13 +1774,13 @@ class Assembler : public AssemblerShared
 
     void comment(const char* msg) {
 #ifdef JS_DISASM_ARM
-        spew("; %s", msg);
+        spew_.spew("; %s", msg);
 #endif
     }
 
     // Copy the assembly code to the given buffer, and perform any pending
     // relocations relying on the target address.
-    void executableCopy(uint8_t* buffer);
+    void executableCopy(uint8_t* buffer, bool flushICache = true);
 
     // Actual assembly emitting functions.
 
@@ -1912,10 +1938,6 @@ class Assembler : public AssemblerShared
                                         ImmPtr expectedValue);
     static void PatchWrite_Imm32(CodeLocationLabel label, Imm32 imm);
 
-    static void PatchInstructionImmediate(uint8_t* code, PatchedImmPtr imm) {
-        MOZ_CRASH("Unused.");
-    }
-
     static uint32_t AlignDoubleArg(uint32_t offset) {
         return (offset + 1) & ~1;
     }
@@ -1985,16 +2007,10 @@ class Instruction
     }
     // Since almost all instructions have condition codes, the condition code
     // extractor resides in the base class.
-    Assembler::Condition extractCond() {
+    Assembler::Condition extractCond() const {
         MOZ_ASSERT(data >> 28 != 0xf, "The instruction does not have condition code");
         return (Assembler::Condition)(data & 0xf0000000);
     }
-    // Get the next instruction in the instruction stream.
-    // This does neat things like ignoreconstant pools and their guards.
-    Instruction* next();
-
-    // Skipping pools with artificial guards.
-    Instruction* skipPool();
 
     // Sometimes, an api wants a uint32_t (or a pointer to it) rather than an
     // instruction. raw() just coerces this into a pointer to a uint32_t.
@@ -2245,22 +2261,59 @@ class InstMOV : public InstALU
     static InstMOV* AsTHIS (const Instruction& i);
 };
 
-
 class InstructionIterator
 {
   private:
-    Instruction* i;
+    Instruction* inst_;
 
   public:
-    explicit InstructionIterator(Instruction* i_);
+    explicit InstructionIterator(Instruction* inst)
+      : inst_(inst)
+    {
+        maybeSkipAutomaticInstructions();
+    }
 
+    // Advances to the next intentionally-inserted instruction.
+    Instruction* next();
+
+    // Advances past any automatically-inserted instructions.
+    Instruction* maybeSkipAutomaticInstructions();
+
+    Instruction* cur() const {
+        return inst_;
+    }
+
+  protected:
+    // Advances past the given number of instruction-length bytes.
+    void advanceRaw(ptrdiff_t instructions = 1) {
+        inst_ = inst_ + instructions;
+    }
+
+    // Look ahead, including automatically-inserted instructions
+    // and PoolHeaders.
+    Instruction* peekRaw(ptrdiff_t instructions = 1) const {
+        return inst_ + instructions;
+    }
+};
+
+// Compile-time iterator over instructions, with a safe interface that
+// references not-necessarily-linear Instructions by linear BufferOffset.
+class BufferInstructionIterator : public ARMBuffer::AssemblerBufferInstIterator
+{
+  public:
+    BufferInstructionIterator(BufferOffset bo, ARMBuffer* buffer)
+      : ARMBuffer::AssemblerBufferInstIterator(bo, buffer)
+    {}
+
+    // Advances the buffer to the next intentionally-inserted instruction.
     Instruction* next() {
-        i = i->next();
+        advance(cur()->size());
+        maybeSkipAutomaticInstructions();
         return cur();
     }
-    Instruction* cur() const {
-        return i;
-    }
+
+    // Advances the BufferOffset past any automatically-inserted instructions.
+    Instruction* maybeSkipAutomaticInstructions();
 };
 
 static const uint32_t NumIntArgRegs = 4;

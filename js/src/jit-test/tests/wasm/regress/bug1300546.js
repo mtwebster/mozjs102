@@ -1,10 +1,5 @@
-load(libdir + "wasm.js");
-
-setJitCompilerOption('wasm.test-mode', 1);
-
 try {
     wasmEvalText(`
-
     (module
       (type $type0 (func))
       (func $func0
@@ -28,7 +23,6 @@ try {
       )
       (memory 1 1)
     )
-
-    `)(createI64(41));
+    `);
 } catch(e) {
 }

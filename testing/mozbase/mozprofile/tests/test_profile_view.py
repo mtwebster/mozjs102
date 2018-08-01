@@ -4,11 +4,15 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import mozfile
 import mozprofile
 import os
 import tempfile
 import unittest
+
+import mozunit
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -35,7 +39,7 @@ class TestProfilePrint(unittest.TestCase):
             self.assertEqual(set(parts.keys()), keys)
             self.assertEqual(pref_string, parts['user.js'].strip())
 
-        except:
+        except BaseException:
             raise
         finally:
             mozfile.rmtree(tempdir)
@@ -71,5 +75,6 @@ class TestProfilePrint(unittest.TestCase):
                          for key, value in mozprofile.FirefoxProfile.preferences.items()]
         self.assertTrue(set(ff_pref_lines).issubset(lines))
 
+
 if __name__ == '__main__':
-    unittest.main()
+    mozunit.main()

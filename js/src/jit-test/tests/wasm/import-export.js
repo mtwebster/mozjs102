@@ -1,9 +1,8 @@
-load(libdir + 'wasm.js');
-
 const Module = WebAssembly.Module;
 const Instance = WebAssembly.Instance;
 const Memory = WebAssembly.Memory;
 const Table = WebAssembly.Table;
+const LinkError = WebAssembly.LinkError;
 
 const mem1Page = new Memory({initial:1});
 const mem1PageMax1 = new Memory({initial:1, maximum: 1});
@@ -20,66 +19,85 @@ const tab2Elem = new Table({initial:2, element:"anyfunc"});
 const tab3Elem = new Table({initial:3, element:"anyfunc"});
 const tab4Elem = new Table({initial:4, element:"anyfunc"});
 
+// Memory size consistency and internal limits.
 assertErrorMessage(() => new Memory({initial:2, maximum:1}), RangeError, /bad Memory maximum size/);
+
+try {
+    new Memory({initial:16384});
+} catch(e) {
+    assertEq(String(e).indexOf("out of memory") !== -1, true);
+}
+
+assertErrorMessage(() => new Memory({initial: 16385}), RangeError, /bad Memory initial size/);
+
+new Memory({initial: 0, maximum: 65536});
+assertErrorMessage(() => new Memory({initial: 0, maximum: 65537}), RangeError, /bad Memory maximum size/);
+
+// Table size consistency and internal limits.
+assertErrorMessage(() => new Table({initial:2, maximum:1, element:"anyfunc"}), RangeError, /bad Table maximum size/);
+new Table({ initial: 10000000, element:"anyfunc" });
+assertErrorMessage(() => new Table({initial:10000001, element:"anyfunc"}), RangeError, /bad Table initial size/);
+new Table({ initial: 0, maximum: 2**32 - 1, element:"anyfunc" });
+assertErrorMessage(() => new Table({initial:0, maximum: 2**32, element:"anyfunc"}), RangeError, /bad Table maximum size/);
 
 const m1 = new Module(wasmTextToBinary('(module (import "foo" "bar") (import "baz" "quux"))'));
 assertErrorMessage(() => new Instance(m1), TypeError, /second argument must be an object/);
 assertErrorMessage(() => new Instance(m1, {foo:null}), TypeError, /import object field 'foo' is not an Object/);
-assertErrorMessage(() => new Instance(m1, {foo:{bar:{}}}), TypeError, /import object field 'bar' is not a Function/);
+assertErrorMessage(() => new Instance(m1, {foo:{bar:{}}}), LinkError, /import object field 'bar' is not a Function/);
 assertErrorMessage(() => new Instance(m1, {foo:{bar:()=>{}}, baz:null}), TypeError, /import object field 'baz' is not an Object/);
-assertErrorMessage(() => new Instance(m1, {foo:{bar:()=>{}}, baz:{}}), TypeError, /import object field 'quux' is not a Function/);
+assertErrorMessage(() => new Instance(m1, {foo:{bar:()=>{}}, baz:{}}), LinkError, /import object field 'quux' is not a Function/);
 assertEq(new Instance(m1, {foo:{bar:()=>{}}, baz:{quux:()=>{}}}) instanceof Instance, true);
 
 const m2 = new Module(wasmTextToBinary('(module (import "x" "y" (memory 2 3)))'));
 assertErrorMessage(() => new Instance(m2), TypeError, /second argument must be an object/);
 assertErrorMessage(() => new Instance(m2, {x:null}), TypeError, /import object field 'x' is not an Object/);
-assertErrorMessage(() => new Instance(m2, {x:{y:{}}}), TypeError, /import object field 'y' is not a Memory/);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem1Page}}), TypeError, /imported Memory with incompatible size/);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem1PageMax1}}), TypeError, /imported Memory with incompatible size/);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem4Page}}), TypeError, /imported Memory with incompatible size/);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem4PageMax4}}), TypeError, /imported Memory with incompatible size/);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem2Page}}), TypeError, /imported Memory with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:{}}}), LinkError, /import object field 'y' is not a Memory/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem1Page}}), LinkError, /imported Memory with incompatible size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem1PageMax1}}), LinkError, /imported Memory with incompatible size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem4Page}}), LinkError, /imported Memory with incompatible size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem4PageMax4}}), LinkError, /imported Memory with incompatible size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem2Page}}), LinkError, /imported Memory with incompatible maximum size/);
 assertEq(new Instance(m2, {x:{y:mem2PageMax2}}) instanceof Instance, true);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem3Page}}), TypeError, /imported Memory with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem3Page}}), LinkError, /imported Memory with incompatible maximum size/);
 assertEq(new Instance(m2, {x:{y:mem3PageMax3}}) instanceof Instance, true);
 assertEq(new Instance(m2, {x:{y:mem2PageMax3}}) instanceof Instance, true);
-assertErrorMessage(() => new Instance(m2, {x:{y:mem2PageMax4}}), TypeError, /imported Memory with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m2, {x:{y:mem2PageMax4}}), LinkError, /imported Memory with incompatible maximum size/);
 
 const m3 = new Module(wasmTextToBinary('(module (import "foo" "bar" (memory 1 1)) (import "baz" "quux"))'));
 assertErrorMessage(() => new Instance(m3), TypeError, /second argument must be an object/);
 assertErrorMessage(() => new Instance(m3, {foo:null}), TypeError, /import object field 'foo' is not an Object/);
-assertErrorMessage(() => new Instance(m3, {foo:{bar:{}}}), TypeError, /import object field 'bar' is not a Memory/);
+assertErrorMessage(() => new Instance(m3, {foo:{bar:{}}}), LinkError, /import object field 'bar' is not a Memory/);
 assertErrorMessage(() => new Instance(m3, {foo:{bar:mem1Page}, baz:null}), TypeError, /import object field 'baz' is not an Object/);
-assertErrorMessage(() => new Instance(m3, {foo:{bar:mem1Page}, baz:{quux:mem1Page}}), TypeError, /import object field 'quux' is not a Function/);
-assertErrorMessage(() => new Instance(m3, {foo:{bar:mem1Page}, baz:{quux:()=>{}}}), TypeError, /imported Memory with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m3, {foo:{bar:mem1Page}, baz:{quux:mem1Page}}), LinkError, /import object field 'quux' is not a Function/);
+assertErrorMessage(() => new Instance(m3, {foo:{bar:mem1Page}, baz:{quux:()=>{}}}), LinkError, /imported Memory with incompatible maximum size/);
 assertEq(new Instance(m3, {foo:{bar:mem1PageMax1}, baz:{quux:()=>{}}}) instanceof Instance, true);
 
 const m4 = new Module(wasmTextToBinary('(module (import "baz" "quux") (import "foo" "bar" (memory 1 1)))'));
 assertErrorMessage(() => new Instance(m4), TypeError, /second argument must be an object/);
 assertErrorMessage(() => new Instance(m4, {baz:null}), TypeError, /import object field 'baz' is not an Object/);
-assertErrorMessage(() => new Instance(m4, {baz:{quux:{}}}), TypeError, /import object field 'quux' is not a Function/);
+assertErrorMessage(() => new Instance(m4, {baz:{quux:{}}}), LinkError, /import object field 'quux' is not a Function/);
 assertErrorMessage(() => new Instance(m4, {baz:{quux:()=>{}}, foo:null}), TypeError, /import object field 'foo' is not an Object/);
-assertErrorMessage(() => new Instance(m4, {baz:{quux:()=>{}}, foo:{bar:()=>{}}}), TypeError, /import object field 'bar' is not a Memory/);
-assertErrorMessage(() => new Instance(m4, {baz:{quux:()=>{}}, foo:{bar:mem1Page}}), TypeError, /imported Memory with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m4, {baz:{quux:()=>{}}, foo:{bar:()=>{}}}), LinkError, /import object field 'bar' is not a Memory/);
+assertErrorMessage(() => new Instance(m4, {baz:{quux:()=>{}}, foo:{bar:mem1Page}}), LinkError, /imported Memory with incompatible maximum size/);
 assertEq(new Instance(m3, {baz:{quux:()=>{}}, foo:{bar:mem1PageMax1}}) instanceof Instance, true);
 
 const m5 = new Module(wasmTextToBinary('(module (import "a" "b" (memory 2)))'));
-assertErrorMessage(() => new Instance(m5, {a:{b:mem1Page}}), TypeError, /imported Memory with incompatible size/);
+assertErrorMessage(() => new Instance(m5, {a:{b:mem1Page}}), LinkError, /imported Memory with incompatible size/);
 assertEq(new Instance(m5, {a:{b:mem2Page}}) instanceof Instance, true);
 assertEq(new Instance(m5, {a:{b:mem3Page}}) instanceof Instance, true);
 assertEq(new Instance(m5, {a:{b:mem4Page}}) instanceof Instance, true);
 
 const m6 = new Module(wasmTextToBinary('(module (import "a" "b" (table 2 anyfunc)))'));
-assertErrorMessage(() => new Instance(m6, {a:{b:tab1Elem}}), TypeError, /imported Table with incompatible size/);
+assertErrorMessage(() => new Instance(m6, {a:{b:tab1Elem}}), LinkError, /imported Table with incompatible size/);
 assertEq(new Instance(m6, {a:{b:tab2Elem}}) instanceof Instance, true);
 assertEq(new Instance(m6, {a:{b:tab3Elem}}) instanceof Instance, true);
 assertEq(new Instance(m6, {a:{b:tab4Elem}}) instanceof Instance, true);
 
 const m7 = new Module(wasmTextToBinary('(module (import "a" "b" (table 2 3 anyfunc)))'));
-assertErrorMessage(() => new Instance(m7, {a:{b:tab1Elem}}), TypeError, /imported Table with incompatible size/);
-assertErrorMessage(() => new Instance(m7, {a:{b:tab2Elem}}), TypeError, /imported Table with incompatible maximum size/);
-assertErrorMessage(() => new Instance(m7, {a:{b:tab3Elem}}), TypeError, /imported Table with incompatible maximum size/);
-assertErrorMessage(() => new Instance(m7, {a:{b:tab4Elem}}), TypeError, /imported Table with incompatible size/);
+assertErrorMessage(() => new Instance(m7, {a:{b:tab1Elem}}), LinkError, /imported Table with incompatible size/);
+assertErrorMessage(() => new Instance(m7, {a:{b:tab2Elem}}), LinkError, /imported Table with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m7, {a:{b:tab3Elem}}), LinkError, /imported Table with incompatible maximum size/);
+assertErrorMessage(() => new Instance(m7, {a:{b:tab4Elem}}), LinkError, /imported Table with incompatible size/);
 
 wasmFailValidateText('(module (memory 2 1))', /maximum length 1 is less than initial length 2/);
 wasmFailValidateText('(module (import "a" "b" (memory 2 1)))', /maximum length 1 is less than initial length 2/);
@@ -92,9 +110,11 @@ var e = wasmEvalText('(module (func $i2v (param i32)) (export "i2v" $i2v) (func 
 var i2vm = new Module(wasmTextToBinary('(module (import "a" "b" (param i32)))'));
 var f2vm = new Module(wasmTextToBinary('(module (import "a" "b" (param f32)))'));
 assertEq(new Instance(i2vm, {a:{b:e.i2v}}) instanceof Instance, true);
-assertErrorMessage(() => new Instance(i2vm, {a:{b:e.f2v}}), TypeError, /imported function signature mismatch/);
-assertErrorMessage(() => new Instance(f2vm, {a:{b:e.i2v}}), TypeError, /imported function signature mismatch/);
+assertErrorMessage(() => new Instance(i2vm, {a:{b:e.f2v}}), LinkError, /imported function 'a.b' signature mismatch/);
+assertErrorMessage(() => new Instance(f2vm, {a:{b:e.i2v}}), LinkError, /imported function 'a.b' signature mismatch/);
 assertEq(new Instance(f2vm, {a:{b:e.f2v}}) instanceof Instance, true);
+var l2vm = new Module(wasmTextToBinary('(module (import "x" "y" (memory 1)) (import "c" "d" (param i64)))'));
+assertErrorMessage(() => new Instance(l2vm, {x:{y:mem1Page}, c:{d:e.i2v}}), LinkError, /imported function 'c.d' signature mismatch/);
 
 // Import order:
 
@@ -114,7 +134,7 @@ var importObj = {
     },
     get baz() { arr.push("bad") },
 };
-assertErrorMessage(() => new Instance(m1, importObj), TypeError, /import object field 'bar' is not a Function/);
+assertErrorMessage(() => new Instance(m1, importObj), LinkError, /import object field 'bar' is not a Function/);
 assertEq(arr.join(), "foo,bar");
 
 var arr = [];
@@ -394,6 +414,34 @@ var code2 = wasmTextToBinary('(module (import $i "a" "b" (param i64) (result i64
 var e2 = new Instance(new Module(code2), {a:{b:e1.exp}}).exports;
 assertEq(e2.f(), 52);
 
+// i64 is disallowed when called from JS and will cause calls to fail before
+// arguments are coerced.
+
+var sideEffect = false;
+var i = wasmEvalText('(module (func (export "f") (param i64) (result i32) (i32.const 42)))').exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
+i = wasmEvalText('(module (func (export "f") (param i32) (param i64) (result i32) (i32.const 42)))').exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }, 0), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
+i = wasmEvalText('(module (func (export "f") (param i32) (result i64) (i64.const 42)))').exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
+i = wasmEvalText('(module (import "i64" "func" (param i64)) (export "f" 0))', { i64: { func() {} } }).exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
+i = wasmEvalText('(module (import "i64" "func" (param i32) (param i64)) (export "f" 0))', { i64: { func() {} } }).exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }, 0), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
+i = wasmEvalText('(module (import "i64" "func" (result i64)) (export "f" 0))', { i64: { func() {} } }).exports;
+assertErrorMessage(() => i.f({ valueOf() { sideEffect = true; return 42; } }), TypeError, 'cannot pass i64 to or from JS');
+assertEq(sideEffect, false);
+
 // Non-existent export errors
 
 wasmFailValidateText('(module (export "a" 0))', /exported function index out of bounds/);
@@ -445,22 +493,22 @@ var m = new Module(wasmTextToBinary(`
 `));
 assertEq(new Instance(m, {glob:{a:0}}) instanceof Instance, true);
 assertEq(new Instance(m, {glob:{a:(64*1024 - 2)}}) instanceof Instance, true);
-assertErrorMessage(() => new Instance(m, {glob:{a:(64*1024 - 1)}}), RangeError, /data segment does not fit/);
-assertErrorMessage(() => new Instance(m, {glob:{a:64*1024}}), RangeError, /data segment does not fit/);
+assertErrorMessage(() => new Instance(m, {glob:{a:(64*1024 - 1)}}), LinkError, /data segment does not fit/);
+assertErrorMessage(() => new Instance(m, {glob:{a:64*1024}}), LinkError, /data segment does not fit/);
 
 var m = new Module(wasmTextToBinary(`
     (module
         (memory 1)
         (data (i32.const 0x10001) "\\0a\\0b"))
 `));
-assertErrorMessage(() => new Instance(m), RangeError, /data segment does not fit/);
+assertErrorMessage(() => new Instance(m), LinkError, /data segment does not fit/);
 
 var m = new Module(wasmTextToBinary(`
     (module
         (memory 0)
         (data (i32.const 0x10001) ""))
 `));
-assertEq(new Instance(m) instanceof Instance, true);
+assertErrorMessage(() => new Instance(m), LinkError, /data segment does not fit/);
 
 // Errors during segment initialization do not have observable effects
 // and are checked against the actual memory/table length, not the declared
@@ -487,12 +535,12 @@ var mem = new Memory({initial:npages});
 var mem8 = new Uint8Array(mem.buffer);
 var tbl = new Table({initial:2, element:"anyfunc"});
 
-assertErrorMessage(() => new Instance(m, {a:{mem, tbl, memOff:1, tblOff:2}}), RangeError, /elem segment does not fit/);
+assertErrorMessage(() => new Instance(m, {a:{mem, tbl, memOff:1, tblOff:2}}), LinkError, /elem segment does not fit/);
 assertEq(mem8[0], 0);
 assertEq(mem8[1], 0);
 assertEq(tbl.get(0), null);
 
-assertErrorMessage(() => new Instance(m, {a:{mem, tbl, memOff:npages*64*1024, tblOff:1}}), RangeError, /data segment does not fit/);
+assertErrorMessage(() => new Instance(m, {a:{mem, tbl, memOff:npages*64*1024, tblOff:1}}), LinkError, /data segment does not fit/);
 assertEq(mem8[0], 0);
 assertEq(tbl.get(0), null);
 assertEq(tbl.get(1), null);
@@ -588,3 +636,93 @@ var e = {call:() => 1000};
 for (var i = 0; i < 10; i++)
     e = new Instance(m, {a:{val:i, next:e.call}}).exports;
 assertEq(e.call(), 1090);
+
+(function testImportJitExit() {
+    let options = getJitCompilerOptions();
+    if (!options['baseline.enable'])
+        return;
+
+    let baselineTrigger = options['baseline.warmup.trigger'];
+
+    let valueToConvert = 0;
+    function ffi(n) { if (n == 1337) { return valueToConvert }; return 42; }
+
+    function sum(a, b, c) {
+        if (a === 1337)
+            return valueToConvert;
+        return (a|0) + (b|0) + (c|0) | 0;
+    }
+
+    // Baseline compile ffis.
+    for (let i = baselineTrigger + 1; i --> 0;) {
+        ffi(i);
+        sum((i%2)?i:undefined,
+            (i%3)?i:undefined,
+            (i%4)?i:undefined);
+    }
+
+    let imports = {
+        a: {
+            ffi,
+            sum
+        }
+    };
+
+    i = wasmEvalText(`(module
+        (import $ffi "a" "ffi" (param i32) (result i32))
+
+        (import $missingOneArg "a" "sum" (param i32) (param i32) (result i32))
+        (import $missingTwoArgs "a" "sum" (param i32) (result i32))
+        (import $missingThreeArgs "a" "sum" (result i32))
+
+        (func (export "foo") (param i32) (result i32)
+         get_local 0
+         call $ffi
+        )
+
+        (func (export "missThree") (result i32)
+         call $missingThreeArgs
+        )
+
+        (func (export "missTwo") (param i32) (result i32)
+         get_local 0
+         call $missingTwoArgs
+        )
+
+        (func (export "missOne") (param i32) (param i32) (result i32)
+         get_local 0
+         get_local 1
+         call $missingOneArg
+        )
+    )`, imports).exports;
+
+    // Enable the jit exit for each JS callee.
+    assertEq(i.foo(0), 42);
+
+    assertEq(i.missThree(), 0);
+    assertEq(i.missTwo(42), 42);
+    assertEq(i.missOne(13, 37), 50);
+
+    // Test the jit exit under normal conditions.
+    assertEq(i.foo(0), 42);
+    assertEq(i.foo(1337), 0);
+
+    // Test the arguments rectifier.
+    assertEq(i.missThree(), 0);
+    assertEq(i.missTwo(-1), -1);
+    assertEq(i.missOne(23, 10), 33);
+
+    // Test OOL coercion.
+    valueToConvert = 2**31;
+    assertEq(i.foo(1337), -(2**31));
+
+    // Test OOL error path.
+    valueToConvert = { valueOf() { throw new Error('make ffi great again'); } }
+    assertErrorMessage(() => i.foo(1337), Error, "make ffi great again");
+
+    valueToConvert = { toString() { throw new Error('a FFI to believe in'); } }
+    assertErrorMessage(() => i.foo(1337), Error, "a FFI to believe in");
+
+    // Test the error path in the arguments rectifier.
+    assertErrorMessage(() => i.missTwo(1337), Error, "a FFI to believe in");
+})();

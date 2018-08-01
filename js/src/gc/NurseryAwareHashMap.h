@@ -7,6 +7,12 @@
 #ifndef gc_NurseryAwareHashMap_h
 #define gc_NurseryAwareHashMap_h
 
+#include "gc/Barrier.h"
+#include "gc/Marking.h"
+#include "js/GCHashTable.h"
+#include "js/GCPolicyAPI.h"
+#include "js/HashTable.h"
+
 namespace js {
 
 namespace detail {
@@ -81,6 +87,7 @@ class NurseryAwareHashMap
     using Lookup = typename MapType::Lookup;
     using Ptr = typename MapType::Ptr;
     using Range = typename MapType::Range;
+    using Entry = typename MapType::Entry;
 
     explicit NurseryAwareHashMap(AllocPolicy a = AllocPolicy()) : map(a) {}
 
@@ -94,10 +101,12 @@ class NurseryAwareHashMap
         explicit Enum(NurseryAwareHashMap& namap) : MapType::Enum(namap.map) {}
     };
     size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
-        return map.sizeOfExcludingThis(mallocSizeOf);
+        return map.sizeOfExcludingThis(mallocSizeOf) +
+               nurseryEntries.sizeOfExcludingThis(mallocSizeOf);
     }
     size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
-        return map.sizeOfIncludingThis(mallocSizeOf);
+        return map.sizeOfIncludingThis(mallocSizeOf) +
+               nurseryEntries.sizeOfIncludingThis(mallocSizeOf);
     }
 
     MOZ_MUST_USE bool put(const Key& k, const Value& v) {
@@ -139,14 +148,18 @@ class NurseryAwareHashMap
 
             // Update and relocate the key, if the value is still needed.
             //
-            // Note that this currently assumes that all Value will contain a
-            // strong reference to Key, as per its use as the
-            // CrossCompartmentWrapperMap. We may need to make the following
-            // behavior more dynamic if we use this map in other nursery-aware
-            // contexts.
+            // Non-string Values will contain a strong reference to Key, as per
+            // its use in the CrossCompartmentWrapperMap, so the key will never
+            // be dying here. Strings do *not* have any sort of pointer from
+            // wrapper to wrappee, as they are just copies. The wrapper map
+            // entry is merely used as a cache to avoid re-copying the string,
+            // and currently that entire cache is flushed on major GC.
             Key copy(key);
-            mozilla::DebugOnly<bool> sweepKey = JS::GCPolicy<Key>::needsSweep(&copy);
-            MOZ_ASSERT(!sweepKey);
+            bool sweepKey = JS::GCPolicy<Key>::needsSweep(&copy);
+            if (sweepKey) {
+                map.remove(key);
+                continue;
+            }
             map.rekeyIfMoved(key, copy);
         }
         nurseryEntries.clear();
@@ -155,6 +168,10 @@ class NurseryAwareHashMap
     void sweep() {
         MOZ_ASSERT(nurseryEntries.empty());
         map.sweep();
+    }
+
+    bool hasNurseryEntries() const {
+        return !nurseryEntries.empty();
     }
 };
 

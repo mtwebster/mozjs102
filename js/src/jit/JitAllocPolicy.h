@@ -12,11 +12,10 @@
 #include "mozilla/OperatorNewExtensions.h"
 #include "mozilla/TypeTraits.h"
 
-#include "jscntxt.h"
-
 #include "ds/LifoAlloc.h"
 #include "jit/InlineList.h"
 #include "jit/Ion.h"
+#include "vm/JSContext.h"
 
 namespace js {
 namespace jit {
@@ -173,7 +172,7 @@ struct TempObject
                       "Placement new argument type must inherit from TempObject");
         MOZ_ASSERT(pos);
         return pos;
-    }        
+    }
 };
 
 template <typename T>

@@ -1,4 +1,4 @@
-load(libdir + "wasm.js");
+const { LinkError } = WebAssembly;
 
 // ----------------------------------------------------------------------------
 // exports
@@ -56,8 +56,8 @@ wasmFailValidateText('(module (func) (func) (export "a" 0) (export "a" 1))', /du
 // ----------------------------------------------------------------------------
 // signatures
 
-wasmFailValidateText('(module (func (result i32)))', mismatchError("void", "i32"));
-wasmFailValidateText('(module (func (result i32) (nop)))', mismatchError("void", "i32"));
+wasmFailValidateText('(module (func (result i32)))', emptyStackError);
+wasmFailValidateText('(module (func (result i32) (nop)))', emptyStackError);
 
 wasmValidateText('(module (func (nop)))');
 wasmValidateText('(module (func (result i32) (i32.const 42)))');
@@ -77,17 +77,15 @@ assertErrorMessage(f, TypeError, /i64/);
 var f = wasmEvalText('(module (import $imp "a" "b" (result i64)) (func $f (result i64) (call $imp)) (export "" $f))', {a:{b:()=>{}}}).exports[""];
 assertErrorMessage(f, TypeError, /i64/);
 
-setJitCompilerOption('wasm.test-mode', 1);
-wasmFullPassI64('(module (func (result i64) (i64.const 123)) (export "run" 0))', {low: 123, high: 0});
-wasmFullPassI64('(module (func (param i64) (result i64) (get_local 0)) (export "run" 0))',
-                { low: 0x7fffffff, high: 0x12340000},
+wasmFullPassI64('(module (func $run (result i64) (i64.const 123)))', 123);
+wasmFullPassI64('(module (func $run (param i64) (result i64) (get_local 0)))',
+                '0x123400007fffffff',
                 {},
-                {low: 0x7fffffff, high: 0x12340000});
-wasmFullPassI64('(module (func (param i64) (result i64) (i64.add (get_local 0) (i64.const 1))) (export "run" 0))',
-                {low: 0x0, high: 0x12340001},
+                '(i64.const 0x123400007fffffff)');
+wasmFullPassI64('(module (func $run (param i64) (result i64) (i64.add (get_local 0) (i64.const 1))))',
+                '0x1234000100000000',
                 {},
-                { low: 0xffffffff, high: 0x12340000});
-setJitCompilerOption('wasm.test-mode', 0);
+                '(i64.const 0x12340000ffffffff)');
 
 // ----------------------------------------------------------------------------
 // imports
@@ -104,8 +102,8 @@ var code = '(module (import "a" "b"))';
 assertErrorMessage(() => wasmEvalText(code), TypeError, noImportObj);
 assertErrorMessage(() => wasmEvalText(code, {}), TypeError, notObject);
 assertErrorMessage(() => wasmEvalText(code, {a:1}), TypeError, notObject);
-assertErrorMessage(() => wasmEvalText(code, {a:{}}), TypeError, notFunction);
-assertErrorMessage(() => wasmEvalText(code, {a:{b:1}}), TypeError, notFunction);
+assertErrorMessage(() => wasmEvalText(code, {a:{}}), LinkError, notFunction);
+assertErrorMessage(() => wasmEvalText(code, {a:{b:1}}), LinkError, notFunction);
 wasmEvalText(code, {a:{b:()=>{}}});
 
 var code = '(module (import "" "b"))';
@@ -118,7 +116,7 @@ assertErrorMessage(() => wasmEvalText(code, {a:1}), TypeError, notObject);
 wasmEvalText(code, {a:{"":()=>{}}});
 
 var code = '(module (import "a" "") (import "b" "c") (import "c" ""))';
-assertErrorMessage(() => wasmEvalText(code, {a:()=>{}, b:{c:()=>{}}, c:{}}), TypeError, notFunction);
+assertErrorMessage(() => wasmEvalText(code, {a:()=>{}, b:{c:()=>{}}, c:{}}), LinkError, notFunction);
 wasmEvalText(code, {a:{"":()=>{}}, b:{c:()=>{}}, c:{"":()=>{}}});
 
 wasmEvalText('(module (import "a" "" (result i32)))', {a:{"":()=>{}}});
@@ -131,14 +129,17 @@ wasmEvalText('(module (import $foo "a" "" (result f64)))', {a:{"":()=>{}}});
 
 wasmValidateText('(module (memory 0))');
 wasmValidateText('(module (memory 1))');
-wasmFailValidateText('(module (memory 65536))', /initial memory size too big/);
+wasmValidateText('(module (memory 16384))');
+wasmFailValidateText('(module (memory 16385))', /initial memory size too big/);
+
+wasmEvalText('(module (memory 0 65536))')
+wasmFailValidateText('(module (memory 0 65537))', /maximum memory size too big/);
 
 // May OOM, but must not crash:
 try {
-    wasmEvalText('(module (memory 65535))');
+    wasmEvalText('(module (memory 16384))');
 } catch (e) {
-    assertEq(String(e).indexOf("out of memory") != -1 ||
-             String(e).indexOf("memory size too big") != -1, true);
+    assertEq(String(e).indexOf("out of memory") !== -1, true);
 }
 
 var buf = wasmEvalText('(module (memory 1) (export "memory" memory))').exports.memory.buffer;
@@ -194,7 +195,7 @@ wasmFullPass('(module (func (result f32) (param i32) (local f32) (get_local 1)) 
 
 wasmFailValidateText('(module (func (set_local 0 (i32.const 0))))', /set_local index out of range/);
 wasmFailValidateText('(module (func (local f32) (set_local 0 (i32.const 0))))', mismatchError("i32", "f32"));
-wasmFailValidateText('(module (func (local f32) (set_local 0 (nop))))', /popping value from empty stack/);
+wasmFailValidateText('(module (func (local f32) (set_local 0 (nop))))', emptyStackError);
 wasmFailValidateText('(module (func (local i32) (local f32) (set_local 0 (get_local 1))))', mismatchError("f32", "i32"));
 wasmFailValidateText('(module (func (local i32) (local f32) (set_local 1 (get_local 0))))', mismatchError("i32", "f32"));
 
@@ -215,9 +216,9 @@ wasmValidateText('(module (func (local i32) (local $a f32) (set_local 0 (i32.con
 
 wasmFullPass('(module (func (block )) (export "run" 0))', undefined);
 
-wasmFailValidateText('(module (func (result i32) (block )))', mismatchError("void", "i32"));
-wasmFailValidateText('(module (func (result i32) (block (block ))))', mismatchError("void", "i32"));
-wasmFailValidateText('(module (func (local i32) (set_local 0 (block ))))', /popping value from empty stack/);
+wasmFailValidateText('(module (func (result i32) (block )))', emptyStackError);
+wasmFailValidateText('(module (func (result i32) (block (block ))))', emptyStackError);
+wasmFailValidateText('(module (func (local i32) (set_local 0 (block ))))', emptyStackError);
 
 wasmFullPass('(module (func (block (block ))) (export "run" 0))', undefined);
 wasmFullPass('(module (func (result i32) (block i32 (i32.const 42))) (export "run" 0))', 42);
@@ -232,9 +233,9 @@ wasmFullPass('(module (func (result i32) (local i32) (set_local 0 (i32.const 42)
 // ----------------------------------------------------------------------------
 // calls
 
-wasmFailValidateText('(module (func (nop)) (func (call 0 (i32.const 0))))', /unused values not explicitly dropped by end of block/);
+wasmFailValidateText('(module (func (nop)) (func (call 0 (i32.const 0))))', unusedValuesError);
 
-wasmFailValidateText('(module (func (param i32) (nop)) (func (call 0)))', /peeking at value from outside block/);
+wasmFailValidateText('(module (func (param i32) (nop)) (func (call 0)))', emptyStackError);
 wasmFailValidateText('(module (func (param f32) (nop)) (func (call 0 (i32.const 0))))', mismatchError("i32", "f32"));
 wasmFailValidateText('(module (func (nop)) (func (call 3)))', /callee index out of range/);
 
@@ -248,8 +249,8 @@ assertThrowsInstanceOf(() => wasmEvalText('(module (func (call 1)) (func (call 0
 wasmValidateText('(module (func (param i32 f32)) (func (call 0 (i32.const 0) (f32.const nan))))');
 wasmFailValidateText('(module (func (param i32 f32)) (func (call 0 (i32.const 0) (i32.const 0))))', mismatchError("i32", "f32"));
 
-wasmFailValidateText('(module (import "a" "") (func (call 0 (i32.const 0))))', /unused values not explicitly dropped by end of block/);
-wasmFailValidateText('(module (import "a" "" (param i32)) (func (call 0)))', /peeking at value from outside block/);
+wasmFailValidateText('(module (import "a" "") (func (call 0 (i32.const 0))))', unusedValuesError);
+wasmFailValidateText('(module (import "a" "" (param i32)) (func (call 0)))', emptyStackError);
 wasmFailValidateText('(module (import "a" "" (param f32)) (func (call 0 (i32.const 0))))', mismatchError("i32", "f32"));
 
 assertErrorMessage(() => wasmEvalText('(module (import "a" "") (func (call 1)))'), TypeError, noImportObj);
@@ -298,81 +299,6 @@ wasmFullPass(`(module (import "" "evalcx" (param i32) (result i32)) (func (resul
 if (typeof evaluate === 'function')
     evaluate(`new WebAssembly.Instance(new WebAssembly.Module(wasmTextToBinary('(module)'))) `, { fileName: null });
 
-{
-    setJitCompilerOption('wasm.test-mode', 1);
-
-    let imp = {"":{
-        param(i64) {
-            assertEqI64(i64, {
-                low: 0x9abcdef0,
-                high: 0x12345678
-            });
-            return 42;
-        },
-        result(i32) {
-            return {
-                low: 0xabcdef01,
-                high: 0x12345678 + i32
-            }
-        },
-        paramAndResult(i64) {
-            assertEqI64(i64, {
-                low: 0x9abcdef0,
-                high: 0x12345678
-            });
-            i64.low = 1337;
-            return i64;
-        }
-    }}
-
-    wasmFullPass(`(module
-        (import "" "param" (param i64) (result i32))
-        (func (result i32) (call 0 (i64.const 0x123456789abcdef0)))
-        (export "run" 1))`, 42, imp);
-
-    wasmFullPass(`(module
-        (import "" "param" (param i64)(param i64)(param i64)(param i64)(param i64)(param i64)(param i64) (param i64) (result i32))
-        (func (result i32) (call 0 (i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)(i64.const 0x123456789abcdef0)))
-        (export "run" 1))`, 42, imp);
-
-    wasmFullPassI64(`(module
-        (import "" "result" (param i32) (result i64))
-        (func (result i64) (call 0 (i32.const 3)))
-        (export "run" 1))`, { low: 0xabcdef01, high: 0x1234567b }, imp);
-
-    // Ensure the ion exit is never taken.
-    let ionThreshold = 2 * getJitCompilerOptions()['ion.warmup.trigger'];
-    wasmFullPassI64(`(module
-        (import "" "paramAndResult" (param i64) (result i64))
-        (func (result i64) (local i32) (local i64)
-         (set_local 0 (i32.const 0))
-         (loop $out $in
-             (set_local 1 (call 0 (i64.const 0x123456789abcdef0)))
-             (set_local 0 (i32.add (get_local 0) (i32.const 1)))
-             (if (i32.le_s (get_local 0) (i32.const ${ionThreshold})) (br $in))
-         )
-         (get_local 1)
-        )
-    (export "run" 1))`, { low: 1337, high: 0x12345678 }, imp);
-
-    wasmFullPassI64(`(module
-        (import "" "paramAndResult" (param i64) (result i64))
-        (func (result i64) (local i32) (local i64)
-         (set_local 0 (i32.const 0))
-         (block $out
-             (loop $in
-                 (set_local 1 (call 0 (i64.const 0x123456789abcdef0)))
-                 (set_local 0 (i32.add (get_local 0) (i32.const 1)))
-                 (if (i32.le_s (get_local 0) (i32.const ${ionThreshold})) (br $in))
-             )
-         )
-         (get_local 1)
-        )
-    (export "run" 1))`, { low: 1337, high: 0x12345678 }, imp);
-
-    setJitCompilerOption('wasm.test-mode', 0);
-}
-
 wasmFailValidateText(`(module (type $t (func)) (func (call_indirect $t (i32.const 0))))`, /can't call_indirect without a table/);
 
 var {v2i, i2i, i2v} = wasmEvalText(`(module
@@ -418,7 +344,7 @@ assertErrorMessage(() => i2v(4), Error, signatureMismatch);
 assertErrorMessage(() => i2v(5), Error, signatureMismatch);
 
 {
-    enableSPSProfiling();
+    enableGeckoProfiling();
 
     var stack;
     wasmFullPass(
@@ -435,7 +361,7 @@ assertErrorMessage(() => i2v(5), Error, signatureMismatch);
         {"":{f:() => { stack = new Error().stack }}}
     );
 
-    disableSPSProfiling();
+    disableGeckoProfiling();
 
     var inner = stack.indexOf("wasm-function[1]");
     var outer = stack.indexOf("wasm-function[3]");
@@ -460,11 +386,12 @@ wasmValidateText('(module (import $bar "" "a") (func (call $bar)) (func $foo (no
 wasmFailValidateText('(module (func (select (i32.const 0) (i32.const 0) (f32.const 0))))', mismatchError("f32", "i32"));
 
 wasmFailValidateText('(module (func (select (i32.const 0) (f32.const 0) (i32.const 0))) (export "" 0))', /select operand types must match/);
-wasmFailValidateText('(module (func (select (block ) (i32.const 0) (i32.const 0))) (export "" 0))', /popping value from empty stack/);
-assertEq(wasmEvalText('(module (func (select (return) (i32.const 0) (i32.const 0))) (export "" 0))').exports[""](), undefined);
-assertEq(wasmEvalText('(module (func (i32.add (i32.const 0) (select (return) (i32.const 0) (i32.const 0)))) (export "" 0))').exports[""](), undefined);
+wasmFailValidateText('(module (func (select (block ) (i32.const 0) (i32.const 0))) (export "" 0))', emptyStackError);
+wasmFailValidateText('(module (func (select (return) (i32.const 0) (i32.const 0))) (export "" 0))', unusedValuesError);
+assertEq(wasmEvalText('(module (func (drop (select (return) (i32.const 0) (i32.const 0)))) (export "" 0))').exports[""](), undefined);
+assertEq(wasmEvalText('(module (func (result i32) (i32.add (i32.const 0) (select (return (i32.const 42)) (i32.const 0) (i32.const 0)))) (export "" 0))').exports[""](), 42);
 wasmFailValidateText('(module (func (select (if i32 (i32.const 1) (i32.const 0) (f32.const 0)) (i32.const 0) (i32.const 0))) (export "" 0))', mismatchError("f32", "i32"));
-wasmFailValidateText('(module (func) (func (select (call 0) (call 0) (i32.const 0))) (export "" 0))', /popping value from empty stack/);
+wasmFailValidateText('(module (func) (func (select (call 0) (call 0) (i32.const 0))) (export "" 0))', emptyStackError);
 
 (function testSideEffects() {
 
@@ -604,24 +531,18 @@ testSelect('f64', 13.37, 19.89);
 testSelect('f64', 'infinity', '-0');
 testSelect('f64', 'nan', Math.pow(2, -31));
 
-{
-    setJitCompilerOption('wasm.test-mode', 1);
-
-    var f = wasmEvalText(`
-    (module
-     (func (result i64) (param i32)
-      (select
-       (i64.const 0xc0010ff08badf00d)
-       (i64.const 0x12345678deadc0de)
-       (get_local 0)
-      )
-     )
-     (export "" 0)
-    )`, imports).exports[""];
-
-    assertEqI64(f(0),  { low: 0xdeadc0de, high: 0x12345678});
-    assertEqI64(f(1),  { low: 0x8badf00d, high: 0xc0010ff0});
-    assertEqI64(f(-1), { low: 0x8badf00d, high: 0xc0010ff0});
-
-    setJitCompilerOption('wasm.test-mode', 0);
-}
+wasmAssert(`
+(module
+ (func $f (result i64) (param i32)
+  (select
+   (i64.const 0xc0010ff08badf00d)
+   (i64.const 0x12345678deadc0de)
+   (get_local 0)
+  )
+ )
+ (export "" 0)
+)`, [
+    { type: 'i64', func: '$f', args: ['i32.const  0'], expected: '0x12345678deadc0de' },
+    { type: 'i64', func: '$f', args: ['i32.const  1'], expected: '0xc0010ff08badf00d' },
+    { type: 'i64', func: '$f', args: ['i32.const -1'], expected: '0xc0010ff08badf00d' },
+], imports);

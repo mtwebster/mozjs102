@@ -7,9 +7,9 @@
 #ifndef jit_BytecodeAnalysis_h
 #define jit_BytecodeAnalysis_h
 
-#include "jsscript.h"
 #include "jit/JitAllocPolicy.h"
 #include "js/Vector.h"
+#include "vm/JSScript.h"
 
 namespace js {
 namespace jit {
@@ -40,7 +40,6 @@ class BytecodeAnalysis
 
     bool usesEnvironmentChain_;
     bool hasTryFinally_;
-    bool hasSetArg_;
 
   public:
     explicit BytecodeAnalysis(TempAllocator& alloc, JSScript* script);
@@ -64,10 +63,6 @@ class BytecodeAnalysis
 
     bool hasTryFinally() const {
         return hasTryFinally_;
-    }
-
-    bool hasSetArg() const {
-        return hasSetArg_;
     }
 };
 

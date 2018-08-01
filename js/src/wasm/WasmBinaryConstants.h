@@ -27,12 +27,9 @@ namespace wasm {
 static const uint32_t MagicNumber        = 0x6d736100; // "\0asm"
 static const uint32_t EncodingVersion    = 0x01;
 
-// 0xd is equivalent to 0x1 modulo unreachability validation rules, so to aid
-// transition of toolchain, accept both for a short period of time.
-static const uint32_t PrevEncodingVersion = 0x0d;
-
-enum class SectionId {
-    UserDefined                          = 0,
+enum class SectionId
+{
+    Custom                               = 0,
     Type                                 = 1,
     Import                               = 2,
     Function                             = 3,
@@ -45,8 +42,6 @@ enum class SectionId {
     Code                                 = 10,
     Data                                 = 11
 };
-
-static const char NameSectionName[] = "name";
 
 enum class TypeCode
 {
@@ -114,7 +109,15 @@ enum class GlobalTypeImmediate
 
 enum class MemoryTableFlags
 {
-    Default                              = 0x0
+    Default                              = 0x0,
+    HasMaximum                           = 0x1,
+    IsShared                             = 0x2
+};
+
+enum class MemoryMasks
+{
+    AllowUnshared                        = 0x1,
+    AllowShared                          = 0x3
 };
 
 enum class Op
@@ -311,12 +314,139 @@ enum class Op
     F32ReinterpretI32                    = 0xbe,
     F64ReinterpretI64                    = 0xbf,
 
-    // ------------------------------------------------------------------------
-    // The rest of these operators are currently only emitted internally when
-    // compiling asm.js and are rejected by wasm validation.
+#ifdef ENABLE_WASM_SIGNEXTEND_OPS
+    // Sign extension
+    I32Extend8S                          = 0xc0,
+    I32Extend16S                         = 0xc1,
+    I64Extend8S                          = 0xc2,
+    I64Extend16S                         = 0xc3,
+    I64Extend32S                         = 0xc4,
+#endif
 
-    // asm.js-specific operators
-    TeeGlobal                            = 0xc8,
+    FirstPrefix                          = 0xfc,
+    NumericPrefix                        = 0xfc,
+    ThreadPrefix                         = 0xfe,
+    MozPrefix                            = 0xff,
+
+    Limit                                = 0x100
+};
+
+inline bool
+IsPrefixByte(uint8_t b)
+{
+    return b >= uint8_t(Op::FirstPrefix);
+}
+
+// Opcodes in the "numeric" opcode space.
+enum class NumericOp
+{
+    // Saturating float-to-int conversions
+    I32TruncSSatF32                      = 0x00,
+    I32TruncUSatF32                      = 0x01,
+    I32TruncSSatF64                      = 0x02,
+    I32TruncUSatF64                      = 0x03,
+    I64TruncSSatF32                      = 0x04,
+    I64TruncUSatF32                      = 0x05,
+    I64TruncSSatF64                      = 0x06,
+    I64TruncUSatF64                      = 0x07,
+
+    Limit
+};
+
+// Opcodes from threads proposal as of June 30, 2017
+enum class ThreadOp
+{
+    // Wait and wake
+    Wake                                 = 0x00,
+    I32Wait                              = 0x01,
+    I64Wait                              = 0x02,
+
+    // Load and store
+    I32AtomicLoad                        = 0x10,
+    I64AtomicLoad                        = 0x11,
+    I32AtomicLoad8U                      = 0x12,
+    I32AtomicLoad16U                     = 0x13,
+    I64AtomicLoad8U                      = 0x14,
+    I64AtomicLoad16U                     = 0x15,
+    I64AtomicLoad32U                     = 0x16,
+    I32AtomicStore                       = 0x17,
+    I64AtomicStore                       = 0x18,
+    I32AtomicStore8U                     = 0x19,
+    I32AtomicStore16U                    = 0x1a,
+    I64AtomicStore8U                     = 0x1b,
+    I64AtomicStore16U                    = 0x1c,
+    I64AtomicStore32U                    = 0x1d,
+
+    // Read-modify-write operations
+    I32AtomicAdd                         = 0x1e,
+    I64AtomicAdd                         = 0x1f,
+    I32AtomicAdd8U                       = 0x20,
+    I32AtomicAdd16U                      = 0x21,
+    I64AtomicAdd8U                       = 0x22,
+    I64AtomicAdd16U                      = 0x23,
+    I64AtomicAdd32U                      = 0x24,
+
+    I32AtomicSub                         = 0x25,
+    I64AtomicSub                         = 0x26,
+    I32AtomicSub8U                       = 0x27,
+    I32AtomicSub16U                      = 0x28,
+    I64AtomicSub8U                       = 0x29,
+    I64AtomicSub16U                      = 0x2a,
+    I64AtomicSub32U                      = 0x2b,
+
+    I32AtomicAnd                         = 0x2c,
+    I64AtomicAnd                         = 0x2d,
+    I32AtomicAnd8U                       = 0x2e,
+    I32AtomicAnd16U                      = 0x2f,
+    I64AtomicAnd8U                       = 0x30,
+    I64AtomicAnd16U                      = 0x31,
+    I64AtomicAnd32U                      = 0x32,
+
+    I32AtomicOr                          = 0x33,
+    I64AtomicOr                          = 0x34,
+    I32AtomicOr8U                        = 0x35,
+    I32AtomicOr16U                       = 0x36,
+    I64AtomicOr8U                        = 0x37,
+    I64AtomicOr16U                       = 0x38,
+    I64AtomicOr32U                       = 0x39,
+
+    I32AtomicXor                         = 0x3a,
+    I64AtomicXor                         = 0x3b,
+    I32AtomicXor8U                       = 0x3c,
+    I32AtomicXor16U                      = 0x3d,
+    I64AtomicXor8U                       = 0x3e,
+    I64AtomicXor16U                      = 0x3f,
+    I64AtomicXor32U                      = 0x40,
+
+    I32AtomicXchg                        = 0x41,
+    I64AtomicXchg                        = 0x42,
+    I32AtomicXchg8U                      = 0x43,
+    I32AtomicXchg16U                     = 0x44,
+    I64AtomicXchg8U                      = 0x45,
+    I64AtomicXchg16U                     = 0x46,
+    I64AtomicXchg32U                     = 0x47,
+
+    // CompareExchange
+    I32AtomicCmpXchg                     = 0x48,
+    I64AtomicCmpXchg                     = 0x49,
+    I32AtomicCmpXchg8U                   = 0x4a,
+    I32AtomicCmpXchg16U                  = 0x4b,
+    I64AtomicCmpXchg8U                   = 0x4c,
+    I64AtomicCmpXchg16U                  = 0x4d,
+    I64AtomicCmpXchg32U                  = 0x4e,
+
+    Limit
+};
+
+enum class MozOp
+{
+    // ------------------------------------------------------------------------
+    // These operators are emitted internally when compiling asm.js and are
+    // rejected by wasm validation.  They are prefixed by MozPrefix.
+
+    // asm.js-specific operators.  They start at 1 so as to check for
+    // uninitialized (zeroed) storage.
+    TeeGlobal                            = 0x01,
     I32Min,
     I32Max,
     I32Neg,
@@ -346,6 +476,7 @@ enum class Op
     F64Atan2,
 
     // asm.js-style call_indirect with the callee evaluated first.
+    OldCallDirect,
     OldCallIndirect,
 
     // Atomics
@@ -434,14 +565,58 @@ enum class Op
     Limit
 };
 
-// Telemetry sample values for the JS_AOT_USAGE key, indicating whether asm.js
-// or WebAssembly is used.
-
-enum class Telemetry
+struct OpBytes
 {
-    ASMJS = 0,
-    WASM = 1
+    // The bytes of the opcode have 16-bit representations to allow for a full
+    // 256-value range plus a sentinel Limit value.
+    uint16_t b0;
+    uint16_t b1;
+
+    explicit OpBytes(Op x) {
+        b0 = uint16_t(x);
+        b1 = 0;
+    }
+    OpBytes() = default;
 };
+
+static const char NameSectionName[]      = "name";
+static const char SourceMappingURLSectionName[] = "sourceMappingURL";
+
+enum class NameType
+{
+    Module                               = 0,
+    Function                             = 1,
+    Local                                = 2
+};
+
+// These limits are agreed upon with other engines for consistency.
+
+static const unsigned MaxTypes               =  1000000;
+static const unsigned MaxFuncs               =  1000000;
+static const unsigned MaxImports             =   100000;
+static const unsigned MaxExports             =   100000;
+static const unsigned MaxGlobals             =  1000000;
+static const unsigned MaxDataSegments        =   100000;
+static const unsigned MaxElemSegments        = 10000000;
+static const unsigned MaxTableInitialLength  = 10000000;
+static const unsigned MaxStringBytes         =   100000;
+static const unsigned MaxLocals              =    50000;
+static const unsigned MaxParams              =     1000;
+static const unsigned MaxBrTableElems        =  1000000;
+static const unsigned MaxMemoryInitialPages  = 16384;
+static const unsigned MaxMemoryMaximumPages  = 65536;
+static const unsigned MaxCodeSectionBytes    = 1024 * 1024 * 1024;
+static const unsigned MaxModuleBytes         = MaxCodeSectionBytes;
+static const unsigned MaxFunctionBytes       =  7654321;
+
+// A magic value of the FramePointer to indicate after a return to the entry
+// stub that an exception has been caught and that we should throw.
+
+static const unsigned FailFP = 0xbad;
+
+// Asserted by Decoder::readVarU32.
+
+static const unsigned MaxVarU32DecodedBytes = 5;
 
 } // namespace wasm
 } // namespace js

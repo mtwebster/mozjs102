@@ -6,6 +6,7 @@
 #include "jit/WasmBCE.h"
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
+#include "wasm/WasmTypes.h"
 
 using namespace js;
 using namespace js::jit;
@@ -40,21 +41,50 @@ jit::EliminateBoundsChecks(MIRGenerator* mir, MIRGraph& graph)
             MDefinition* def = *dIter++;
 
             switch (def->op()) {
-              case MDefinition::Op_WasmBoundsCheck: {
+              case MDefinition::Opcode::WasmBoundsCheck: {
                 MWasmBoundsCheck* bc = def->toWasmBoundsCheck();
-                MDefinition* addr = def->getOperand(0);
+                MDefinition* addr = bc->index();
 
-                LastSeenMap::AddPtr ptr = lastSeen.lookupForAdd(addr->id());
-                if (ptr) {
-                    if (ptr->value()->block()->dominates(block))
-                        bc->setRedundant(true);
-                } else {
-                    if (!lastSeen.add(ptr, addr->id(), def))
-                        return false;
+                // Eliminate constant-address bounds checks to addresses below
+                // the heap minimum.
+                //
+                // The payload of the MConstant will be Double if the constant
+                // result is above 2^31-1, but we don't care about that for BCE.
+
+#ifndef WASM_HUGE_MEMORY
+                MOZ_ASSERT(wasm::MaxMemoryAccessSize < wasm::GuardSize,
+                           "Guard page handles partial out-of-bounds");
+#endif
+
+                if (addr->isConstant() && addr->toConstant()->type() == MIRType::Int32 &&
+                    uint32_t(addr->toConstant()->toInt32()) < mir->minWasmHeapLength())
+                {
+                    bc->setRedundant();
+                    if (JitOptions.spectreIndexMasking)
+                        bc->replaceAllUsesWith(addr);
+                    else
+                        MOZ_ASSERT(!bc->hasUses());
+                }
+                else
+                {
+                    LastSeenMap::AddPtr ptr = lastSeen.lookupForAdd(addr->id());
+                    if (ptr) {
+                        MDefinition* prevCheckOrPhi = ptr->value();
+                        if (prevCheckOrPhi->block()->dominates(block)) {
+                            bc->setRedundant();
+                            if (JitOptions.spectreIndexMasking)
+                                bc->replaceAllUsesWith(prevCheckOrPhi);
+                            else
+                                MOZ_ASSERT(!bc->hasUses());
+                        }
+                    } else {
+                        if (!lastSeen.add(ptr, addr->id(), def))
+                            return false;
+                    }
                 }
                 break;
               }
-              case MDefinition::Op_Phi: {
+              case MDefinition::Opcode::Phi: {
                 MPhi* phi = def->toPhi();
                 bool phiChecked = true;
 
@@ -69,6 +99,13 @@ jit::EliminateBoundsChecks(MIRGenerator* mir, MIRGraph& graph)
                 // cannot be in lastSeen because its block hasn't been traversed yet.
                 for (int i = 0, nOps = phi->numOperands(); i < nOps; i++) {
                     MDefinition* src = phi->getOperand(i);
+
+                    if (JitOptions.spectreIndexMasking) {
+                        if (src->isWasmBoundsCheck())
+                            src = src->toWasmBoundsCheck()->index();
+                    } else {
+                        MOZ_ASSERT(!src->isWasmBoundsCheck());
+                    }
 
                     LastSeenMap::Ptr checkPtr = lastSeen.lookup(src->id());
                     if (!checkPtr || !checkPtr->value()->block()->dominates(block)) {

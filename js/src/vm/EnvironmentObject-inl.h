@@ -8,10 +8,8 @@
 #define vm_EnvironmentObject_inl_h
 
 #include "vm/EnvironmentObject.h"
-#include "frontend/SharedContext.h"
 
-#include "jsobjinlines.h"
-
+#include "vm/JSObject-inl.h"
 #include "vm/TypeInference-inl.h"
 
 namespace js {

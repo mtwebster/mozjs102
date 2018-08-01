@@ -9,12 +9,10 @@
 
 #include <algorithm>
 
-#include "jsfun.h"
-
-#include "jit/JitFrameIterator.h"
 #include "jit/JitFrames.h"
-
+#include "jit/JSJitFrameIter.h"
 #include "vm/EnvironmentObject.h"
+#include "vm/JSFunction.h"
 #include "vm/Stack.h"
 
 namespace js {
@@ -259,16 +257,8 @@ struct MapTypeToRootKind<js::jit::RematerializedFrame*>
 
 template <>
 struct GCPolicy<js::jit::RematerializedFrame*>
-{
-    static js::jit::RematerializedFrame* initial() {
-        return nullptr;
-    }
-
-    static void trace(JSTracer* trc, js::jit::RematerializedFrame** frame, const char* name) {
-        if (*frame)
-            (*frame)->trace(trc);
-    }
-};
+  : public NonGCPointerPolicy<js::jit::RematerializedFrame*>
+{};
 
 } // namespace JS
 

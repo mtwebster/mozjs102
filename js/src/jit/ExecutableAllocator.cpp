@@ -34,10 +34,10 @@ using namespace js::jit;
 
 ExecutablePool::~ExecutablePool()
 {
-    MOZ_ASSERT(m_ionCodeBytes == 0);
-    MOZ_ASSERT(m_baselineCodeBytes == 0);
-    MOZ_ASSERT(m_regexpCodeBytes == 0);
-    MOZ_ASSERT(m_otherCodeBytes == 0);
+#ifdef DEBUG
+    for (size_t bytes : m_codeBytes)
+        MOZ_ASSERT(bytes == 0);
+#endif
 
     MOZ_ASSERT(!isMarked());
 
@@ -56,26 +56,8 @@ ExecutablePool::release(bool willDestroy)
 void
 ExecutablePool::release(size_t n, CodeKind kind)
 {
-    switch (kind) {
-      case ION_CODE:
-        m_ionCodeBytes -= n;
-        MOZ_ASSERT(m_ionCodeBytes < m_allocation.size); // Shouldn't underflow.
-        break;
-      case BASELINE_CODE:
-        m_baselineCodeBytes -= n;
-        MOZ_ASSERT(m_baselineCodeBytes < m_allocation.size);
-        break;
-      case REGEXP_CODE:
-        m_regexpCodeBytes -= n;
-        MOZ_ASSERT(m_regexpCodeBytes < m_allocation.size);
-        break;
-      case OTHER_CODE:
-        m_otherCodeBytes -= n;
-        MOZ_ASSERT(m_otherCodeBytes < m_allocation.size);
-        break;
-      default:
-        MOZ_CRASH("bad code kind");
-    }
+    m_codeBytes[kind] -= n;
+    MOZ_ASSERT(m_codeBytes[kind] < m_allocation.size); // Shouldn't underflow.
 
     release();
 }
@@ -98,13 +80,7 @@ ExecutablePool::alloc(size_t n, CodeKind kind)
     void* result = m_freePtr;
     m_freePtr += n;
 
-    switch (kind) {
-      case ION_CODE:      m_ionCodeBytes      += n;        break;
-      case BASELINE_CODE: m_baselineCodeBytes += n;        break;
-      case REGEXP_CODE:   m_regexpCodeBytes   += n;        break;
-      case OTHER_CODE:    m_otherCodeBytes    += n;        break;
-      default:            MOZ_CRASH("bad code kind");
-    }
+    m_codeBytes[kind] += n;
 
     return result;
 }
@@ -128,7 +104,8 @@ ExecutableAllocator::~ExecutableAllocator()
         m_smallPools[i]->release(/* willDestroy = */true);
 
     // If this asserts we have a pool leak.
-    MOZ_ASSERT_IF(m_pools.initialized(), m_pools.empty());
+    MOZ_ASSERT_IF(m_pools.initialized() && rt_->gc.shutdownCollectedEverything(),
+                  m_pools.empty());
 }
 
 ExecutablePool*
@@ -190,12 +167,6 @@ ExecutableAllocator::poolForSize(size_t n)
 /* static */ size_t
 ExecutableAllocator::roundUpAllocationSize(size_t request, size_t granularity)
 {
-    // Something included via windows.h defines a macro with this name,
-    // which causes the function below to fail to compile.
-#ifdef _MSC_VER
-# undef max
-#endif
-
     if ((std::numeric_limits<size_t>::max() - granularity) <= request)
         return OVERSIZE_ALLOCATION;
 
@@ -238,7 +209,7 @@ ExecutableAllocator::createPool(size_t n)
 }
 
 void*
-ExecutableAllocator::alloc(size_t n, ExecutablePool** poolp, CodeKind type)
+ExecutableAllocator::alloc(JSContext* cx, size_t n, ExecutablePool** poolp, CodeKind type)
 {
     // Don't race with reprotectAll called from the signal handler.
     JitRuntime::AutoPreventBackedgePatching apbp(rt_);
@@ -261,6 +232,9 @@ ExecutableAllocator::alloc(size_t n, ExecutablePool** poolp, CodeKind type)
     // (found, or created if necessary) a pool that had enough space.
     void* result = (*poolp)->alloc(n, type);
     MOZ_ASSERT(result);
+
+    cx->zone()->updateJitCodeMallocBytes(n);
+
     return result;
 }
 
@@ -286,9 +260,19 @@ ExecutableAllocator::purge()
     // Don't race with reprotectAll called from the signal handler.
     JitRuntime::AutoPreventBackedgePatching apbp(rt_);
 
-    for (size_t i = 0; i < m_smallPools.length(); i++)
-        m_smallPools[i]->release();
-    m_smallPools.clear();
+    for (size_t i = 0; i < m_smallPools.length(); ) {
+        ExecutablePool* pool = m_smallPools[i];
+        if (pool->m_refCount > 1) {
+            // Releasing this pool is not going to deallocate it, so we might as
+            // well hold on to it and reuse it for future allocations.
+            i++;
+            continue;
+        }
+
+        MOZ_ASSERT(pool->m_refCount == 1);
+        pool->release();
+        m_smallPools.erase(&m_smallPools[i]);
+    }
 }
 
 void
@@ -297,14 +281,11 @@ ExecutableAllocator::addSizeOfCode(JS::CodeSizes* sizes) const
     if (m_pools.initialized()) {
         for (ExecPoolHashSet::Range r = m_pools.all(); !r.empty(); r.popFront()) {
             ExecutablePool* pool = r.front();
-            sizes->ion      += pool->m_ionCodeBytes;
-            sizes->baseline += pool->m_baselineCodeBytes;
-            sizes->regexp   += pool->m_regexpCodeBytes;
-            sizes->other    += pool->m_otherCodeBytes;
-            sizes->unused   += pool->m_allocation.size - pool->m_ionCodeBytes
-                                                       - pool->m_baselineCodeBytes
-                                                       - pool->m_regexpCodeBytes
-                                                       - pool->m_otherCodeBytes;
+            sizes->ion      += pool->m_codeBytes[CodeKind::Ion];
+            sizes->baseline += pool->m_codeBytes[CodeKind::Baseline];
+            sizes->regexp   += pool->m_codeBytes[CodeKind::RegExp];
+            sizes->other    += pool->m_codeBytes[CodeKind::Other];
+            sizes->unused   += pool->m_allocation.size - pool->usedCodeBytes();
         }
     }
 }
@@ -323,7 +304,8 @@ ExecutableAllocator::reprotectAll(ProtectionSetting protection)
 ExecutableAllocator::reprotectPool(JSRuntime* rt, ExecutablePool* pool, ProtectionSetting protection)
 {
     // Don't race with reprotectAll called from the signal handler.
-    MOZ_ASSERT(rt->jitRuntime()->preventBackedgePatching() || rt->handlingJitInterrupt());
+    MOZ_ASSERT(rt->jitRuntime()->preventBackedgePatching() ||
+               rt->activeContext()->handlingJitInterrupt());
 
     char* start = pool->m_allocation.pages;
     if (!ReprotectRegion(start, pool->m_freePtr - start, protection))

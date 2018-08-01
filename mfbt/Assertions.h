@@ -23,7 +23,6 @@
 #include "nsTraceRefcnt.h"
 #endif
 
-#if defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API)
 /*
  * The crash reason set by MOZ_CRASH_ANNOTATE is consumed by the crash reporter
  * if present. It is declared here (and defined in Assertions.cpp) to make it
@@ -34,6 +33,7 @@ MOZ_BEGIN_EXTERN_C
 extern MFBT_DATA const char* gMozCrashReason;
 MOZ_END_EXTERN_C
 
+#if !defined(DEBUG) && (defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API))
 static inline void
 AnnotateMozCrashReason(const char* reason)
 {
@@ -41,28 +41,24 @@ AnnotateMozCrashReason(const char* reason)
 }
 #  define MOZ_CRASH_ANNOTATE(...) AnnotateMozCrashReason(__VA_ARGS__)
 #else
-#  define MOZ_CRASH_ANNOTATE(...) do { /* nothing */ } while (0)
+#  define MOZ_CRASH_ANNOTATE(...) do { /* nothing */ } while (false)
 #endif
 
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef WIN32
+#ifdef _MSC_VER
    /*
     * TerminateProcess and GetCurrentProcess are defined in <winbase.h>, which
     * further depends on <windef.h>.  We hardcode these few definitions manually
     * because those headers clutter the global namespace with a significant
     * number of undesired macros and symbols.
     */
-#  ifdef __cplusplus
-extern "C" {
-#  endif
+MOZ_BEGIN_EXTERN_C
 __declspec(dllimport) int __stdcall
 TerminateProcess(void* hProcess, unsigned int uExitCode);
 __declspec(dllimport) void* __stdcall GetCurrentProcess(void);
-#  ifdef __cplusplus
-}
-#  endif
+MOZ_END_EXTERN_C
 #else
 #  include <signal.h>
 #endif
@@ -142,9 +138,7 @@ __declspec(dllimport) void* __stdcall GetCurrentProcess(void);
 #define MOZ_STATIC_ASSERT_IF(cond, expr, reason)  static_assert(!(cond) || (expr), reason)
 #endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+MOZ_BEGIN_EXTERN_C
 
 /*
  * Prints |aStr| as an assertion failure (using aFilename and aLine as the
@@ -154,7 +148,7 @@ extern "C" {
  * method is primarily for internal use in this header, and only secondarily
  * for use in implementing release-build assertions.
  */
-static MOZ_COLD MOZ_ALWAYS_INLINE void
+MOZ_MAYBE_UNUSED static MOZ_COLD MOZ_NEVER_INLINE void
 MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename, int aLine)
   MOZ_PRETEND_NORETURN_FOR_STATIC_ANALYSIS
 {
@@ -171,7 +165,7 @@ MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename, int aLine)
 #endif
 }
 
-static MOZ_COLD MOZ_ALWAYS_INLINE void
+MOZ_MAYBE_UNUSED static MOZ_COLD MOZ_NEVER_INLINE void
 MOZ_ReportCrash(const char* aStr, const char* aFilename, int aLine)
   MOZ_PRETEND_NORETURN_FOR_STATIC_ANALYSIS
 {
@@ -198,6 +192,9 @@ MOZ_ReportCrash(const char* aStr, const char* aFilename, int aLine)
     * Breakpad without requiring system library symbols on all stack-processing
     * machines, as a nested breakpoint would require.
     *
+    * We use __LINE__ to prevent the compiler from folding multiple crash sites
+    * together, which would make crash reports hard to understand.
+    *
     * We use TerminateProcess with the exit code aborting would generate
     * because we don't want to invoke atexit handlers, destructors, library
     * unload handlers, and so on when our process might be in a compromised
@@ -206,47 +203,36 @@ MOZ_ReportCrash(const char* aStr, const char* aFilename, int aLine)
     * We don't use abort() because it'd cause Windows to annoyingly pop up the
     * process error dialog multiple times.  See bug 345118 and bug 426163.
     *
-    * We follow TerminateProcess() with a call to MOZ_NoReturn() so that the
-    * compiler doesn't hassle us to provide a return statement after a
-    * MOZ_REALLY_CRASH() call.
-    *
     * (Technically these are Windows requirements, not MSVC requirements.  But
     * practically you need MSVC for debugging, and we only ship builds created
     * by MSVC, so doing it this way reduces complexity.)
     */
 
-__declspec(noreturn) __inline void MOZ_NoReturn() {}
+MOZ_MAYBE_UNUSED static MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void
+MOZ_NoReturn(int aLine)
+{
+  *((volatile int*) NULL) = aLine;
+  TerminateProcess(GetCurrentProcess(), 3);
+}
 
-#  ifdef __cplusplus
-#    define MOZ_REALLY_CRASH(line) \
-       do { \
-         ::__debugbreak(); \
-         *((volatile int*) NULL) = line; \
-         ::TerminateProcess(::GetCurrentProcess(), 3); \
-         ::MOZ_NoReturn(); \
-       } while (0)
-#  else
-#    define MOZ_REALLY_CRASH(line) \
-       do { \
-         __debugbreak(); \
-         *((volatile int*) NULL) = line; \
-         TerminateProcess(GetCurrentProcess(), 3); \
-         MOZ_NoReturn(); \
-       } while (0)
-#  endif
+#  define MOZ_REALLY_CRASH(line) \
+     do { \
+       __debugbreak(); \
+       MOZ_NoReturn(line); \
+     } while (false)
 #else
 #  ifdef __cplusplus
 #    define MOZ_REALLY_CRASH(line) \
        do { \
          *((volatile int*) NULL) = line; \
          ::abort(); \
-       } while (0)
+       } while (false)
 #  else
 #    define MOZ_REALLY_CRASH(line) \
        do { \
          *((volatile int*) NULL) = line; \
          abort(); \
-       } while (0)
+       } while (false)
 #  endif
 #endif
 
@@ -276,14 +262,14 @@ __declspec(noreturn) __inline void MOZ_NoReturn() {}
      do { \
        MOZ_CRASH_ANNOTATE("MOZ_CRASH(" __VA_ARGS__ ")"); \
        MOZ_REALLY_CRASH(__LINE__); \
-     } while (0)
+     } while (false)
 #else
 #  define MOZ_CRASH(...) \
      do { \
        MOZ_ReportCrash("" __VA_ARGS__, __FILE__, __LINE__); \
        MOZ_CRASH_ANNOTATE("MOZ_CRASH(" __VA_ARGS__ ")"); \
        MOZ_REALLY_CRASH(__LINE__); \
-     } while (0)
+     } while (false)
 #endif
 
 /*
@@ -293,6 +279,10 @@ __declspec(noreturn) __inline void MOZ_NoReturn() {}
  * arbitrary strings from a potentially compromised process is not without risk.
  * If the string being passed is the result of a printf-style function,
  * consider using MOZ_CRASH_UNSAFE_PRINTF instead.
+ *
+ * @note This macro causes data collection because crash strings are annotated
+ * to crash-stats and are publicly visible. Firefox data stewards must do data
+ * review on usages of this macro.
  */
 #ifndef DEBUG
 MFBT_API MOZ_COLD MOZ_NORETURN MOZ_NEVER_INLINE void
@@ -326,21 +316,26 @@ MOZ_CrashPrintf(const char* aFilename, int aLine, const char* aFormat, ...);
  * 1 and 4 additional arguments. A regular MOZ_CRASH() is preferred wherever
  * possible, as passing arbitrary strings to printf from a potentially
  * compromised process is not without risk.
+ *
+ * @note This macro causes data collection because crash strings are annotated
+ * to crash-stats and are publicly visible. Firefox data stewards must do data
+ * review on usages of this macro.
  */
 #define MOZ_CRASH_UNSAFE_PRINTF(format, ...) \
    do { \
-     MOZ_STATIC_ASSERT_VALID_ARG_COUNT(__VA_ARGS__); \
      static_assert( \
-       MOZ_PASTE_PREFIX_AND_ARG_COUNT(, __VA_ARGS__) <= sPrintfMaxArgs, \
+       MOZ_ARG_COUNT(__VA_ARGS__) > 0, \
+       "Did you forget arguments to MOZ_CRASH_UNSAFE_PRINTF? " \
+       "Or maybe you want MOZ_CRASH instead?"); \
+     static_assert( \
+       MOZ_ARG_COUNT(__VA_ARGS__) <= sPrintfMaxArgs, \
        "Only up to 4 additional arguments are allowed!"); \
      static_assert(sizeof(format) <= sPrintfCrashReasonSize, \
        "The supplied format string is too long!"); \
      MOZ_CALL_CRASH_PRINTF("" format, __VA_ARGS__); \
-   } while (0)
+   } while (false)
 
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
+MOZ_END_EXTERN_C
 
 /*
  * MOZ_ASSERT(expr [, explanation-string]) asserts that |expr| must be truthy in
@@ -381,6 +376,9 @@ MOZ_CrashPrintf(const char* aFilename, int aLine, const char* aFormat, ...);
  * This can cause user pain, so use it sparingly. If a MOZ_DIAGNOSTIC_ASSERT
  * is firing, it should promptly be converted to a MOZ_ASSERT while the failure
  * is being investigated, rather than letting users suffer.
+ *
+ * MOZ_DIAGNOSTIC_ASSERT_ENABLED is defined when MOZ_DIAGNOSTIC_ASSERT is like
+ * MOZ_RELEASE_ASSERT rather than MOZ_ASSERT.
  */
 
 /*
@@ -422,26 +420,32 @@ struct AssertionConditionType
 #  define MOZ_VALIDATE_ASSERT_CONDITION_TYPE(x)
 #endif
 
+#if defined(DEBUG) || defined(MOZ_ASAN)
+#  define MOZ_REPORT_ASSERTION_FAILURE(...) MOZ_ReportAssertionFailure(__VA_ARGS__)
+#else
+#  define MOZ_REPORT_ASSERTION_FAILURE(...) do { /* nothing */ } while (false)
+#endif
+
 /* First the single-argument form. */
 #define MOZ_ASSERT_HELPER1(expr) \
   do { \
     MOZ_VALIDATE_ASSERT_CONDITION_TYPE(expr); \
     if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
-      MOZ_ReportAssertionFailure(#expr, __FILE__, __LINE__); \
+      MOZ_REPORT_ASSERTION_FAILURE(#expr, __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ")"); \
       MOZ_REALLY_CRASH(__LINE__); \
     } \
-  } while (0)
+  } while (false)
 /* Now the two-argument form. */
 #define MOZ_ASSERT_HELPER2(expr, explain) \
   do { \
     MOZ_VALIDATE_ASSERT_CONDITION_TYPE(expr); \
     if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
-      MOZ_ReportAssertionFailure(#expr " (" explain ")", __FILE__, __LINE__); \
+      MOZ_REPORT_ASSERTION_FAILURE(#expr " (" explain ")", __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ") (" explain ")"); \
       MOZ_REALLY_CRASH(__LINE__); \
     } \
-  } while (0)
+  } while (false)
 
 #define MOZ_RELEASE_ASSERT_GLUE(a, b) a b
 #define MOZ_RELEASE_ASSERT(...) \
@@ -452,13 +456,17 @@ struct AssertionConditionType
 #ifdef DEBUG
 #  define MOZ_ASSERT(...) MOZ_RELEASE_ASSERT(__VA_ARGS__)
 #else
-#  define MOZ_ASSERT(...) do { } while (0)
+#  define MOZ_ASSERT(...) do { } while (false)
 #endif /* DEBUG */
 
-#ifdef RELEASE_OR_BETA
-#  define MOZ_DIAGNOSTIC_ASSERT MOZ_ASSERT
-#else
+#if defined(NIGHTLY_BUILD) || defined(MOZ_DEV_EDITION)
 #  define MOZ_DIAGNOSTIC_ASSERT MOZ_RELEASE_ASSERT
+#  define MOZ_DIAGNOSTIC_ASSERT_ENABLED 1
+#else
+#  define MOZ_DIAGNOSTIC_ASSERT MOZ_ASSERT
+#  ifdef DEBUG
+#    define MOZ_DIAGNOSTIC_ASSERT_ENABLED 1
+#  endif
 #endif
 
 /*
@@ -476,9 +484,9 @@ struct AssertionConditionType
        if (cond) { \
          MOZ_ASSERT(expr); \
        } \
-     } while (0)
+     } while (false)
 #else
-#  define MOZ_ASSERT_IF(cond, expr)  do { } while (0)
+#  define MOZ_ASSERT_IF(cond, expr)  do { } while (false)
 #endif
 
 /*
@@ -552,7 +560,7 @@ struct AssertionConditionType
    do { \
      MOZ_ASSERT_UNREACHABLE(reason); \
      MOZ_ASSUME_UNREACHABLE_MARKER(); \
-   } while (0)
+   } while (false)
 
 /**
  * MOZ_FALLTHROUGH_ASSERT is an annotation to suppress compiler warnings about
@@ -561,7 +569,7 @@ struct AssertionConditionType
  * unexpected values.
  *
  * Why do we need MOZ_FALLTHROUGH_ASSERT in addition to MOZ_FALLTHROUGH? In
- * release builds, the MOZ_ASSERT(false) will expand to `do { } while (0)`,
+ * release builds, the MOZ_ASSERT(false) will expand to `do { } while (false)`,
  * requiring a MOZ_FALLTHROUGH annotation to suppress a -Wimplicit-fallthrough
  * warning. In debug builds, the MOZ_ASSERT(false) will expand to something like
  * `if (true) { MOZ_CRASH(); }` and the MOZ_FALLTHROUGH annotation will cause
@@ -607,7 +615,7 @@ struct AssertionConditionType
        } else { \
          MOZ_ASSERT(false, #expr); \
        } \
-     } while (0)
+     } while (false)
 #  define MOZ_ALWAYS_FALSE(expr) \
      do { \
        if ((expr)) { \
@@ -615,20 +623,34 @@ struct AssertionConditionType
        } else { \
          /* Do nothing. */ \
        } \
-     } while (0)
+     } while (false)
+#  define MOZ_ALWAYS_OK(expr)        MOZ_ASSERT((expr).isOk())
+#  define MOZ_ALWAYS_ERR(expr)       MOZ_ASSERT((expr).isErr())
 #else
 #  define MOZ_ALWAYS_TRUE(expr) \
      do { \
        if ((expr)) { \
           /* Silence MOZ_MUST_USE. */ \
        } \
-     } while (0)
+     } while (false)
 #  define MOZ_ALWAYS_FALSE(expr) \
      do { \
        if ((expr)) { \
          /* Silence MOZ_MUST_USE. */ \
        } \
-     } while (0)
+     } while (false)
+#  define MOZ_ALWAYS_OK(expr) \
+     do { \
+       if ((expr).isOk()) { \
+         /* Silence MOZ_MUST_USE. */ \
+       } \
+     } while (false)
+#  define MOZ_ALWAYS_ERR(expr) \
+     do { \
+       if ((expr).isErr()) { \
+         /* Silence MOZ_MUST_USE. */ \
+       } \
+     } while (false)
 #endif
 
 #undef MOZ_DUMP_ASSERTION_STACK

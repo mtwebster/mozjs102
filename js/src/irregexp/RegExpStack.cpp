@@ -30,13 +30,13 @@
 
 #include "irregexp/RegExpStack.h"
 
-#include "vm/Runtime.h"
+#include "vm/JSContext.h"
 
 using namespace js;
 using namespace js::irregexp;
 
-RegExpStackScope::RegExpStackScope(JSRuntime* rt)
-  : regexp_stack(&rt->regexpStack)
+RegExpStackScope::RegExpStackScope(JSContext* cx)
+  : regexp_stack(&cx->regexpStack.ref())
 {}
 
 RegExpStackScope::~RegExpStackScope()
@@ -47,7 +47,8 @@ RegExpStackScope::~RegExpStackScope()
 bool
 irregexp::GrowBacktrackStack(JSRuntime* rt)
 {
-    return rt->regexpStack.grow();
+    AutoUnsafeCallWithABI unsafe;
+    return TlsContext.get()->regexpStack.ref().grow();
 }
 
 RegExpStack::RegExpStack()

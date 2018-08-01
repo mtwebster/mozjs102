@@ -198,27 +198,15 @@ LIRGeneratorARM64::newLTableSwitchV(MTableSwitch* tableswitch)
 }
 
 void
-LIRGeneratorARM64::visitGuardShape(MGuardShape* ins)
-{
-    MOZ_CRASH("visitGuardShape");
-}
-
-void
-LIRGeneratorARM64::visitGuardObjectGroup(MGuardObjectGroup* ins)
-{
-    MOZ_CRASH("visitGuardObjectGroup");
-}
-
-void
 LIRGeneratorARM64::lowerUrshD(MUrsh* mir)
 {
     MOZ_CRASH("lowerUrshD");
 }
 
 void
-LIRGeneratorARM64::visitAsmJSNeg(MAsmJSNeg* ins)
+LIRGeneratorARM64::visitWasmNeg(MWasmNeg* ins)
 {
-    MOZ_CRASH("visitAsmJSNeg");
+    MOZ_CRASH("visitWasmNeg");
 }
 
 void
@@ -264,21 +252,21 @@ LIRGeneratorARM64::visitAsmJSStoreHeap(MAsmJSStoreHeap* ins)
 }
 
 void
-LIRGeneratorARM64::visitAsmJSCompareExchangeHeap(MAsmJSCompareExchangeHeap* ins)
+LIRGeneratorARM64::visitWasmCompareExchangeHeap(MWasmCompareExchangeHeap* ins)
 {
-    MOZ_CRASH("visitAsmJSCompareExchangeHeap");
+    MOZ_CRASH("visitWasmCompareExchangeHeap");
 }
 
 void
-LIRGeneratorARM64::visitAsmJSAtomicExchangeHeap(MAsmJSAtomicExchangeHeap* ins)
+LIRGeneratorARM64::visitWasmAtomicExchangeHeap(MWasmAtomicExchangeHeap* ins)
 {
-    MOZ_CRASH("visitAsmJSAtomicExchangeHeap");
+    MOZ_CRASH("visitWasmAtomicExchangeHeap");
 }
 
 void
-LIRGeneratorARM64::visitAsmJSAtomicBinopHeap(MAsmJSAtomicBinopHeap* ins)
+LIRGeneratorARM64::visitWasmAtomicBinopHeap(MWasmAtomicBinopHeap* ins)
 {
-    MOZ_CRASH("visitAsmJSAtomicBinopHeap");
+    MOZ_CRASH("visitWasmAtomicBinopHeap");
 }
 
 void
@@ -291,12 +279,6 @@ void
 LIRGeneratorARM64::lowerTruncateFToInt32(MTruncateToInt32* ins)
 {
     MOZ_CRASH("lowerTruncateFToInt32");
-}
-
-void
-LIRGeneratorARM64::visitStoreTypedArrayElementStatic(MStoreTypedArrayElementStatic* ins)
-{
-    MOZ_CRASH("NYI");
 }
 
 void
@@ -364,6 +346,12 @@ LIRGeneratorARM64::visitCopySign(MCopySign* ins)
 
 void
 LIRGeneratorARM64::visitExtendInt32ToInt64(MExtendInt32ToInt64* ins)
+{
+    MOZ_CRASH("NYI");
+}
+
+void
+LIRGeneratorARM64::visitSignExtendInt64(MSignExtendInt64* ins)
 {
     MOZ_CRASH("NYI");
 }

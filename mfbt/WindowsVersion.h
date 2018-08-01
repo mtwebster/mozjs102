@@ -7,6 +7,7 @@
 #ifndef mozilla_WindowsVersion_h
 #define mozilla_WindowsVersion_h
 
+#include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include <stdint.h>
 #include <windows.h>
@@ -16,8 +17,8 @@ namespace mozilla {
 inline bool
 IsWindowsVersionOrLater(uint32_t aVersion)
 {
-  static uint32_t minVersion = 0;
-  static uint32_t maxVersion = UINT32_MAX;
+  static Atomic<uint32_t> minVersion(0);
+  static Atomic<uint32_t> maxVersion(UINT32_MAX);
 
   if (minVersion >= aVersion) {
     return true;
@@ -56,8 +57,8 @@ IsWindowsVersionOrLater(uint32_t aVersion)
 inline bool
 IsWindowsBuildOrLater(uint32_t aBuild)
 {
-  static uint32_t minBuild = 0;
-  static uint32_t maxBuild = UINT32_MAX;
+  static Atomic<uint32_t> minBuild(0);
+  static Atomic<uint32_t> maxBuild(UINT32_MAX);
 
   if (minBuild >= aBuild) {
     return true;
@@ -84,80 +85,43 @@ IsWindowsBuildOrLater(uint32_t aBuild)
   return false;
 }
 
-#if defined(_M_X64) || defined(_M_AMD64)
-// We support only Win7 or later on Win64.
-MOZ_ALWAYS_INLINE bool
-IsXPSP3OrLater()
+inline bool
+IsWindows10BuildOrLater(uint32_t aBuild)
 {
-  return true;
-}
+  static Atomic<uint32_t> minBuild(0);
+  static Atomic<uint32_t> maxBuild(UINT32_MAX);
 
-MOZ_ALWAYS_INLINE bool
-IsWin2003OrLater()
-{
-  return true;
-}
+  if (minBuild >= aBuild) {
+    return true;
+  }
 
-MOZ_ALWAYS_INLINE bool
-IsWin2003SP2OrLater()
-{
-  return true;
-}
+  if (aBuild >= maxBuild) {
+    return false;
+  }
 
-MOZ_ALWAYS_INLINE bool
-IsVistaOrLater()
-{
-  return true;
-}
+  OSVERSIONINFOEX info;
+  ZeroMemory(&info, sizeof(OSVERSIONINFOEX));
+  info.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+  info.dwMajorVersion = 10;
+  info.dwBuildNumber = aBuild;
 
-MOZ_ALWAYS_INLINE bool
-IsVistaSP1OrLater()
-{
-  return true;
-}
+  DWORDLONG conditionMask = 0;
+  VER_SET_CONDITION(conditionMask, VER_MAJORVERSION, VER_GREATER_EQUAL);
+  VER_SET_CONDITION(conditionMask, VER_MINORVERSION, VER_GREATER_EQUAL);
+  VER_SET_CONDITION(conditionMask, VER_BUILDNUMBER, VER_GREATER_EQUAL);
+  VER_SET_CONDITION(conditionMask, VER_SERVICEPACKMAJOR, VER_GREATER_EQUAL);
+  VER_SET_CONDITION(conditionMask, VER_SERVICEPACKMINOR, VER_GREATER_EQUAL);
 
-MOZ_ALWAYS_INLINE bool
-IsWin7OrLater()
-{
-  return true;
-}
-#else
-MOZ_ALWAYS_INLINE bool
-IsXPSP3OrLater()
-{
-  return IsWindowsVersionOrLater(0x05010300ul);
-}
+  if (VerifyVersionInfo(&info, VER_MAJORVERSION | VER_MINORVERSION |
+                        VER_BUILDNUMBER | VER_SERVICEPACKMAJOR |
+                        VER_SERVICEPACKMINOR, conditionMask)) {
+    minBuild = aBuild;
+    return true;
+  }
 
-MOZ_ALWAYS_INLINE bool
-IsWin2003OrLater()
-{
-  return IsWindowsVersionOrLater(0x05020000ul);
+  maxBuild = aBuild;
+  return false;
 }
-
-MOZ_ALWAYS_INLINE bool
-IsWin2003SP2OrLater()
-{
-  return IsWindowsVersionOrLater(0x05020200ul);
-}
-
-MOZ_ALWAYS_INLINE bool
-IsVistaOrLater()
-{
-  return IsWindowsVersionOrLater(0x06000000ul);
-}
-
-MOZ_ALWAYS_INLINE bool
-IsVistaSP1OrLater()
-{
-  return IsWindowsVersionOrLater(0x06000100ul);
-}
-
-MOZ_ALWAYS_INLINE bool
-IsWin7OrLater()
-{
-  return IsWindowsVersionOrLater(0x06010000ul);
-}
-#endif
 
 MOZ_ALWAYS_INLINE bool
 IsWin7SP1OrLater()
@@ -184,13 +148,18 @@ IsWin10OrLater()
 }
 
 MOZ_ALWAYS_INLINE bool
-IsNotWin7PreRTM()
+IsWin10CreatorsUpdateOrLater()
 {
-  return IsWin7SP1OrLater() || !IsWin7OrLater() ||
-         IsWindowsBuildOrLater(7600);
+  return IsWindows10BuildOrLater(15063);
 }
 
 MOZ_ALWAYS_INLINE bool
+IsNotWin7PreRTM()
+{
+  return IsWin7SP1OrLater() || IsWindowsBuildOrLater(7600);
+}
+
+inline bool
 IsWin7AndPre2000Compatible() {
   /*
    * See Bug 1279171.

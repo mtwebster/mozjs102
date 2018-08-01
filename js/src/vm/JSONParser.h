@@ -13,7 +13,7 @@
 #include "jspubtd.h"
 
 #include "ds/IdValuePair.h"
-#include "vm/String.h"
+#include "vm/StringType.h"
 
 namespace js {
 
@@ -256,10 +256,13 @@ class MOZ_STACK_CLASS JSONParser : public JSONParserBase
     void operator=(const JSONParser& other) = delete;
 };
 
-template <typename CharT>
-struct RootedBase<JSONParser<CharT>> {
+template <typename CharT, typename Wrapper>
+class MutableWrappedPtrOperations<JSONParser<CharT>, Wrapper>
+  : public WrappedPtrOperations<JSONParser<CharT>, Wrapper>
+{
+  public:
     bool parse(MutableHandleValue vp) {
-        return static_cast<Rooted<JSONParser<CharT>>*>(this)->get().parse(vp);
+        return static_cast<Wrapper*>(this)->get().parse(vp);
     }
 };
 

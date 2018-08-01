@@ -19,12 +19,12 @@
 #include "wasm/WasmBinaryToText.h"
 
 #include "jsnum.h"
-#include "jsprf.h"
 
+#include "util/StringBuffer.h"
 #include "vm/ArrayBufferObject.h"
-#include "vm/StringBuffer.h"
 #include "wasm/WasmAST.h"
 #include "wasm/WasmBinaryToAST.h"
+#include "wasm/WasmDebug.h"
 #include "wasm/WasmTextUtils.h"
 #include "wasm/WasmTypes.h"
 
@@ -42,11 +42,16 @@ struct WasmRenderContext
     WasmPrintBuffer& buffer;
     GeneratedSourceMap* maybeSourceMap;
     uint32_t indent;
-
     uint32_t currentFuncIndex;
 
-    WasmRenderContext(JSContext* cx, AstModule* module, WasmPrintBuffer& buffer, GeneratedSourceMap* sourceMap)
-      : cx(cx), module(module), buffer(buffer), maybeSourceMap(sourceMap), indent(0), currentFuncIndex(0)
+    WasmRenderContext(JSContext* cx, AstModule* module, WasmPrintBuffer& buffer,
+                      GeneratedSourceMap* sourceMap)
+      : cx(cx),
+        module(module),
+        buffer(buffer),
+        maybeSourceMap(sourceMap),
+        indent(0),
+        currentFuncIndex(0)
     {}
 
     StringBuffer& sb() { return buffer.stringBuffer(); }
@@ -96,11 +101,10 @@ RenderInt64(WasmRenderContext& c, int64_t num)
 }
 
 static bool
-RenderDouble(WasmRenderContext& c, RawF64 num)
+RenderDouble(WasmRenderContext& c, double d)
 {
-    double d = num.fp();
     if (IsNaN(d))
-        return RenderNaN(c.sb(), num);
+        return RenderNaN(c.sb(), d);
     if (IsNegativeZero(d))
         return c.buffer.append("-0");
     if (IsInfinite(d)) {
@@ -112,12 +116,11 @@ RenderDouble(WasmRenderContext& c, RawF64 num)
 }
 
 static bool
-RenderFloat32(WasmRenderContext& c, RawF32 num)
+RenderFloat32(WasmRenderContext& c, float f)
 {
-    float f = num.fp();
     if (IsNaN(f))
-        return RenderNaN(c.sb(), num);
-    return RenderDouble(c, RawF64(double(f)));
+        return RenderNaN(c.sb(), f);
+    return RenderDouble(c, double(f));
 }
 
 static bool
@@ -428,9 +431,9 @@ RenderSetGlobal(WasmRenderContext& c, AstSetGlobal& sg)
 }
 
 static bool
-RenderExprList(WasmRenderContext& c, const AstExprVector& exprs)
+RenderExprList(WasmRenderContext& c, const AstExprVector& exprs, uint32_t startAt = 0)
 {
-    for (uint32_t i = 0; i < exprs.length(); i++) {
+    for (uint32_t i = startAt; i < exprs.length(); i++) {
         if (!RenderExpr(c, *exprs[i]))
             return false;
     }
@@ -438,9 +441,9 @@ RenderExprList(WasmRenderContext& c, const AstExprVector& exprs)
 }
 
 static bool
-RenderBlock(WasmRenderContext& c, AstBlock& block)
+RenderBlock(WasmRenderContext& c, AstBlock& block, bool isInline = false)
 {
-    if (!RenderIndent(c))
+    if (!isInline && !RenderIndent(c))
         return false;
 
     MAP_AST_EXPR(c, block);
@@ -457,18 +460,36 @@ RenderBlock(WasmRenderContext& c, AstBlock& block)
     if (!RenderBlockNameAndSignature(c, block.name(), block.type()))
         return false;
 
+    uint32_t startAtSubExpr = 0;
+
+    // If there is a stack of blocks, print them all inline.
+    if (block.op() == Op::Block &&
+        block.exprs().length() &&
+        block.exprs()[0]->kind() == AstExprKind::Block &&
+        block.exprs()[0]->as<AstBlock>().op() == Op::Block)
+    {
+        if (!c.buffer.append(' '))
+            return false;
+
+        // Render the first inner expr (block) at the same indent level, but
+        // next instructions one level further.
+        if (!RenderBlock(c, block.exprs()[0]->as<AstBlock>(), /* isInline */ true))
+            return false;
+
+        startAtSubExpr = 1;
+    }
+
     if (!c.buffer.append('\n'))
         return false;
 
     c.indent++;
-    if (!RenderExprList(c, block.exprs()))
+    if (!RenderExprList(c, block.exprs(), startAtSubExpr))
         return false;
     c.indent--;
 
-    if (!RenderIndent(c))
-        return false;
-
-    return c.buffer.append("end");
+    return RenderIndent(c) &&
+           c.buffer.append("end ") &&
+           RenderName(c, block.name());
 }
 
 static bool
@@ -714,12 +735,46 @@ RenderConversionOperator(WasmRenderContext& c, AstConversionOperator& conv)
       case Op::F64ConvertUI64:    opStr = "f64.convert_u/i64"; break;
       case Op::F64ReinterpretI64: opStr = "f64.reinterpret/i64"; break;
       case Op::F64PromoteF32:     opStr = "f64.promote/f32"; break;
+#ifdef ENABLE_WASM_SIGNEXTEND_OPS
+      case Op::I32Extend8S:       opStr = "i32.extend8_s"; break;
+      case Op::I32Extend16S:      opStr = "i32.extend16_s"; break;
+      case Op::I64Extend8S:       opStr = "i64.extend8_s"; break;
+      case Op::I64Extend16S:      opStr = "i64.extend16_s"; break;
+      case Op::I64Extend32S:      opStr = "i64.extend32_s"; break;
+#endif
       case Op::I32Eqz:            opStr = "i32.eqz"; break;
       case Op::I64Eqz:            opStr = "i64.eqz"; break;
       default:                      return Fail(c, "unexpected conversion operator");
     }
     return c.buffer.append(opStr, strlen(opStr));
 }
+
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+static bool
+RenderExtraConversionOperator(WasmRenderContext& c, AstExtraConversionOperator& conv)
+{
+    if (!RenderExpr(c, *conv.operand()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, conv);
+    const char* opStr;
+    switch (conv.op()) {
+      case NumericOp::I32TruncSSatF32:   opStr = "i32.trunc_s:sat/f32"; break;
+      case NumericOp::I32TruncUSatF32:   opStr = "i32.trunc_u:sat/f32"; break;
+      case NumericOp::I32TruncSSatF64:   opStr = "i32.trunc_s:sat/f64"; break;
+      case NumericOp::I32TruncUSatF64:   opStr = "i32.trunc_u:sat/f64"; break;
+      case NumericOp::I64TruncSSatF32:   opStr = "i64.trunc_s:sat/f32"; break;
+      case NumericOp::I64TruncUSatF32:   opStr = "i64.trunc_u:sat/f32"; break;
+      case NumericOp::I64TruncSSatF64:   opStr = "i64.trunc_s:sat/f64"; break;
+      case NumericOp::I64TruncUSatF64:   opStr = "i64.trunc_u:sat/f64"; break;
+      default:                      return Fail(c, "unexpected extra conversion operator");
+    }
+    return c.buffer.append(opStr, strlen(opStr));
+}
+#endif
 
 static bool
 RenderIf(WasmRenderContext& c, AstIf& if_)
@@ -1018,6 +1073,211 @@ RenderReturn(WasmRenderContext& c, AstReturn& ret)
 }
 
 static bool
+RenderAtomicCmpXchg(WasmRenderContext& c, AstAtomicCmpXchg& cmpxchg)
+{
+    if (!RenderLoadStoreBase(c, cmpxchg.address()))
+        return false;
+
+    if (!RenderExpr(c, cmpxchg.expected()))
+        return false;
+    if (!RenderExpr(c, cmpxchg.replacement()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, cmpxchg);
+    const char* opname;
+    switch (cmpxchg.op()) {
+      case ThreadOp::I32AtomicCmpXchg8U:  opname = "i32.atomic.rmw8_u.cmpxchg"; break;
+      case ThreadOp::I64AtomicCmpXchg8U:  opname = "i64.atomic.rmw8_u.cmpxchg"; break;
+      case ThreadOp::I32AtomicCmpXchg16U: opname = "i32.atomic.rmw16_u.cmpxchg"; break;
+      case ThreadOp::I64AtomicCmpXchg16U: opname = "i64.atomic.rmw16_u.cmpxchg"; break;
+      case ThreadOp::I64AtomicCmpXchg32U: opname = "i64.atomic.rmw32_u.cmpxchg"; break;
+      case ThreadOp::I32AtomicCmpXchg:    opname = "i32.atomic.rmw.cmpxchg"; break;
+      case ThreadOp::I64AtomicCmpXchg:    opname = "i64.atomic.rmw.cmpxchg"; break;
+      default:                            return Fail(c, "unexpected cmpxchg operator");
+    }
+
+    if (!c.buffer.append(opname, strlen(opname)))
+        return false;
+
+    return RenderLoadStoreAddress(c, cmpxchg.address(), 0);
+}
+
+static bool
+RenderAtomicLoad(WasmRenderContext& c, AstAtomicLoad& load)
+{
+    if (!RenderLoadStoreBase(c, load.address()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, load);
+    const char* opname;
+    switch (load.op()) {
+      case ThreadOp::I32AtomicLoad8U:  opname = "i32.atomic.load8_u"; break;
+      case ThreadOp::I64AtomicLoad8U:  opname = "i64.atomic.load8_u"; break;
+      case ThreadOp::I32AtomicLoad16U: opname = "i32.atomic.load16_u"; break;
+      case ThreadOp::I64AtomicLoad16U: opname = "i64.atomic.load16_u"; break;
+      case ThreadOp::I64AtomicLoad32U: opname = "i64.atomic.load32_u"; break;
+      case ThreadOp::I32AtomicLoad:    opname = "i32.atomic.load"; break;
+      case ThreadOp::I64AtomicLoad:    opname = "i64.atomic.load"; break;
+      default:                         return Fail(c, "unexpected load operator");
+    }
+
+    if (!c.buffer.append(opname, strlen(opname)))
+        return false;
+
+    return RenderLoadStoreAddress(c, load.address(), 0);
+}
+
+static bool
+RenderAtomicRMW(WasmRenderContext& c, AstAtomicRMW& rmw)
+{
+    if (!RenderLoadStoreBase(c, rmw.address()))
+        return false;
+
+    if (!RenderExpr(c, rmw.value()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, rmw);
+    const char* opname;
+    switch (rmw.op()) {
+      case ThreadOp::I32AtomicAdd:     opname = "i32.atomic.rmw.add"; break;
+      case ThreadOp::I64AtomicAdd:     opname = "i64.atomic.rmw.add"; break;
+      case ThreadOp::I32AtomicAdd8U:   opname = "i32.atomic.rmw8_u.add"; break;
+      case ThreadOp::I32AtomicAdd16U:  opname = "i32.atomic.rmw16_u.add"; break;
+      case ThreadOp::I64AtomicAdd8U:   opname = "i64.atomic.rmw8_u.add"; break;
+      case ThreadOp::I64AtomicAdd16U:  opname = "i64.atomic.rmw16_u.add"; break;
+      case ThreadOp::I64AtomicAdd32U:  opname = "i64.atomic.rmw32_u.add"; break;
+      case ThreadOp::I32AtomicSub:     opname = "i32.atomic.rmw.sub"; break;
+      case ThreadOp::I64AtomicSub:     opname = "i64.atomic.rmw.sub"; break;
+      case ThreadOp::I32AtomicSub8U:   opname = "i32.atomic.rmw8_u.sub"; break;
+      case ThreadOp::I32AtomicSub16U:  opname = "i32.atomic.rmw16_u.sub"; break;
+      case ThreadOp::I64AtomicSub8U:   opname = "i64.atomic.rmw8_u.sub"; break;
+      case ThreadOp::I64AtomicSub16U:  opname = "i64.atomic.rmw16_u.sub"; break;
+      case ThreadOp::I64AtomicSub32U:  opname = "i64.atomic.rmw32_u.sub"; break;
+      case ThreadOp::I32AtomicAnd:     opname = "i32.atomic.rmw.and"; break;
+      case ThreadOp::I64AtomicAnd:     opname = "i64.atomic.rmw.and"; break;
+      case ThreadOp::I32AtomicAnd8U:   opname = "i32.atomic.rmw8_u.and"; break;
+      case ThreadOp::I32AtomicAnd16U:  opname = "i32.atomic.rmw16_u.and"; break;
+      case ThreadOp::I64AtomicAnd8U:   opname = "i64.atomic.rmw8_u.and"; break;
+      case ThreadOp::I64AtomicAnd16U:  opname = "i64.atomic.rmw16_u.and"; break;
+      case ThreadOp::I64AtomicAnd32U:  opname = "i64.atomic.rmw32_u.and"; break;
+      case ThreadOp::I32AtomicOr:      opname = "i32.atomic.rmw.or"; break;
+      case ThreadOp::I64AtomicOr:      opname = "i64.atomic.rmw.or"; break;
+      case ThreadOp::I32AtomicOr8U:    opname = "i32.atomic.rmw8_u.or"; break;
+      case ThreadOp::I32AtomicOr16U:   opname = "i32.atomic.rmw16_u.or"; break;
+      case ThreadOp::I64AtomicOr8U:    opname = "i64.atomic.rmw8_u.or"; break;
+      case ThreadOp::I64AtomicOr16U:   opname = "i64.atomic.rmw16_u.or"; break;
+      case ThreadOp::I64AtomicOr32U:   opname = "i64.atomic.rmw32_u.or"; break;
+      case ThreadOp::I32AtomicXor:     opname = "i32.atomic.rmw.xor"; break;
+      case ThreadOp::I64AtomicXor:     opname = "i64.atomic.rmw.xor"; break;
+      case ThreadOp::I32AtomicXor8U:   opname = "i32.atomic.rmw8_u.xor"; break;
+      case ThreadOp::I32AtomicXor16U:  opname = "i32.atomic.rmw16_u.xor"; break;
+      case ThreadOp::I64AtomicXor8U:   opname = "i64.atomic.rmw8_u.xor"; break;
+      case ThreadOp::I64AtomicXor16U:  opname = "i64.atomic.rmw16_u.xor"; break;
+      case ThreadOp::I64AtomicXor32U:  opname = "i64.atomic.rmw32_u.xor"; break;
+      case ThreadOp::I32AtomicXchg:    opname = "i32.atomic.rmw.xchg"; break;
+      case ThreadOp::I64AtomicXchg:    opname = "i64.atomic.rmw.xchg"; break;
+      case ThreadOp::I32AtomicXchg8U:  opname = "i32.atomic.rmw8_u.xchg"; break;
+      case ThreadOp::I32AtomicXchg16U: opname = "i32.atomic.rmw16_u.xchg"; break;
+      case ThreadOp::I64AtomicXchg8U:  opname = "i64.atomic.rmw8_u.xchg"; break;
+      case ThreadOp::I64AtomicXchg16U: opname = "i64.atomic.rmw16_u.xchg"; break;
+      case ThreadOp::I64AtomicXchg32U: opname = "i64.atomic.rmw32_u.xchg"; break;
+      default:                         return Fail(c, "unexpected rmw operator");
+    }
+
+    if (!c.buffer.append(opname, strlen(opname)))
+        return false;
+
+    return RenderLoadStoreAddress(c, rmw.address(), 0);
+}
+
+static bool
+RenderAtomicStore(WasmRenderContext& c, AstAtomicStore& store)
+{
+    if (!RenderLoadStoreBase(c, store.address()))
+        return false;
+
+    if (!RenderExpr(c, store.value()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, store);
+    const char* opname;
+    switch (store.op()) {
+      case ThreadOp::I32AtomicStore8U:  opname = "i32.atomic.store8_u"; break;
+      case ThreadOp::I64AtomicStore8U:  opname = "i64.atomic.store8_u"; break;
+      case ThreadOp::I32AtomicStore16U: opname = "i32.atomic.store16_u"; break;
+      case ThreadOp::I64AtomicStore16U: opname = "i64.atomic.store16_u"; break;
+      case ThreadOp::I64AtomicStore32U: opname = "i64.atomic.store32_u"; break;
+      case ThreadOp::I32AtomicStore:    opname = "i32.atomic.store"; break;
+      case ThreadOp::I64AtomicStore:    opname = "i64.atomic.store"; break;
+      default:                          return Fail(c, "unexpected store operator");
+    }
+
+    if (!c.buffer.append(opname, strlen(opname)))
+        return false;
+
+    return RenderLoadStoreAddress(c, store.address(), 0);
+}
+
+static bool
+RenderWait(WasmRenderContext& c, AstWait& wait)
+{
+    if (!RenderLoadStoreBase(c, wait.address()))
+        return false;
+
+    if (!RenderExpr(c, wait.expected()))
+        return false;
+
+    if (!RenderExpr(c, wait.timeout()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    MAP_AST_EXPR(c, wait);
+    const char* opname;
+    switch (wait.op()) {
+      case ThreadOp::I32Wait:  opname = "i32.atomic.wait"; break;
+      case ThreadOp::I64Wait:  opname = "i64.atomic.wait"; break;
+      default:           return Fail(c, "unexpected wait operator");
+    }
+
+    if (!c.buffer.append(opname, strlen(opname)))
+        return false;
+
+    return RenderLoadStoreAddress(c, wait.address(), 0);
+}
+
+static bool
+RenderWake(WasmRenderContext& c, AstWake& wake)
+{
+    if (!RenderLoadStoreBase(c, wake.address()))
+        return false;
+
+    if (!RenderExpr(c, wake.count()))
+        return false;
+
+    if (!RenderIndent(c))
+        return false;
+
+    if (!c.buffer.append("atomic.wake", strlen("atomic.wake")))
+        return false;
+
+    return RenderLoadStoreAddress(c, wake.address(), 0);
+}
+
+static bool
 RenderExpr(WasmRenderContext& c, AstExpr& expr, bool newLine /* = true */)
 {
     switch (expr.kind()) {
@@ -1093,6 +1353,12 @@ RenderExpr(WasmRenderContext& c, AstExpr& expr, bool newLine /* = true */)
         if (!RenderConversionOperator(c, expr.as<AstConversionOperator>()))
             return false;
         break;
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+      case AstExprKind::ExtraConversionOperator:
+        if (!RenderExtraConversionOperator(c, expr.as<AstExtraConversionOperator>()))
+            return false;
+        break;
+#endif
       case AstExprKind::Load:
         if (!RenderLoad(c, expr.as<AstLoad>()))
             return false;
@@ -1124,6 +1390,30 @@ RenderExpr(WasmRenderContext& c, AstExpr& expr, bool newLine /* = true */)
         break;
       case AstExprKind::GrowMemory:
         if (!RenderGrowMemory(c, expr.as<AstGrowMemory>()))
+            return false;
+        break;
+      case AstExprKind::AtomicCmpXchg:
+        if (!RenderAtomicCmpXchg(c, expr.as<AstAtomicCmpXchg>()))
+            return false;
+        break;
+      case AstExprKind::AtomicLoad:
+        if (!RenderAtomicLoad(c, expr.as<AstAtomicLoad>()))
+            return false;
+        break;
+      case AstExprKind::AtomicRMW:
+        if (!RenderAtomicRMW(c, expr.as<AstAtomicRMW>()))
+            return false;
+        break;
+      case AstExprKind::AtomicStore:
+        if (!RenderAtomicStore(c, expr.as<AstAtomicStore>()))
+            return false;
+        break;
+      case AstExprKind::Wait:
+        if (!RenderWait(c, expr.as<AstWait>()))
+            return false;
+        break;
+      case AstExprKind::Wake:
+        if (!RenderWake(c, expr.as<AstWake>()))
             return false;
         break;
       default:
@@ -1219,6 +1509,10 @@ RenderLimits(WasmRenderContext& c, const Limits& limits)
         if (!RenderInt32(c, *limits.maximum))
             return false;
     }
+    if (limits.shared == Shareable::True) {
+        if (!c.buffer.append(" shared"))
+            return false;
+    }
     return true;
 }
 
@@ -1229,6 +1523,7 @@ RenderResizableTable(WasmRenderContext& c, const Limits& table)
         return false;
     if (!RenderLimits(c, table))
         return false;
+    MOZ_ASSERT(table.shared == Shareable::False);
     return c.buffer.append(" anyfunc)");
 }
 
@@ -1356,20 +1651,27 @@ RenderGlobalSection(WasmRenderContext& c, const AstModule& module)
 }
 
 static bool
-RenderResizableMemory(WasmRenderContext& c, Limits memory)
+RenderResizableMemory(WasmRenderContext& c, const Limits& memory)
 {
     if (!c.buffer.append("(memory "))
         return false;
 
-    MOZ_ASSERT(memory.initial % PageSize == 0);
-    memory.initial /= PageSize;
+    Limits resizedMemory = memory;
 
-    if (memory.maximum) {
-        MOZ_ASSERT(*memory.maximum % PageSize == 0);
-        *memory.maximum /= PageSize;
+    MOZ_ASSERT(resizedMemory.initial % PageSize == 0);
+    resizedMemory.initial /= PageSize;
+
+    if (resizedMemory.maximum) {
+        if (*resizedMemory.maximum == UINT32_MAX) {
+            // See special casing in DecodeMemoryLimits.
+            *resizedMemory.maximum = MaxMemoryMaximumPages;
+        } else {
+            MOZ_ASSERT(*resizedMemory.maximum % PageSize == 0);
+            *resizedMemory.maximum /= PageSize;
+        }
     }
 
-    if (!RenderLimits(c, memory))
+    if (!RenderLimits(c, resizedMemory))
         return false;
 
     return c.buffer.append(")");
@@ -1403,8 +1705,12 @@ RenderImport(WasmRenderContext& c, AstImport& import, const AstModule& module)
 
     switch (import.kind()) {
       case DefinitionKind::Function: {
+        if (!c.buffer.append("(func"))
+            return false;
         const AstSig* sig = module.sigs()[import.funcSig().index()];
         if (!RenderSignature(c, *sig))
+            return false;
+        if (!c.buffer.append(")"))
             return false;
         break;
       }
@@ -1479,7 +1785,7 @@ RenderExport(WasmRenderContext& c, AstExport& export_,
         break;
       }
       case DefinitionKind::Global: {
-        if (!c.buffer.append("global"))
+        if (!c.buffer.append("global "))
             return false;
         if (!RenderRef(c, export_.ref()))
             return false;
@@ -1507,9 +1813,6 @@ static bool
 RenderFunctionBody(WasmRenderContext& c, AstFunc& func, const AstModule::SigVector& sigs)
 {
     const AstSig* sig = sigs[func.sig().index()];
-
-    size_t startExprIndex = c.maybeSourceMap ? c.maybeSourceMap->exprlocs().length() : 0;
-    uint32_t startLineno = c.buffer.lineno();
 
     uint32_t argsNum = sig->args().length();
     uint32_t localsNum = func.vars().length();
@@ -1543,12 +1846,8 @@ RenderFunctionBody(WasmRenderContext& c, AstFunc& func, const AstModule::SigVect
             return false;
     }
 
-    size_t endExprIndex = c.maybeSourceMap ? c.maybeSourceMap->exprlocs().length() : 0;
-    uint32_t endLineno = c.buffer.lineno();
-
     if (c.maybeSourceMap) {
-        if (!c.maybeSourceMap->functionlocs().emplaceBack(startExprIndex, endExprIndex,
-                                                          startLineno, endLineno))
+        if (!c.maybeSourceMap->exprlocs().emplaceBack(c.buffer.lineno(), c.buffer.column(), func.endOffset()))
             return false;
     }
 
@@ -1723,7 +2022,8 @@ RenderModule(WasmRenderContext& c, AstModule& module)
 // Top-level functions
 
 bool
-wasm::BinaryToText(JSContext* cx, const uint8_t* bytes, size_t length, StringBuffer& buffer, GeneratedSourceMap* sourceMap)
+wasm::BinaryToText(JSContext* cx, const uint8_t* bytes, size_t length, StringBuffer& buffer,
+                   GeneratedSourceMap* sourceMap /* = nullptr */)
 {
     LifoAlloc lifo(AST_LIFO_DEFAULT_CHUNK_SIZE);
 

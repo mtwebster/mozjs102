@@ -47,10 +47,6 @@ class TaggedProto
 
     HashNumber hashCode() const;
 
-    bool hasUniqueId() const;
-    bool ensureUniqueId() const;
-    uint64_t uniqueId() const;
-
     void trace(JSTracer* trc) {
         if (isObject())
             TraceManuallyBarrieredEdge(trc, &proto, "TaggedProto");
@@ -61,6 +57,44 @@ class TaggedProto
 };
 
 template <>
+struct MovableCellHasher<TaggedProto>
+{
+    using Key = TaggedProto;
+    using Lookup = TaggedProto;
+
+    static bool hasHash(const Lookup& l) {
+        return !l.isObject() || MovableCellHasher<JSObject*>::hasHash(l.toObject());
+    }
+    static bool ensureHash(const Lookup& l) {
+        return !l.isObject() || MovableCellHasher<JSObject*>::ensureHash(l.toObject());
+    }
+    static HashNumber hash(const Lookup& l) {
+        if (l.isDynamic())
+            return uint64_t(1);
+        if (!l.isObject())
+            return uint64_t(0);
+        return MovableCellHasher<JSObject*>::hash(l.toObject());
+    }
+    static bool match(const Key& k, const Lookup& l) {
+        return k.isDynamic() == l.isDynamic() &&
+               k.isObject() == l.isObject() &&
+               (!k.isObject() ||
+                MovableCellHasher<JSObject*>::match(k.toObject(), l.toObject()));
+    }
+};
+
+#ifdef DEBUG
+MOZ_ALWAYS_INLINE bool
+TaggedProtoIsNotGray(const TaggedProto& proto)
+{
+    if (!proto.isObject())
+        return true;
+
+    return JS::ObjectIsNotGray(proto.toObject());
+}
+#endif
+
+template <>
 struct InternalBarrierMethods<TaggedProto>
 {
     static void preBarrier(TaggedProto& proto);
@@ -69,20 +103,22 @@ struct InternalBarrierMethods<TaggedProto>
 
     static void readBarrier(const TaggedProto& proto);
 
-    static bool isMarkableTaggedPointer(TaggedProto proto) {
+    static bool isMarkable(const TaggedProto& proto) {
         return proto.isObject();
     }
 
-    static bool isMarkable(TaggedProto proto) {
-        return proto.isObject();
+#ifdef DEBUG
+    static bool thingIsNotGray(const TaggedProto& proto) {
+        return TaggedProtoIsNotGray(proto);
     }
+#endif
 };
 
-template<class Outer>
-class TaggedProtoOperations
+template <class Wrapper>
+class WrappedPtrOperations<TaggedProto, Wrapper>
 {
     const TaggedProto& value() const {
-        return static_cast<const Outer*>(this)->get();
+        return static_cast<const Wrapper*>(this)->get();
     }
 
   public:
@@ -95,18 +131,6 @@ class TaggedProtoOperations
     HashNumber hashCode() const { return value().hashCode(); }
     uint64_t uniqueId() const { return value().uniqueId(); }
 };
-
-template <>
-class HandleBase<TaggedProto> : public TaggedProtoOperations<Handle<TaggedProto>>
-{};
-
-template <>
-class RootedBase<TaggedProto> : public TaggedProtoOperations<Rooted<TaggedProto>>
-{};
-
-template <>
-class BarrieredBaseMixins<TaggedProto> : public TaggedProtoOperations<GCPtr<TaggedProto>>
-{};
 
 // If the TaggedProto is a JSObject pointer, convert to that type and call |f|
 // with the pointer. If the TaggedProto is lazy, calls F::defaultValue.

@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import hashlib
 import mozlog
 import logging
@@ -46,7 +48,8 @@ class DeviceManager(object):
     applications from the device.
 
     Never instantiate this class directly! Instead, instantiate an
-    implementation of it like DeviceManagerADB or DeviceManagerSUT.
+    implementation of it like DeviceManagerADB. New projects should strongly
+    consider using adb.py as an alternative.
     """
 
     _logcatNeedsRoot = True
@@ -467,13 +470,14 @@ class DeviceManager(object):
             return processInfo[0]
 
     @abstractmethod
-    def killProcess(self, processName, sig=None):
+    def killProcess(self, processName, sig=None, native=False):
         """
         Kills the process named processName. If sig is not None, process is
         killed with the specified signal.
 
         :param processName: path or name of the process to kill
         :param sig: signal to pass into the kill command (optional)
+        :param native: is this a native process, (like xpcshell)? (optional)
         """
 
     @abstractmethod
@@ -482,10 +486,7 @@ class DeviceManager(object):
         Reboots the device.
 
         :param wait: block on device to come back up before returning
-        :param ipAddr: if specified, try to make the device connect to this
-                       specific IP address after rebooting (only works with
-                       SUT; if None, we try to determine a reasonable address
-                       ourselves)
+        :param ipAddr: deprecated; do not use
         """
 
     @abstractmethod
@@ -528,10 +529,7 @@ class DeviceManager(object):
         :param destPath: Destination directory to where the application should
                          be installed (optional)
         :param wait: block on device to come back up before returning
-        :param ipAddr: if specified, try to make the device connect to this
-                       specific IP address after rebooting (only works with
-                       SUT; if None and wait is True, we try to determine a
-                       reasonable address ourselves)
+        :param ipAddr: deprecated; do not use
         """
 
     @staticmethod
@@ -572,7 +570,7 @@ class DeviceManager(object):
 
         try:
             mdsum = hashlib.md5()
-        except:
+        except Exception:
             return None
 
         while 1:
@@ -610,9 +608,9 @@ class DeviceManager(object):
 
 def _pop_last_line(file_obj):
     """
-    Utility function to get the last line from a file (shared between ADB and
-    SUT device managers). Function also removes it from the file. Intended to
-    strip off the return code from a shell command.
+    Utility function to get the last line from a file. Function also removes
+    it from the file. Intended to strip off the return code from a shell
+    command.
     """
     bytes_from_end = 1
     file_obj.seek(0, 2)
@@ -639,36 +637,3 @@ def _pop_last_line(file_obj):
         bytes_from_end += 1
 
     return None
-
-
-class ZeroconfListener(object):
-
-    def __init__(self, hwid, evt):
-        self.hwid = hwid
-        self.evt = evt
-
-    # Format is 'SUTAgent [hwid:015d2bc2825ff206] [ip:10_242_29_221]._sutagent._tcp.local.'
-    def addService(self, zeroconf, type, name):
-        # print "Found _sutagent service broadcast:", name
-        if not name.startswith("SUTAgent"):
-            return
-
-        sutname = name.split('.')[0]
-        m = re.search('\[hwid:([^\]]*)\]', sutname)
-        if m is None:
-            return
-
-        hwid = m.group(1)
-
-        m = re.search('\[ip:([0-9_]*)\]', sutname)
-        if m is None:
-            return
-
-        ip = m.group(1).replace("_", ".")
-
-        if self.hwid == hwid:
-            self.ip = ip
-            self.evt.set()
-
-    def removeService(self, zeroconf, type, name):
-        pass

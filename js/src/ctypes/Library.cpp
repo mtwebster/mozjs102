@@ -34,7 +34,7 @@ typedef Rooted<JSFlatString*>    RootedFlatString;
 
 static const JSClassOps sLibraryClassOps = {
   nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr, nullptr, Library::Finalize
+  nullptr, nullptr, Library::Finalize
 };
 
 static const JSClass sLibraryClass = {
@@ -148,7 +148,7 @@ Library::Create(JSContext* cx, HandleValue path, const JSCTypesCallbacks* callba
   libSpec.type = PR_LibSpec_Pathname;
 #endif
 
-  PRLibrary* library = PR_LoadLibraryWithFlags(libSpec, 0);
+  PRLibrary* library = PR_LoadLibraryWithFlags(libSpec, PR_LD_NOW);
 
 #ifndef XP_WIN
   JS_free(cx, pathBytes);
@@ -238,10 +238,11 @@ bool
 Library::Close(JSContext* cx, unsigned argc, Value* vp)
 {
   CallArgs args = CallArgsFromVp(argc, vp);
-  JSObject* obj = JS_THIS_OBJECT(cx, vp);
-  if (!obj)
-    return false;
-  if (!IsLibrary(obj)) {
+
+  RootedObject obj(cx);
+  if (args.thisv().isObject())
+    obj = &args.thisv().toObject();
+  if (!obj || !IsLibrary(obj)) {
     JS_ReportErrorASCII(cx, "not a library");
     return false;
   }

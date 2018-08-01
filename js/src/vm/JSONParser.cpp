@@ -13,11 +13,10 @@
 #include <ctype.h>
 
 #include "jsarray.h"
-#include "jscompartment.h"
 #include "jsnum.h"
-#include "jsprf.h"
 
-#include "vm/StringBuffer.h"
+#include "util/StringBuffer.h"
+#include "vm/JSCompartment.h"
 
 #include "vm/NativeObject-inl.h"
 
@@ -606,8 +605,8 @@ JSONParserBase::finishArray(MutableHandleValue vp, ElementVector& elements)
 {
     MOZ_ASSERT(&elements == &stack.back().elements());
 
-    JSObject* obj = ObjectGroup::newArrayObject(cx, elements.begin(), elements.length(),
-                                                GenericObject);
+    ArrayObject* obj = ObjectGroup::newArrayObject(cx, elements.begin(), elements.length(),
+                                                   GenericObject);
     if (!obj)
         return false;
 

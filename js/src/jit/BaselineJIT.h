@@ -9,13 +9,12 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "jscntxt.h"
-#include "jscompartment.h"
-
 #include "ds/LifoAlloc.h"
 #include "jit/Bailouts.h"
 #include "jit/IonCode.h"
 #include "jit/MacroAssembler.h"
+#include "vm/JSCompartment.h"
+#include "vm/JSContext.h"
 #include "vm/TraceLogging.h"
 
 namespace js {
@@ -24,6 +23,7 @@ namespace jit {
 class StackValue;
 class BaselineICEntry;
 class ICStub;
+class ControlFlowGraph;
 
 class PCMappingSlotInfo
 {
@@ -193,7 +193,12 @@ struct BaselineScript
         ION_COMPILED_OR_INLINED = 1 << 4,
 
         // Flag is set if this script has profiling instrumentation turned on.
-        PROFILER_INSTRUMENTATION_ON = 1 << 5
+        PROFILER_INSTRUMENTATION_ON = 1 << 5,
+
+        // Whether this script uses its environment chain. This is currently
+        // determined by the BytecodeAnalysis and cached on the BaselineScript
+        // for IonBuilder.
+        USES_ENVIRONMENT_CHAIN = 1 << 6,
     };
 
   private:
@@ -238,6 +243,8 @@ struct BaselineScript
 
     // An ion compilation that is ready, but isn't linked yet.
     IonBuilder *pendingBuilder_;
+
+    ControlFlowGraph* controlFlowGraph_;
 
   public:
     // Do not call directly, use BaselineScript::New. This is public for cx->new_.
@@ -319,6 +326,13 @@ struct BaselineScript
         return flags_ & ION_COMPILED_OR_INLINED;
     }
 
+    void setUsesEnvironmentChain() {
+        flags_ |= USES_ENVIRONMENT_CHAIN;
+    }
+    bool usesEnvironmentChain() const {
+        return flags_ & USES_ENVIRONMENT_CHAIN;
+    }
+
     uint32_t prologueOffset() const {
         return prologueOffset_;
     }
@@ -372,13 +386,13 @@ struct BaselineScript
         templateEnv_ = templateEnv;
     }
 
-    void toggleBarriers(bool enabled, ReprotectCode reprotect = Reprotect) {
-        method()->togglePreBarriers(enabled, reprotect);
-    }
-
     bool containsCodeAddress(uint8_t* addr) const {
         return method()->raw() <= addr && addr <= method()->raw() + method()->instructionsSize();
     }
+
+    BaselineICEntry* maybeICEntryFromPCOffset(uint32_t pcOffset);
+    BaselineICEntry* maybeICEntryFromPCOffset(uint32_t pcOffset,
+                                              BaselineICEntry* prevLookedUpEntry);
 
     BaselineICEntry& icEntry(size_t index);
     BaselineICEntry& icEntryFromReturnOffset(CodeOffset returnOffset);
@@ -394,10 +408,10 @@ struct BaselineScript
         return icEntries_;
     }
 
-    void copyICEntries(JSScript* script, const BaselineICEntry* entries, MacroAssembler& masm);
+    void copyICEntries(JSScript* script, const BaselineICEntry* entries);
     void adoptFallbackStubs(FallbackICStubSpace* stubSpace);
 
-    void copyYieldEntries(JSScript* script, Vector<uint32_t>& yieldOffsets);
+    void copyYieldAndAwaitEntries(JSScript* script, Vector<uint32_t>& yieldAndAwaitOffsets);
 
     PCMappingIndexEntry& pcMappingIndexEntry(size_t index);
     CompactBufferReader pcMappingReader(size_t indexEntry);
@@ -433,8 +447,8 @@ struct BaselineScript
     }
 
 #ifdef JS_TRACE_LOGGING
-    void initTraceLogger(JSRuntime* runtime, JSScript* script, const Vector<CodeOffset>& offsets);
-    void toggleTraceLoggerScripts(JSRuntime* runtime, JSScript* script, bool enable);
+    void initTraceLogger(JSScript* script, const Vector<CodeOffset>& offsets);
+    void toggleTraceLoggerScripts(JSScript* script, bool enable);
     void toggleTraceLoggerEngine(bool enable);
 
     static size_t offsetOfTraceLoggerScriptEvent() {
@@ -449,7 +463,7 @@ struct BaselineScript
 #endif
 
     void noteAccessedGetter(uint32_t pcOffset);
-    void noteArrayWriteHole(uint32_t pcOffset);
+    void noteHasDenseAdd(uint32_t pcOffset);
 
     static size_t offsetOfFlags() {
         return offsetof(BaselineScript, flags_);
@@ -493,24 +507,32 @@ struct BaselineScript
         MOZ_ASSERT(hasPendingIonBuilder());
         return pendingBuilder_;
     }
-    void setPendingIonBuilder(JSRuntime* maybeRuntime, JSScript* script, js::jit::IonBuilder* builder) {
+    void setPendingIonBuilder(JSRuntime* rt, JSScript* script, js::jit::IonBuilder* builder) {
         MOZ_ASSERT(script->baselineScript() == this);
         MOZ_ASSERT(!builder || !hasPendingIonBuilder());
 
         if (script->isIonCompilingOffThread())
-            script->setIonScript(maybeRuntime, ION_PENDING_SCRIPT);
+            script->setIonScript(rt, ION_PENDING_SCRIPT);
 
         pendingBuilder_ = builder;
 
         // lazy linking cannot happen during asmjs to ion.
         clearDependentWasmImports();
 
-        script->updateBaselineOrIonRaw(maybeRuntime);
+        script->updateJitCodeRaw(rt);
     }
-    void removePendingIonBuilder(JSScript* script) {
-        setPendingIonBuilder(nullptr, script, nullptr);
+    void removePendingIonBuilder(JSRuntime* rt, JSScript* script) {
+        setPendingIonBuilder(rt, script, nullptr);
         if (script->maybeIonScript() == ION_PENDING_SCRIPT)
-            script->setIonScript(nullptr, nullptr);
+            script->setIonScript(rt, nullptr);
+    }
+
+    const ControlFlowGraph* controlFlowGraph() const {
+        return controlFlowGraph_;
+    }
+
+    void setControlFlowGraph(ControlFlowGraph* controlFlowGraph) {
+        controlFlowGraph_ = controlFlowGraph;
     }
 
 };
@@ -531,10 +553,7 @@ MethodStatus
 CanEnterBaselineMethod(JSContext* cx, RunState& state);
 
 MethodStatus
-CanEnterBaselineAtBranch(JSContext* cx, InterpreterFrame* fp, bool newType);
-
-JitExecStatus
-EnterBaselineMethod(JSContext* cx, RunState& state);
+CanEnterBaselineAtBranch(JSContext* cx, InterpreterFrame* fp);
 
 JitExecStatus
 EnterBaselineAtBranch(JSContext* cx, InterpreterFrame* fp, jsbytecode* pc);
@@ -581,6 +600,10 @@ struct BaselineBailoutInfo
     // The bytecode pc where we will resume.
     jsbytecode* resumePC;
 
+    // The bytecode pc of try block and fault block.
+    jsbytecode* tryPC;
+    jsbytecode* faultPC;
+
     // If resuming into a TypeMonitor IC chain, this field holds the
     // address of the first stub in that chain.  If this field is
     // set, then the actual jitcode resumed into is the jitcode for
@@ -603,7 +626,7 @@ struct BaselineBailoutInfo
 };
 
 uint32_t
-BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIterator& iter,
+BailoutIonToBaseline(JSContext* cx, JitActivation* activation, const JSJitFrameIter& iter,
                      bool invalidate, BaselineBailoutInfo** bailoutInfo,
                      const ExceptionBailoutInfo* exceptionInfo);
 
@@ -614,6 +637,8 @@ MarkActiveBaselineScripts(Zone* zone);
 
 MethodStatus
 BaselineCompile(JSContext* cx, JSScript* script, bool forceDebugInstrumentation = false);
+
+static const unsigned BASELINE_MAX_ARGS_LENGTH = 20000;
 
 } // namespace jit
 } // namespace js

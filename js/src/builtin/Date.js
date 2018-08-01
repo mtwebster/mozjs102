@@ -52,16 +52,13 @@ function GetCachedFormat(format, required, defaults) {
            "unexpected format key: please update the comment by " +
            "dateTimeFormatCache");
 
-    var runtimeDefaultLocale = RuntimeDefaultLocale();
-    var icuDefaultTimeZone = intl_defaultTimeZone();
-
     var formatters;
-    if (dateTimeFormatCache.runtimeDefaultLocale !== runtimeDefaultLocale ||
-        dateTimeFormatCache.icuDefaultTimeZone !== icuDefaultTimeZone)
+    if (!IsRuntimeDefaultLocale(dateTimeFormatCache.runtimeDefaultLocale) ||
+        !intl_isDefaultTimeZone(dateTimeFormatCache.icuDefaultTimeZone))
     {
         formatters = dateTimeFormatCache.formatters = new Record();
-        dateTimeFormatCache.runtimeDefaultLocale = runtimeDefaultLocale;
-        dateTimeFormatCache.icuDefaultTimeZone = icuDefaultTimeZone;
+        dateTimeFormatCache.runtimeDefaultLocale = RuntimeDefaultLocale();
+        dateTimeFormatCache.icuDefaultTimeZone = intl_defaultTimeZone();
     } else {
         formatters = dateTimeFormatCache.formatters;
     }
@@ -104,7 +101,7 @@ function Date_toLocaleString() {
     }
 
     // Step 7.
-    return intl_FormatDateTime(dateTimeFormat, x, false);
+    return intl_FormatDateTime(dateTimeFormat, x, /* formatToParts = */ false);
 }
 
 
@@ -137,7 +134,7 @@ function Date_toLocaleDateString() {
     }
 
     // Step 7.
-    return intl_FormatDateTime(dateTimeFormat, x, false);
+    return intl_FormatDateTime(dateTimeFormat, x, /* formatToParts = */ false);
 }
 
 
@@ -170,5 +167,5 @@ function Date_toLocaleTimeString() {
     }
 
     // Step 7.
-    return intl_FormatDateTime(dateTimeFormat, x, false);
+    return intl_FormatDateTime(dateTimeFormat, x, /* formatToParts = */ false);
 }

@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import logging
 import re
 import os
@@ -11,10 +13,10 @@ import traceback
 
 from distutils import dir_util
 
-from devicemanager import DeviceManager, DMError
+from .devicemanager import DeviceManager, DMError
 from mozprocess import ProcessHandler
 import mozfile
-import version_codes
+from . import version_codes
 
 
 class DeviceManagerADB(DeviceManager):
@@ -36,6 +38,7 @@ class DeviceManagerADB(DeviceManager):
     _tempDir = None
     _adb_version = None
     _sdk_version = None
+    _noDevicesOutput = "no devices/emulators found"
     connected = False
 
     def __init__(self, host=None, port=5555, retryLimit=5, packageName='fennec',
@@ -233,9 +236,7 @@ class DeviceManagerADB(DeviceManager):
 
     def pushFile(self, localname, destname, retryLimit=None, createDir=True):
         # you might expect us to put the file *in* the directory in this case,
-        # but that would be different behaviour from devicemanagerSUT. Throw
-        # an exception so we have the same behaviour between the two
-        # implementations
+        # but that would be inconsistent with historical behavior.
         retryLimit = retryLimit or self.retryLimit
         if self.dirExists(destname):
             raise DMError("Attempted to push a file (%s) to a directory (%s)!" %
@@ -278,7 +279,7 @@ class DeviceManagerADB(DeviceManager):
                                retryLimit=retryLimit, timeout=self.short_timeout)
                 if re.search("unzip: exiting", data) or re.search("Operation not permitted", data):
                     raise Exception("unzip failed, or permissions error")
-            except:
+            except Exception:
                 self._logger.warning(traceback.format_exc())
                 self._logger.warning("zip/unzip failure: falling back to normal push")
                 self._useZip = False
@@ -286,40 +287,28 @@ class DeviceManagerADB(DeviceManager):
         else:
             localDir = os.path.normpath(localDir)
             remoteDir = os.path.normpath(remoteDir)
-            copyRequired = False
-            if self._adb_version >= '1.0.36' and \
-               os.path.isdir(localDir) and self.dirExists(remoteDir):
-                # See do_sync_push in
-                # https://android.googlesource.com/platform/system/core/+/master/adb/file_sync_client.cpp
-                # Work around change in behavior in adb 1.0.36 where if
-                # the remote destination directory exists, adb push will
-                # copy the source directory *into* the destination
-                # directory otherwise it will copy the source directory
-                # *onto* the destination directory.
-                #
-                # If the destination directory does exist, push to its
-                # parent directory.  If the source and destination leaf
-                # directory names are different, copy the source directory
-                # to a temporary directory with the same leaf name as the
-                # destination so that when we push to the parent, the
-                # source is copied onto the destination directory.
-                localName = os.path.basename(localDir)
-                remoteName = os.path.basename(remoteDir)
-                if localName != remoteName:
-                    copyRequired = True
-                    tempParent = tempfile.mkdtemp()
-                    newLocal = os.path.join(tempParent, remoteName)
-                    dir_util.copy_tree(localDir, newLocal)
-                    localDir = newLocal
+            tempParent = tempfile.mkdtemp()
+            remoteName = os.path.basename(remoteDir)
+            newLocal = os.path.join(tempParent, remoteName)
+            dir_util.copy_tree(localDir, newLocal)
+            # See do_sync_push in
+            # https://android.googlesource.com/platform/system/core/+/master/adb/file_sync_client.cpp
+            # Work around change in behavior in adb 1.0.36 where if
+            # the remote destination directory exists, adb push will
+            # copy the source directory *into* the destination
+            # directory otherwise it will copy the source directory
+            # *onto* the destination directory.
+            if self._adb_version >= '1.0.36':
                 remoteDir = '/'.join(remoteDir.rstrip('/').split('/')[:-1])
             try:
-                self._checkCmd(["push", localDir, remoteDir],
-                               retryLimit=retryLimit, timeout=timeout)
-            except:
+                if self._checkCmd(["push", newLocal, remoteDir],
+                                  retryLimit=retryLimit, timeout=timeout):
+                    raise DMError("failed to push %s (copy of %s) to %s" %
+                                  (newLocal, localDir, remoteDir))
+            except BaseException:
                 raise
             finally:
-                if copyRequired:
-                    mozfile.remove(tempParent)
+                mozfile.remove(tempParent)
 
     def dirExists(self, remotePath):
         self._detectLsModifier()
@@ -425,7 +414,6 @@ class DeviceManagerADB(DeviceManager):
         acmd = ["-W"]
         cmd = ' '.join(cmd).strip()
         i = cmd.find(" ")
-        # SUT identifies the URL by looking for :\\ -- another strategy to consider
         re_url = re.compile('^[http|file|chrome|about].*')
         last = cmd.rfind(" ")
         uri = ""
@@ -436,7 +424,7 @@ class DeviceManagerADB(DeviceManager):
         else:
             args = cmd[i:].strip()
         acmd.append("-n")
-        acmd.append(cmd[0:i] + "/org.mozilla.gecko.BrowserApp")
+        acmd.append(cmd[0:i] + "/.App")
         if args != "":
             acmd.append("--es")
             acmd.append("args")
@@ -458,7 +446,14 @@ class DeviceManagerADB(DeviceManager):
         self._checkCmd(acmd)
         return outputFile
 
-    def killProcess(self, appname, sig=None):
+    def killProcess(self, appname, sig=None, native=False):
+        if not native and not sig:
+            try:
+                self.shellCheckOutput(["am", "force-stop", appname], timeout=self.short_timeout)
+            except Exception:
+                # no problem - will kill it instead
+                self._logger.info("killProcess failed force-stop of %s" % appname)
+
         shell_args = ["shell"]
         if self._sdk_version >= version_codes.N:
             # Bug 1334613 - force use of root
@@ -544,7 +539,17 @@ class DeviceManagerADB(DeviceManager):
                 localDir = os.path.join(tempParent, remoteName)
             else:
                 localDir = '/'.join(localDir.rstrip('/').split('/')[:-1])
-        self._runCmd(["pull", remoteDir, localDir]).wait()
+        cmd = ["pull", remoteDir, localDir]
+        proc = self._runCmd(cmd)
+        if proc.returncode != 0:
+            # Raise a DMError when the device is missing, but not when the
+            # directory is empty or missing.
+            output = ''.join(proc.output)
+            if (self._noDevicesOutput in output or
+                ("pulled" not in output and
+                 "does not exist" not in output)):
+                raise DMError("getDirectory() failed to pull %s: %s" %
+                              (remoteDir, proc.output))
         if copyRequired:
             dir_util.copy_tree(localDir, originalLocal)
             mozfile.remove(tempParent)
@@ -584,7 +589,7 @@ class DeviceManagerADB(DeviceManager):
                 try:
                     self.mkDir(root)
                     return root
-                except:
+                except Exception:
                     pass
 
         raise DMError("Unable to set up device root using paths: [%s]"
@@ -639,11 +644,13 @@ class DeviceManagerADB(DeviceManager):
         if directive == "systime" or directive == "all":
             ret["systime"] = self.shellCheckOutput(["date"], timeout=self.short_timeout)
         if directive == "memtotal" or directive == "all":
-            meminfo = {}
-            for line in self.pullFile("/proc/meminfo").splitlines():
-                key, value = line.split(":")
-                meminfo[key] = value.strip()
-            ret["memtotal"] = meminfo["MemTotal"]
+            out = self.shellCheckOutput(["cat", "/proc/meminfo"], timeout=self.short_timeout)
+            out = out.replace('\r\n', '\n').splitlines(True)
+            for line in out:
+                parts = line.split(":")
+                if len(parts) == 2 and parts[0] == "MemTotal":
+                    ret["memtotal"] = parts[1].strip()
+                    break
         if directive == "disk" or directive == "all":
             data = self.shellCheckOutput(
                 ["df", "/data", "/system", "/sdcard"], timeout=self.short_timeout)
@@ -684,16 +691,20 @@ class DeviceManagerADB(DeviceManager):
             self._logger.error("Timeout exceeded for _runCmd call '%s'" % ' '.join(finalArgs))
 
         retries = 0
+        proc = None
         while retries < retryLimit:
             proc = ProcessHandler(finalArgs, storeOutput=True,
                                   processOutputLine=self._log, onTimeout=_timeout)
             proc.run(timeout=timeout)
             proc.returncode = proc.wait()
-            if proc.returncode is None:
-                proc.kill()
-                retries += 1
-            else:
-                return proc
+            if proc.returncode is not None:
+                break
+            proc.kill()
+            self._logger.warning("_runCmd failed for '%s'" % ' '.join(finalArgs))
+            retries += 1
+        if retries >= retryLimit:
+            self._logger.warning("_runCmd exceeded all retries")
+        return proc
 
     # timeout is specified in seconds, and if no timeout is given,
     # we will run until we hit the default_timeout specified in the __init__
@@ -729,9 +740,16 @@ class DeviceManagerADB(DeviceManager):
             proc.run(timeout=timeout)
             ret_code = proc.wait()
             if ret_code is None:
+                self._logger.error("Failed to launch %s (may retry)" % finalArgs)
                 proc.kill()
                 retries += 1
             else:
+                if ret_code != 0:
+                    self._logger.error("Non-zero return code (%d) from %s" % (ret_code, finalArgs))
+                    self._logger.error("Output: %s" % proc.output)
+                output = ''.join(proc.output)
+                if self._noDevicesOutput in output:
+                    raise DMError(self._noDevicesOutput)
                 return ret_code
 
         raise DMError("Timeout exceeded for _checkCmd call after %d retries." % retries)
@@ -851,7 +869,7 @@ class DeviceManagerADB(DeviceManager):
             proc = ProcessHandler(["zip", "-?"], storeOutput=False, processOutputLine=_noOutput)
             proc.run()
             proc.wait()
-        except:
+        except Exception:
             return False
         return True
 

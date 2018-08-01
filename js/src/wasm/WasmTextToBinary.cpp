@@ -22,17 +22,17 @@
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Maybe.h"
 
-#include "jsdtoa.h"
 #include "jsnum.h"
-#include "jsprf.h"
-#include "jsstr.h"
 
+#include "builtin/String.h"
 #include "ds/LifoAlloc.h"
 #include "js/CharacterEncoding.h"
 #include "js/HashTable.h"
+#include "js/Printf.h"
+#include "util/DoubleToString.h"
 #include "wasm/WasmAST.h"
-#include "wasm/WasmBinaryFormat.h"
 #include "wasm/WasmTypes.h"
+#include "wasm/WasmValidate.h"
 
 using namespace js;
 using namespace js::wasm;
@@ -45,7 +45,6 @@ using mozilla::FloatingPoint;
 using mozilla::IsPowerOfTwo;
 using mozilla::Maybe;
 using mozilla::PositiveInfinity;
-using mozilla::SpecificNaN;
 
 /*****************************************************************************/
 // wasm text token stream
@@ -67,6 +66,10 @@ class WasmToken
     {
         Align,
         AnyFunc,
+        AtomicCmpXchg,
+        AtomicLoad,
+        AtomicRMW,
+        AtomicStore,
         BinaryOpcode,
         Block,
         Br,
@@ -88,6 +91,9 @@ class WasmToken
         Equal,
         Error,
         Export,
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+        ExtraConversionOpcode,
+#endif
         Float,
         Func,
         GetGlobal,
@@ -113,6 +119,7 @@ class WasmToken
         Return,
         SetGlobal,
         SetLocal,
+        Shared,
         SignedInteger,
         Start,
         Store,
@@ -125,7 +132,10 @@ class WasmToken
         UnaryOpcode,
         Unreachable,
         UnsignedInteger,
-        ValueType
+        ValueType,
+        Wait,
+        Wake,
+        Invalid
     };
   private:
     Kind kind_;
@@ -138,10 +148,12 @@ class WasmToken
         FloatLiteralKind floatLiteralKind_;
         ValType valueType_;
         Op op_;
+        NumericOp numericOp_;
+        ThreadOp threadOp_;
     } u;
   public:
     WasmToken()
-      : kind_(Kind(-1)),
+      : kind_(Kind::Invalid),
         begin_(nullptr),
         end_(nullptr),
         u()
@@ -152,6 +164,7 @@ class WasmToken
         end_(end)
     {
         MOZ_ASSERT(kind_ != Error);
+        MOZ_ASSERT(kind_ != Invalid);
         MOZ_ASSERT((kind == EndOfFile) == (begin == end));
     }
     explicit WasmToken(uint32_t index, const char16_t* begin, const char16_t* end)
@@ -207,13 +220,34 @@ class WasmToken
                    kind_ == Load || kind_ == Store);
         u.op_ = op;
     }
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+    explicit WasmToken(Kind kind, NumericOp op, const char16_t* begin, const char16_t* end)
+      : kind_(kind),
+        begin_(begin),
+        end_(end)
+    {
+        MOZ_ASSERT(begin != end);
+        MOZ_ASSERT(kind_ == ExtraConversionOpcode);
+        u.numericOp_ = op;
+    }
+#endif
+    explicit WasmToken(Kind kind, ThreadOp op, const char16_t* begin, const char16_t* end)
+      : kind_(kind),
+        begin_(begin),
+        end_(end)
+    {
+        MOZ_ASSERT(begin != end);
+        MOZ_ASSERT(kind_ == AtomicCmpXchg || kind_ == AtomicLoad || kind_ == AtomicRMW ||
+                   kind_ == AtomicStore || kind_ == Wait || kind_ == Wake);
+        u.threadOp_ = op;
+    }
     explicit WasmToken(const char16_t* begin)
       : kind_(Error),
         begin_(begin),
         end_(begin)
     {}
     Kind kind() const {
-        MOZ_ASSERT(kind_ != Kind(-1));
+        MOZ_ASSERT(kind_ != Kind::Invalid);
         return kind_;
     }
     const char16_t* begin() const {
@@ -258,8 +292,23 @@ class WasmToken
                    kind_ == Load || kind_ == Store);
         return u.op_;
     }
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+    NumericOp numericOp() const {
+        MOZ_ASSERT(kind_ == ExtraConversionOpcode);
+        return u.numericOp_;
+    }
+#endif
+    ThreadOp threadOp() const {
+        MOZ_ASSERT(kind_ == AtomicCmpXchg || kind_ == AtomicLoad || kind_ == AtomicRMW ||
+                   kind_ == AtomicStore || kind_ == Wait || kind_ == Wake);
+        return u.threadOp_;
+    }
     bool isOpcode() const {
         switch (kind_) {
+          case AtomicCmpXchg:
+          case AtomicLoad:
+          case AtomicRMW:
+          case AtomicStore:
           case BinaryOpcode:
           case Block:
           case Br:
@@ -270,6 +319,9 @@ class WasmToken
           case ComparisonOpcode:
           case Const:
           case ConversionOpcode:
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+          case ExtraConversionOpcode:
+#endif
           case CurrentMemory:
           case Drop:
           case GetGlobal:
@@ -287,6 +339,8 @@ class WasmToken
           case TernaryOpcode:
           case UnaryOpcode:
           case Unreachable:
+          case Wait:
+          case Wake:
             return true;
           case Align:
           case AnyFunc:
@@ -314,6 +368,7 @@ class WasmToken
           case OpenParen:
           case Param:
           case Result:
+          case Shared:
           case SignedInteger:
           case Start:
           case Table:
@@ -323,6 +378,8 @@ class WasmToken
           case UnsignedInteger:
           case ValueType:
             return false;
+          case Invalid:
+            break;
         }
         MOZ_CRASH("unexpected token kind");
     }
@@ -373,7 +430,9 @@ IsWasmLetter(char16_t c)
 static bool
 IsNameAfterDollar(char16_t c)
 {
-    return IsWasmLetter(c) || IsWasmDigit(c) || c == '_' || c == '$' || c == '-' || c == '.';
+    return IsWasmLetter(c) ||
+           IsWasmDigit(c) ||
+           c == '_' || c == '$' || c == '-' || c == '.' || c == '>';
 }
 
 static bool
@@ -544,7 +603,7 @@ class WasmTokenStream
     void skipSpaces();
 
   public:
-    WasmTokenStream(const char16_t* text, UniqueChars* error)
+    explicit WasmTokenStream(const char16_t* text)
       : cur_(text),
         end_(text + js_strlen(text)),
         lineStart_(text),
@@ -554,11 +613,11 @@ class WasmTokenStream
     {}
     void generateError(WasmToken token, UniqueChars* error) {
         unsigned column = token.begin() - lineStart_ + 1;
-        error->reset(JS_smprintf("parsing wasm text at %u:%u", line_, column));
+        *error = JS_smprintf("parsing wasm text at %u:%u", line_, column);
     }
     void generateError(WasmToken token, const char* msg, UniqueChars* error) {
         unsigned column = token.begin() - lineStart_ + 1;
-        error->reset(JS_smprintf("parsing wasm text at %u:%u: %s", line_, column, msg));
+        *error = JS_smprintf("parsing wasm text at %u:%u: %s", line_, column, msg);
     }
     WasmToken peek() {
         if (!lookaheadDepth_) {
@@ -602,12 +661,6 @@ class WasmTokenStream
         WasmToken token;
         if (getIf(WasmToken::Name, &token))
             return token.name();
-        return AstName();
-    }
-    AstName getIfText() {
-        WasmToken token;
-        if (getIf(WasmToken::Text, &token))
-            return token.text();
         return AstName();
     }
     bool getIfRef(AstRef* ref) {
@@ -835,6 +888,10 @@ WasmTokenStream::next()
             return WasmToken(WasmToken::Align, begin, cur_);
         if (consume(u"anyfunc"))
             return WasmToken(WasmToken::AnyFunc, begin, cur_);
+#ifdef ENABLE_WASM_THREAD_OPS
+        if (consume(u"atomic.wake"))
+            return WasmToken(WasmToken::Wake, ThreadOp::Wake, begin, cur_);
+#endif
         break;
 
       case 'b':
@@ -1107,6 +1164,66 @@ WasmTokenStream::next()
                     return WasmToken(WasmToken::BinaryOpcode, Op::I32Add, begin, cur_);
                 if (consume(u"and"))
                     return WasmToken(WasmToken::BinaryOpcode, Op::I32And, begin, cur_);
+#ifdef ENABLE_WASM_THREAD_OPS
+                if (consume(u"atomic.")) {
+                    if (consume(u"rmw8_u.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAdd8U, begin, cur_);
+                    if (consume(u"rmw16_u.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAdd16U, begin, cur_);
+                    if (consume(u"rmw.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAdd, begin, cur_);
+                    if (consume(u"rmw8_u.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAnd8U, begin, cur_);
+                    if (consume(u"rmw16_u.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAnd16U, begin, cur_);
+                    if (consume(u"rmw.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicAnd, begin, cur_);
+                    if (consume(u"rmw8_u.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I32AtomicCmpXchg8U, begin, cur_);
+                    if (consume(u"rmw16_u.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I32AtomicCmpXchg16U, begin, cur_);
+                    if (consume(u"rmw.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I32AtomicCmpXchg, begin, cur_);
+                    if (consume(u"load8_u"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I32AtomicLoad8U, begin, cur_);
+                    if (consume(u"load16_u"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I32AtomicLoad16U, begin, cur_);
+                    if (consume(u"load"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I32AtomicLoad, begin, cur_);
+                    if (consume(u"rmw8_u.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicOr8U, begin, cur_);
+                    if (consume(u"rmw16_u.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicOr16U, begin, cur_);
+                    if (consume(u"rmw.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicOr, begin, cur_);
+                    if (consume(u"store8_u"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I32AtomicStore8U, begin, cur_);
+                    if (consume(u"store16_u"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I32AtomicStore16U, begin, cur_);
+                    if (consume(u"store"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I32AtomicStore, begin, cur_);
+                    if (consume(u"rmw8_u.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicSub8U, begin, cur_);
+                    if (consume(u"rmw16_u.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicSub16U, begin, cur_);
+                    if (consume(u"rmw.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicSub, begin, cur_);
+                    if (consume(u"rmw8_u.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXor8U, begin, cur_);
+                    if (consume(u"rmw16_u.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXor16U, begin, cur_);
+                    if (consume(u"rmw.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXor, begin, cur_);
+                    if (consume(u"rmw8_u.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXchg8U, begin, cur_);
+                    if (consume(u"rmw16_u.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXchg16U, begin, cur_);
+                    if (consume(u"rmw.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I32AtomicXchg, begin, cur_);
+                    if (consume(u"wait"))
+                        return WasmToken(WasmToken::Wait, ThreadOp::I32Wait, begin, cur_);
+                }
+#endif // ENABLE_WASM_THREAD_OPS
                 break;
               case 'c':
                 if (consume(u"const"))
@@ -1127,6 +1244,12 @@ WasmTokenStream::next()
                     return WasmToken(WasmToken::UnaryOpcode, Op::I32Eqz, begin, cur_);
                 if (consume(u"eq"))
                     return WasmToken(WasmToken::ComparisonOpcode, Op::I32Eq, begin, cur_);
+#ifdef ENABLE_WASM_SIGNEXTEND_OPS
+                if (consume(u"extend8_s"))
+                    return WasmToken(WasmToken::ConversionOpcode, Op::I32Extend8S, begin, cur_);
+                if (consume(u"extend16_s"))
+                    return WasmToken(WasmToken::ConversionOpcode, Op::I32Extend16S, begin, cur_);
+#endif
                 break;
               case 'g':
                 if (consume(u"ge_s"))
@@ -1222,6 +1345,20 @@ WasmTokenStream::next()
                 if (consume(u"trunc_u/f64"))
                     return WasmToken(WasmToken::ConversionOpcode, Op::I32TruncUF64,
                                      begin, cur_);
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+                if (consume(u"trunc_s:sat/f32"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I32TruncSSatF32,
+                                     begin, cur_);
+                if (consume(u"trunc_s:sat/f64"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I32TruncSSatF64,
+                                     begin, cur_);
+                if (consume(u"trunc_u:sat/f32"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I32TruncUSatF32,
+                                     begin, cur_);
+                if (consume(u"trunc_u:sat/f64"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I32TruncUSatF64,
+                                     begin, cur_);
+#endif
                 break;
               case 'w':
                 if (consume(u"wrap/i64"))
@@ -1245,6 +1382,84 @@ WasmTokenStream::next()
                     return WasmToken(WasmToken::BinaryOpcode, Op::I64Add, begin, cur_);
                 if (consume(u"and"))
                     return WasmToken(WasmToken::BinaryOpcode, Op::I64And, begin, cur_);
+#ifdef ENABLE_WASM_THREAD_OPS
+                if (consume(u"atomic.")) {
+                    if (consume(u"rmw8_u.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAdd8U, begin, cur_);
+                    if (consume(u"rmw16_u.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAdd16U, begin, cur_);
+                    if (consume(u"rmw32_u.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAdd32U, begin, cur_);
+                    if (consume(u"rmw.add"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAdd, begin, cur_);
+                    if (consume(u"rmw8_u.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAnd8U, begin, cur_);
+                    if (consume(u"rmw16_u.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAnd16U, begin, cur_);
+                    if (consume(u"rmw32_u.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAnd32U, begin, cur_);
+                    if (consume(u"rmw.and"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicAnd, begin, cur_);
+                    if (consume(u"rmw8_u.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I64AtomicCmpXchg8U, begin, cur_);
+                    if (consume(u"rmw16_u.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I64AtomicCmpXchg16U, begin, cur_);
+                    if (consume(u"rmw32_u.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I64AtomicCmpXchg32U, begin, cur_);
+                    if (consume(u"rmw.cmpxchg"))
+                        return WasmToken(WasmToken::AtomicCmpXchg, ThreadOp::I64AtomicCmpXchg, begin, cur_);
+                    if (consume(u"load8_u"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I64AtomicLoad8U, begin, cur_);
+                    if (consume(u"load16_u"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I64AtomicLoad16U, begin, cur_);
+                    if (consume(u"load32_u"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I64AtomicLoad32U, begin, cur_);
+                    if (consume(u"load"))
+                        return WasmToken(WasmToken::AtomicLoad, ThreadOp::I64AtomicLoad, begin, cur_);
+                    if (consume(u"rmw8_u.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicOr8U, begin, cur_);
+                    if (consume(u"rmw16_u.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicOr16U, begin, cur_);
+                    if (consume(u"rmw32_u.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicOr32U, begin, cur_);
+                    if (consume(u"rmw.or"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicOr, begin, cur_);
+                    if (consume(u"store8_u"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I64AtomicStore8U, begin, cur_);
+                    if (consume(u"store16_u"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I64AtomicStore16U, begin, cur_);
+                    if (consume(u"store32_u"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I64AtomicStore32U, begin, cur_);
+                    if (consume(u"store"))
+                        return WasmToken(WasmToken::AtomicStore, ThreadOp::I64AtomicStore, begin, cur_);
+                    if (consume(u"rmw8_u.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicSub8U, begin, cur_);
+                    if (consume(u"rmw16_u.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicSub16U, begin, cur_);
+                    if (consume(u"rmw32_u.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicSub32U, begin, cur_);
+                    if (consume(u"rmw.sub"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicSub, begin, cur_);
+                    if (consume(u"rmw8_u.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXor8U, begin, cur_);
+                    if (consume(u"rmw16_u.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXor16U, begin, cur_);
+                    if (consume(u"rmw32_u.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXor32U, begin, cur_);
+                    if (consume(u"rmw.xor"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXor, begin, cur_);
+                    if (consume(u"rmw8_u.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXchg8U, begin, cur_);
+                    if (consume(u"rmw16_u.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXchg16U, begin, cur_);
+                    if (consume(u"rmw32_u.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXchg32U, begin, cur_);
+                    if (consume(u"rmw.xchg"))
+                        return WasmToken(WasmToken::AtomicRMW, ThreadOp::I64AtomicXchg, begin, cur_);
+                    if (consume(u"wait"))
+                        return WasmToken(WasmToken::Wait, ThreadOp::I64Wait, begin, cur_);
+                }
+#endif // ENABLE_WASM_THREAD_OPS
                 break;
               case 'c':
                 if (consume(u"const"))
@@ -1271,6 +1486,14 @@ WasmTokenStream::next()
                 if (consume(u"extend_u/i32"))
                     return WasmToken(WasmToken::ConversionOpcode, Op::I64ExtendUI32,
                                      begin, cur_);
+#ifdef ENABLE_WASM_SIGNEXTEND_OPS
+                if (consume(u"extend8_s"))
+                    return WasmToken(WasmToken::ConversionOpcode, Op::I64Extend8S, begin, cur_);
+                if (consume(u"extend16_s"))
+                    return WasmToken(WasmToken::ConversionOpcode, Op::I64Extend16S, begin, cur_);
+                if (consume(u"extend32_s"))
+                    return WasmToken(WasmToken::ConversionOpcode, Op::I64Extend32S, begin, cur_);
+#endif
                 break;
               case 'g':
                 if (consume(u"ge_s"))
@@ -1372,6 +1595,22 @@ WasmTokenStream::next()
                 if (consume(u"trunc_u/f64"))
                     return WasmToken(WasmToken::ConversionOpcode, Op::I64TruncUF64,
                                      begin, cur_);
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+                if (consume(u"trunc_s:sat/f32"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I64TruncSSatF32,
+                                     begin, cur_);
+                if (consume(u"trunc_s:sat/f64"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I64TruncSSatF64,
+                                     begin, cur_);
+                if (consume(u"trunc_u:sat/f32"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I64TruncUSatF32,
+                                     begin, cur_);
+                if (consume(u"trunc_u:sat/f64"))
+                    return WasmToken(WasmToken::ExtraConversionOpcode, NumericOp::I64TruncUSatF64,
+                                     begin, cur_);
+#endif
+                break;
+              case 'w':
                 break;
               case 'x':
                 if (consume(u"xor"))
@@ -1435,6 +1674,10 @@ WasmTokenStream::next()
             return WasmToken(WasmToken::SetGlobal, begin, cur_);
         if (consume(u"set_local"))
             return WasmToken(WasmToken::SetLocal, begin, cur_);
+#ifdef ENABLE_WASM_THREAD_OPS
+        if (consume(u"shared"))
+            return WasmToken(WasmToken::Shared, begin, cur_);
+#endif
         if (consume(u"start"))
             return WasmToken(WasmToken::Start, begin, cur_);
         break;
@@ -1473,18 +1716,17 @@ struct WasmParseContext
     LifoAlloc& lifo;
     UniqueChars* error;
     DtoaState* dtoaState;
+    uintptr_t stackLimit;
 
-    WasmParseContext(const char16_t* text, LifoAlloc& lifo, UniqueChars* error)
-      : ts(text, error),
+    WasmParseContext(const char16_t* text, uintptr_t stackLimit, LifoAlloc& lifo,
+                     UniqueChars* error)
+      : ts(text),
         lifo(lifo),
         error(error),
-        dtoaState(NewDtoaState())
+        dtoaState(NewDtoaState()),
+        stackLimit(stackLimit)
     {}
 
-    bool fail(const char* message) {
-        error->reset(js_strdup(message));
-        return false;
-    }
     ~WasmParseContext() {
         DestroyDtoaState(dtoaState);
     }
@@ -1524,7 +1766,7 @@ ParseExpr(WasmParseContext& c, bool inParens)
 }
 
 static bool
-ParseExprList(WasmParseContext& c, AstExprVector* exprs, bool inParens)
+ParseExprList(WasmParseContext& c, AstExprVector* exprs)
 {
     for (;;) {
         if (c.ts.getIf(WasmToken::OpenParen)) {
@@ -1562,6 +1804,28 @@ ParseBlockSignature(WasmParseContext& c, ExprType* type)
     return true;
 }
 
+static bool
+MaybeMatchName(WasmParseContext& c, const AstName& name)
+{
+    WasmToken tok;
+    if (c.ts.getIf(WasmToken::Name, &tok)) {
+        AstName otherName = tok.name();
+        if (otherName.empty())
+            return true;
+
+        if (name.empty()) {
+            c.ts.generateError(tok, "end name without a start name", c.error);
+            return false;
+        }
+
+        if (otherName != name) {
+            c.ts.generateError(tok, "start/end names don't match", c.error);
+            return false;
+        }
+    }
+    return true;
+}
+
 static AstBlock*
 ParseBlock(WasmParseContext& c, Op op, bool inParens)
 {
@@ -1584,15 +1848,19 @@ ParseBlock(WasmParseContext& c, Op op, bool inParens)
     if (!ParseBlockSignature(c, &type))
         return nullptr;
 
-    if (!ParseExprList(c, &exprs, inParens))
+    if (!ParseExprList(c, &exprs))
         return nullptr;
 
     if (!inParens) {
         if (!c.ts.match(WasmToken::End, c.error))
             return nullptr;
+        if (!MaybeMatchName(c, name))
+            return nullptr;
     }
 
     AstBlock* result = new(c.lifo) AstBlock(op, type, name, Move(exprs));
+    if (!result)
+        return nullptr;
 
     if (op == Op::Loop && !otherName.empty()) {
         if (!exprs.append(result))
@@ -1754,7 +2022,10 @@ ParseNaNLiteral(WasmParseContext& c, WasmToken token, const char16_t* cur, bool 
     }
 
     value = (isNegated ? Traits::kSignBit : 0) | Traits::kExponentBits | value;
-    return new (c.lifo) AstConst(Val(Raw<Float>::fromBits(value)));
+
+    Float flt;
+    BitwiseCast(value, &flt);
+    return new (c.lifo) AstConst(Val(flt));
 
   error:
     c.ts.generateError(token, c.error);
@@ -1906,7 +2177,7 @@ ParseFloatLiteral(WasmParseContext& c, WasmToken token)
     }
 
     if (token.kind() != WasmToken::Float)
-        return new (c.lifo) AstConst(Val(Raw<Float>(result)));
+        return new (c.lifo) AstConst(Val(Float(result)));
 
     const char16_t* begin = token.begin();
     const char16_t* end = token.end();
@@ -1942,9 +2213,8 @@ ParseFloatLiteral(WasmParseContext& c, WasmToken token)
             buffer[i] = char(cur[i]);
         buffer[end - cur] = '\0';
         char* strtod_end;
-        int err;
-        result = (Float)js_strtod_harder(c.dtoaState, buffer, &strtod_end, &err);
-        if (err != 0 || strtod_end == buffer) {
+        result = (Float)js_strtod_harder(c.dtoaState, buffer, &strtod_end);
+        if (strtod_end == buffer) {
             c.lifo.release(mark);
             c.ts.generateError(token, c.error);
             return nullptr;
@@ -1957,7 +2227,7 @@ ParseFloatLiteral(WasmParseContext& c, WasmToken token)
     if (isNegated)
         result = -result;
 
-    return new (c.lifo) AstConst(Val(Raw<Float>(result)));
+    return new (c.lifo) AstConst(Val(Float(result)));
 }
 
 static AstConst*
@@ -2151,6 +2421,18 @@ ParseConversionOperator(WasmParseContext& c, Op op, bool inParens)
     return new(c.lifo) AstConversionOperator(op, operand);
 }
 
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+static AstExtraConversionOperator*
+ParseExtraConversionOperator(WasmParseContext& c, NumericOp op, bool inParens)
+{
+    AstExpr* operand = ParseExpr(c, inParens);
+    if (!operand)
+        return nullptr;
+
+    return new(c.lifo) AstExtraConversionOperator(op, operand);
+}
+#endif
+
 static AstDrop*
 ParseDrop(WasmParseContext& c, bool inParens)
 {
@@ -2181,7 +2463,7 @@ ParseIf(WasmParseContext& c, bool inParens)
 
     AstExprVector thenExprs(c.lifo);
     if (!inParens || c.ts.getIf(WasmToken::Then)) {
-        if (!ParseExprList(c, &thenExprs, inParens))
+        if (!ParseExprList(c, &thenExprs))
             return nullptr;
     } else {
         AstExpr* thenBranch = ParseExprInsideParens(c);
@@ -2196,7 +2478,9 @@ ParseIf(WasmParseContext& c, bool inParens)
     AstExprVector elseExprs(c.lifo);
     if (!inParens || c.ts.getIf(WasmToken::OpenParen)) {
         if (c.ts.getIf(WasmToken::Else)) {
-            if (!ParseExprList(c, &elseExprs, inParens))
+            if (!MaybeMatchName(c, name))
+                return nullptr;
+            if (!ParseExprList(c, &elseExprs))
                 return nullptr;
         } else if (inParens) {
             AstExpr* elseBranch = ParseExprInsideParens(c);
@@ -2208,6 +2492,8 @@ ParseIf(WasmParseContext& c, bool inParens)
                 return nullptr;
         } else {
             if (!c.ts.match(WasmToken::End, c.error))
+                return nullptr;
+            if (!MaybeMatchName(c, name))
                 return nullptr;
         }
     }
@@ -2345,8 +2631,262 @@ ParseStore(WasmParseContext& c, Op op, bool inParens)
     return new(c.lifo) AstStore(op, AstLoadStoreAddress(base, flags, offset), value);
 }
 
+static AstAtomicCmpXchg*
+ParseAtomicCmpXchg(WasmParseContext& c, ThreadOp op, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    if (alignLog2 == UINT32_MAX) {
+        switch (op) {
+          case ThreadOp::I32AtomicCmpXchg8U:
+          case ThreadOp::I64AtomicCmpXchg8U:
+            alignLog2 = 0;
+            break;
+          case ThreadOp::I32AtomicCmpXchg16U:
+          case ThreadOp::I64AtomicCmpXchg16U:
+            alignLog2 = 1;
+            break;
+          case ThreadOp::I32AtomicCmpXchg:
+          case ThreadOp::I64AtomicCmpXchg32U:
+            alignLog2 = 2;
+            break;
+          case ThreadOp::I64AtomicCmpXchg:
+            alignLog2 = 3;
+            break;
+          default:
+            MOZ_CRASH("Bad cmpxchg op");
+        }
+    }
+
+    AstExpr* expected = ParseExpr(c, inParens);
+    if (!expected)
+        return nullptr;
+
+    AstExpr* replacement = ParseExpr(c, inParens);
+    if (!replacement)
+        return nullptr;
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstAtomicCmpXchg(op, AstLoadStoreAddress(base, flags, offset), expected,
+                                        replacement);
+}
+
+static AstAtomicLoad*
+ParseAtomicLoad(WasmParseContext& c, ThreadOp op, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    if (alignLog2 == UINT32_MAX) {
+        switch (op) {
+          case ThreadOp::I32AtomicLoad8U:
+          case ThreadOp::I64AtomicLoad8U:
+            alignLog2 = 0;
+            break;
+          case ThreadOp::I32AtomicLoad16U:
+          case ThreadOp::I64AtomicLoad16U:
+            alignLog2 = 1;
+            break;
+          case ThreadOp::I32AtomicLoad:
+          case ThreadOp::I64AtomicLoad32U:
+            alignLog2 = 2;
+            break;
+          case ThreadOp::I64AtomicLoad:
+            alignLog2 = 3;
+            break;
+          default:
+            MOZ_CRASH("Bad load op");
+        }
+    }
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstAtomicLoad(op, AstLoadStoreAddress(base, flags, offset));
+}
+
+static AstAtomicRMW*
+ParseAtomicRMW(WasmParseContext& c, ThreadOp op, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    if (alignLog2 == UINT32_MAX) {
+        switch (op) {
+          case ThreadOp::I32AtomicAdd8U:
+          case ThreadOp::I64AtomicAdd8U:
+          case ThreadOp::I32AtomicAnd8U:
+          case ThreadOp::I64AtomicAnd8U:
+          case ThreadOp::I32AtomicOr8U:
+          case ThreadOp::I64AtomicOr8U:
+          case ThreadOp::I32AtomicSub8U:
+          case ThreadOp::I64AtomicSub8U:
+          case ThreadOp::I32AtomicXor8U:
+          case ThreadOp::I64AtomicXor8U:
+          case ThreadOp::I32AtomicXchg8U:
+          case ThreadOp::I64AtomicXchg8U:
+            alignLog2 = 0;
+            break;
+          case ThreadOp::I32AtomicAdd16U:
+          case ThreadOp::I64AtomicAdd16U:
+          case ThreadOp::I32AtomicAnd16U:
+          case ThreadOp::I64AtomicAnd16U:
+          case ThreadOp::I32AtomicOr16U:
+          case ThreadOp::I64AtomicOr16U:
+          case ThreadOp::I32AtomicSub16U:
+          case ThreadOp::I64AtomicSub16U:
+          case ThreadOp::I32AtomicXor16U:
+          case ThreadOp::I64AtomicXor16U:
+          case ThreadOp::I32AtomicXchg16U:
+          case ThreadOp::I64AtomicXchg16U:
+            alignLog2 = 1;
+            break;
+          case ThreadOp::I32AtomicAdd:
+          case ThreadOp::I64AtomicAdd32U:
+          case ThreadOp::I32AtomicAnd:
+          case ThreadOp::I64AtomicAnd32U:
+          case ThreadOp::I32AtomicOr:
+          case ThreadOp::I64AtomicOr32U:
+          case ThreadOp::I32AtomicSub:
+          case ThreadOp::I64AtomicSub32U:
+          case ThreadOp::I32AtomicXor:
+          case ThreadOp::I64AtomicXor32U:
+          case ThreadOp::I32AtomicXchg:
+          case ThreadOp::I64AtomicXchg32U:
+            alignLog2 = 2;
+            break;
+          case ThreadOp::I64AtomicAdd:
+          case ThreadOp::I64AtomicAnd:
+          case ThreadOp::I64AtomicOr:
+          case ThreadOp::I64AtomicSub:
+          case ThreadOp::I64AtomicXor:
+          case ThreadOp::I64AtomicXchg:
+            alignLog2 = 3;
+            break;
+          default:
+            MOZ_CRASH("Bad RMW op");
+        }
+    }
+
+    AstExpr* value = ParseExpr(c, inParens);
+    if (!value)
+        return nullptr;
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstAtomicRMW(op, AstLoadStoreAddress(base, flags, offset), value);
+}
+
+static AstAtomicStore*
+ParseAtomicStore(WasmParseContext& c, ThreadOp op, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    if (alignLog2 == UINT32_MAX) {
+        switch (op) {
+          case ThreadOp::I32AtomicStore8U:
+          case ThreadOp::I64AtomicStore8U:
+            alignLog2 = 0;
+            break;
+          case ThreadOp::I32AtomicStore16U:
+          case ThreadOp::I64AtomicStore16U:
+            alignLog2 = 1;
+            break;
+          case ThreadOp::I32AtomicStore:
+          case ThreadOp::I64AtomicStore32U:
+            alignLog2 = 2;
+            break;
+          case ThreadOp::I64AtomicStore:
+            alignLog2 = 3;
+            break;
+          default:
+            MOZ_CRASH("Bad store op");
+        }
+    }
+
+    AstExpr* value = ParseExpr(c, inParens);
+    if (!value)
+        return nullptr;
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstAtomicStore(op, AstLoadStoreAddress(base, flags, offset), value);
+}
+
+static AstWait*
+ParseWait(WasmParseContext& c, ThreadOp op, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    if (alignLog2 == UINT32_MAX) {
+        switch (op) {
+          case ThreadOp::I32Wait:
+            alignLog2 = 2;
+            break;
+          case ThreadOp::I64Wait:
+            alignLog2 = 3;
+            break;
+          default:
+            MOZ_CRASH("Bad wait op");
+        }
+    }
+
+    AstExpr* expected = ParseExpr(c, inParens);
+    if (!expected)
+        return nullptr;
+
+    AstExpr* timeout = ParseExpr(c, inParens);
+    if (!timeout)
+        return nullptr;
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstWait(op, AstLoadStoreAddress(base, flags, offset), expected, timeout);
+}
+
+static AstWake*
+ParseWake(WasmParseContext& c, bool inParens)
+{
+    int32_t offset;
+    uint32_t alignLog2;
+    AstExpr* base;
+    if (!ParseLoadStoreAddress(c, &offset, &alignLog2, &base, inParens))
+        return nullptr;
+
+    // Per spec, the required (and default) alignment is 4, because the smallest
+    // access is int32.
+    if (alignLog2 == UINT32_MAX)
+        alignLog2 = 2;
+
+    AstExpr* count = ParseExpr(c, inParens);
+    if (!count)
+        return nullptr;
+
+    uint32_t flags = alignLog2;
+
+    return new(c.lifo) AstWake(AstLoadStoreAddress(base, flags, offset), count);
+}
+
 static AstBranchTable*
-ParseBranchTable(WasmParseContext& c, WasmToken brTable, bool inParens)
+ParseBranchTable(WasmParseContext& c, bool inParens)
 {
     AstRefVector table(c.lifo);
 
@@ -2395,9 +2935,23 @@ ParseGrowMemory(WasmParseContext& c, bool inParens)
 static AstExpr*
 ParseExprBody(WasmParseContext& c, WasmToken token, bool inParens)
 {
+    if (!CheckRecursionLimitDontReport(c.stackLimit))
+        return nullptr;
     switch (token.kind()) {
       case WasmToken::Unreachable:
         return new(c.lifo) AstUnreachable;
+      case WasmToken::AtomicCmpXchg:
+        return ParseAtomicCmpXchg(c, token.threadOp(), inParens);
+      case WasmToken::AtomicLoad:
+        return ParseAtomicLoad(c, token.threadOp(), inParens);
+      case WasmToken::AtomicRMW:
+        return ParseAtomicRMW(c, token.threadOp(), inParens);
+      case WasmToken::AtomicStore:
+        return ParseAtomicStore(c, token.threadOp(), inParens);
+      case WasmToken::Wait:
+        return ParseWait(c, token.threadOp(), inParens);
+      case WasmToken::Wake:
+        return ParseWake(c, inParens);
       case WasmToken::BinaryOpcode:
         return ParseBinaryOperator(c, token.op(), inParens);
       case WasmToken::Block:
@@ -2407,7 +2961,7 @@ ParseExprBody(WasmParseContext& c, WasmToken token, bool inParens)
       case WasmToken::BrIf:
         return ParseBranch(c, Op::BrIf, inParens);
       case WasmToken::BrTable:
-        return ParseBranchTable(c, token, inParens);
+        return ParseBranchTable(c, inParens);
       case WasmToken::Call:
         return ParseCall(c, inParens);
       case WasmToken::CallIndirect:
@@ -2418,6 +2972,10 @@ ParseExprBody(WasmParseContext& c, WasmToken token, bool inParens)
         return ParseConst(c, token);
       case WasmToken::ConversionOpcode:
         return ParseConversionOperator(c, token.op(), inParens);
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+      case WasmToken::ExtraConversionOpcode:
+        return ParseExtraConversionOperator(c, token.numericOp(), inParens);
+#endif
       case WasmToken::Drop:
         return ParseDrop(c, inParens);
       case WasmToken::If:
@@ -2621,7 +3179,7 @@ ParseFunc(WasmParseContext& c, AstModule* module)
 
         if (c.ts.getIf(WasmToken::Export)) {
             AstRef ref = funcName.empty()
-                         ? AstRef(module->funcImportNames().length() + module->funcs().length())
+                         ? AstRef(module->numFuncImports() + module->funcs().length())
                          : AstRef(funcName);
             if (!ParseInlineExport(c, DefinitionKind::Function, module, ref))
                 return false;
@@ -2669,7 +3227,7 @@ ParseFunc(WasmParseContext& c, AstModule* module)
             return false;
     }
 
-    if (!ParseExprList(c, &body, true))
+    if (!ParseExprList(c, &body))
         return false;
 
     if (sigRef.isInvalid()) {
@@ -2754,7 +3312,7 @@ ParseDataSegment(WasmParseContext& c)
 }
 
 static bool
-ParseLimits(WasmParseContext& c, Limits* limits)
+ParseLimits(WasmParseContext& c, Limits* limits, Shareable allowShared)
 {
     WasmToken initial;
     if (!c.ts.match(WasmToken::Index, &initial, c.error))
@@ -2765,13 +3323,23 @@ ParseLimits(WasmParseContext& c, Limits* limits)
     if (c.ts.getIf(WasmToken::Index, &token))
         maximum.emplace(token.index());
 
-    Limits r = { initial.index(), maximum };
-    *limits = r;
+    Shareable shared = Shareable::False;
+    if (c.ts.getIf(WasmToken::Shared, &token)) {
+        // A missing maximum is caught later.
+        if (allowShared == Shareable::True)
+            shared = Shareable::True;
+        else {
+            c.ts.generateError(token, "'shared' not allowed", c.error);
+            return false;
+        }
+    }
+
+    *limits = Limits(initial.index(), maximum, shared);
     return true;
 }
 
 static bool
-ParseMemory(WasmParseContext& c, WasmToken token, AstModule* module)
+ParseMemory(WasmParseContext& c, AstModule* module)
 {
     AstName name = c.ts.getIfName();
 
@@ -2785,7 +3353,7 @@ ParseMemory(WasmParseContext& c, WasmToken token, AstModule* module)
                 return false;
 
             Limits memory;
-            if (!ParseLimits(c, &memory))
+            if (!ParseLimits(c, &memory, Shareable::True))
                 return false;
 
             auto* imp = new(c.lifo) AstImport(name, names.module.text(), names.field.text(),
@@ -2833,8 +3401,7 @@ ParseMemory(WasmParseContext& c, WasmToken token, AstModule* module)
                 return false;
         }
 
-        Limits memory = { uint32_t(pages), Some(uint32_t(pages)) };
-        if (!module->addMemory(name, memory))
+        if (!module->addMemory(name, Limits(pages, Some(pages), Shareable::False)))
             return false;
 
         if (!c.ts.match(WasmToken::CloseParen, c.error))
@@ -2844,7 +3411,7 @@ ParseMemory(WasmParseContext& c, WasmToken token, AstModule* module)
     }
 
     Limits memory;
-    if (!ParseLimits(c, &memory))
+    if (!ParseLimits(c, &memory, Shareable::True))
         return false;
 
     return module->addMemory(name, memory);
@@ -2894,7 +3461,7 @@ ParseElemType(WasmParseContext& c)
 static bool
 ParseTableSig(WasmParseContext& c, Limits* table)
 {
-    return ParseLimits(c, table) &&
+    return ParseLimits(c, table, Shareable::False) &&
            ParseElemType(c);
 }
 
@@ -2919,7 +3486,7 @@ ParseImport(WasmParseContext& c, AstModule* module)
                 name = c.ts.getIfName();
 
             Limits memory;
-            if (!ParseLimits(c, &memory))
+            if (!ParseLimits(c, &memory, Shareable::True))
                 return nullptr;
             if (!c.ts.match(WasmToken::CloseParen, c.error))
                 return nullptr;
@@ -3126,8 +3693,7 @@ ParseTable(WasmParseContext& c, WasmToken token, AstModule* module)
     if (numElements != elems.length())
         return false;
 
-    Limits r = { numElements, Some(numElements) };
-    if (!module->addTable(name, r))
+    if (!module->addTable(name, Limits(numElements, Some(numElements), Shareable::False)))
         return false;
 
     auto* zero = new(c.lifo) AstConst(Val(uint32_t(0)));
@@ -3191,7 +3757,8 @@ ParseGlobal(WasmParseContext& c, AstModule* module)
         }
 
         if (c.ts.getIf(WasmToken::Export)) {
-            AstRef ref = name.empty() ? AstRef(module->globals().length()) : AstRef(name);
+            size_t refIndex = module->numGlobalImports() + module->globals().length();
+            AstRef ref = name.empty() ? AstRef(refIndex) : AstRef(name);
             if (!ParseInlineExport(c, DefinitionKind::Global, module, ref))
                 return false;
             if (!c.ts.match(WasmToken::CloseParen, c.error))
@@ -3233,9 +3800,10 @@ ParseBinaryModule(WasmParseContext& c, AstModule* module)
 }
 
 static AstModule*
-ParseModule(const char16_t* text, LifoAlloc& lifo, UniqueChars* error, bool* binary)
+ParseModule(const char16_t* text, uintptr_t stackLimit, LifoAlloc& lifo, UniqueChars* error,
+            bool* binary)
 {
-    WasmParseContext c(text, lifo, error);
+    WasmParseContext c(text, stackLimit, lifo, error);
 
     *binary = false;
 
@@ -3269,7 +3837,7 @@ ParseModule(const char16_t* text, LifoAlloc& lifo, UniqueChars* error, bool* bin
             break;
           }
           case WasmToken::Memory: {
-            if (!ParseMemory(c, section, module))
+            if (!ParseMemory(c, module))
                 return nullptr;
             break;
           }
@@ -3356,14 +3924,6 @@ class Resolver
         }
         return true;
     }
-    bool resolveName(AstNameMap& map, AstName name, size_t* index) {
-        AstNameMap::Ptr p = map.lookup(name);
-        if (p) {
-            *index = p->value();
-            return true;
-        }
-        return false;
-    }
     bool resolveRef(AstNameMap& map, AstRef& ref) {
         AstNameMap::Ptr p = map.lookup(ref.name());
         if (p) {
@@ -3375,7 +3935,7 @@ class Resolver
     bool failResolveLabel(const char* kind, AstName name) {
         TwoByteChars chars(name.begin(), name.length());
         UniqueChars utf8Chars(CharsToNewUTF8CharsZ(nullptr, chars).c_str());
-        error_->reset(JS_smprintf("%s label '%s' not found", kind, utf8Chars.get()));
+        *error_ = JS_smprintf("%s label '%s' not found", kind, utf8Chars.get());
         return false;
     }
 
@@ -3412,7 +3972,6 @@ class Resolver
 
     REGISTER(Sig, sigMap_)
     REGISTER(Func, funcMap_)
-    REGISTER(Import, importMap_)
     REGISTER(Var, varMap_)
     REGISTER(Global, globalMap_)
     REGISTER(Table, tableMap_)
@@ -3438,7 +3997,6 @@ class Resolver
 
     RESOLVE(sigMap_, Signature)
     RESOLVE(funcMap_, Function)
-    RESOLVE(importMap_, Import)
     RESOLVE(varMap_, Local)
     RESOLVE(globalMap_, Global)
     RESOLVE(tableMap_, Table)
@@ -3459,7 +4017,7 @@ class Resolver
     }
 
     bool fail(const char* message) {
-        error_->reset(JS_smprintf("%s", message));
+        *error_ = JS_smprintf("%s", message);
         return false;
     }
 };
@@ -3649,6 +4207,14 @@ ResolveConversionOperator(Resolver& r, AstConversionOperator& b)
     return ResolveExpr(r, *b.operand());
 }
 
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+static bool
+ResolveExtraConversionOperator(Resolver& r, AstExtraConversionOperator& b)
+{
+    return ResolveExpr(r, *b.operand());
+}
+#endif
+
 static bool
 ResolveIfElse(Resolver& r, AstIf& i)
 {
@@ -3709,6 +4275,49 @@ ResolveBranchTable(Resolver& r, AstBranchTable& bt)
 }
 
 static bool
+ResolveAtomicCmpXchg(Resolver& r, AstAtomicCmpXchg& s)
+{
+    return ResolveLoadStoreAddress(r, s.address()) &&
+           ResolveExpr(r, s.expected()) &&
+           ResolveExpr(r, s.replacement());
+}
+
+static bool
+ResolveAtomicLoad(Resolver& r, AstAtomicLoad& l)
+{
+    return ResolveLoadStoreAddress(r, l.address());
+}
+
+static bool
+ResolveAtomicRMW(Resolver& r, AstAtomicRMW& s)
+{
+    return ResolveLoadStoreAddress(r, s.address()) &&
+           ResolveExpr(r, s.value());
+}
+
+static bool
+ResolveAtomicStore(Resolver& r, AstAtomicStore& s)
+{
+    return ResolveLoadStoreAddress(r, s.address()) &&
+           ResolveExpr(r, s.value());
+}
+
+static bool
+ResolveWait(Resolver& r, AstWait& s)
+{
+    return ResolveLoadStoreAddress(r, s.address()) &&
+           ResolveExpr(r, s.expected()) &&
+           ResolveExpr(r, s.timeout());
+}
+
+static bool
+ResolveWake(Resolver& r, AstWake& s)
+{
+    return ResolveLoadStoreAddress(r, s.address()) &&
+           ResolveExpr(r, s.count());
+}
+
+static bool
 ResolveExpr(Resolver& r, AstExpr& expr)
 {
     switch (expr.kind()) {
@@ -3735,6 +4344,10 @@ ResolveExpr(Resolver& r, AstExpr& expr)
         return true;
       case AstExprKind::ConversionOperator:
         return ResolveConversionOperator(r, expr.as<AstConversionOperator>());
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+      case AstExprKind::ExtraConversionOperator:
+        return ResolveExtraConversionOperator(r, expr.as<AstExtraConversionOperator>());
+#endif
       case AstExprKind::First:
         return ResolveFirst(r, expr.as<AstFirst>());
       case AstExprKind::GetGlobal:
@@ -3763,6 +4376,18 @@ ResolveExpr(Resolver& r, AstExpr& expr)
         return ResolveUnaryOperator(r, expr.as<AstUnaryOperator>());
       case AstExprKind::GrowMemory:
         return ResolveGrowMemory(r, expr.as<AstGrowMemory>());
+      case AstExprKind::AtomicCmpXchg:
+        return ResolveAtomicCmpXchg(r, expr.as<AstAtomicCmpXchg>());
+      case AstExprKind::AtomicLoad:
+        return ResolveAtomicLoad(r, expr.as<AstAtomicLoad>());
+      case AstExprKind::AtomicRMW:
+        return ResolveAtomicRMW(r, expr.as<AstAtomicRMW>());
+      case AstExprKind::AtomicStore:
+        return ResolveAtomicStore(r, expr.as<AstAtomicStore>());
+      case AstExprKind::Wait:
+        return ResolveWait(r, expr.as<AstWait>());
+      case AstExprKind::Wake:
+        return ResolveWake(r, expr.as<AstWake>());
     }
     MOZ_CRASH("Bad expr kind");
 }
@@ -4119,6 +4744,15 @@ EncodeConversionOperator(Encoder& e, AstConversionOperator& b)
            e.writeOp(b.op());
 }
 
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+static bool
+EncodeExtraConversionOperator(Encoder& e, AstExtraConversionOperator& b)
+{
+    return EncodeExpr(e, *b.operand()) &&
+           e.writeOp(b.op());
+}
+#endif
+
 static bool
 EncodeIf(Encoder& e, AstIf& i)
 {
@@ -4241,6 +4875,61 @@ EncodeGrowMemory(Encoder& e, AstGrowMemory& gm)
 }
 
 static bool
+EncodeAtomicCmpXchg(Encoder& e, AstAtomicCmpXchg& s)
+{
+    return EncodeLoadStoreAddress(e, s.address()) &&
+           EncodeExpr(e, s.expected()) &&
+           EncodeExpr(e, s.replacement()) &&
+           e.writeOp(s.op()) &&
+           EncodeLoadStoreFlags(e, s.address());
+}
+
+static bool
+EncodeAtomicLoad(Encoder& e, AstAtomicLoad& l)
+{
+    return EncodeLoadStoreAddress(e, l.address()) &&
+           e.writeOp(l.op()) &&
+           EncodeLoadStoreFlags(e, l.address());
+}
+
+static bool
+EncodeAtomicRMW(Encoder& e, AstAtomicRMW& s)
+{
+    return EncodeLoadStoreAddress(e, s.address()) &&
+           EncodeExpr(e, s.value()) &&
+           e.writeOp(s.op()) &&
+           EncodeLoadStoreFlags(e, s.address());
+}
+
+static bool
+EncodeAtomicStore(Encoder& e, AstAtomicStore& s)
+{
+    return EncodeLoadStoreAddress(e, s.address()) &&
+           EncodeExpr(e, s.value()) &&
+           e.writeOp(s.op()) &&
+           EncodeLoadStoreFlags(e, s.address());
+}
+
+static bool
+EncodeWait(Encoder& e, AstWait& s)
+{
+    return EncodeLoadStoreAddress(e, s.address()) &&
+           EncodeExpr(e, s.expected()) &&
+           EncodeExpr(e, s.timeout()) &&
+           e.writeOp(s.op()) &&
+           EncodeLoadStoreFlags(e, s.address());
+}
+
+static bool
+EncodeWake(Encoder& e, AstWake& s)
+{
+    return EncodeLoadStoreAddress(e, s.address()) &&
+           EncodeExpr(e, s.count()) &&
+           e.writeOp(ThreadOp::Wake) &&
+           EncodeLoadStoreFlags(e, s.address());
+}
+
+static bool
 EncodeExpr(Encoder& e, AstExpr& expr)
 {
     switch (expr.kind()) {
@@ -4268,6 +4957,10 @@ EncodeExpr(Encoder& e, AstExpr& expr)
         return EncodeConversionOperator(e, expr.as<AstConversionOperator>());
       case AstExprKind::Drop:
         return EncodeDrop(e, expr.as<AstDrop>());
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+      case AstExprKind::ExtraConversionOperator:
+        return EncodeExtraConversionOperator(e, expr.as<AstExtraConversionOperator>());
+#endif
       case AstExprKind::First:
         return EncodeFirst(e, expr.as<AstFirst>());
       case AstExprKind::GetLocal:
@@ -4298,6 +4991,18 @@ EncodeExpr(Encoder& e, AstExpr& expr)
         return EncodeCurrentMemory(e, expr.as<AstCurrentMemory>());
       case AstExprKind::GrowMemory:
         return EncodeGrowMemory(e, expr.as<AstGrowMemory>());
+      case AstExprKind::AtomicCmpXchg:
+        return EncodeAtomicCmpXchg(e, expr.as<AstAtomicCmpXchg>());
+      case AstExprKind::AtomicLoad:
+        return EncodeAtomicLoad(e, expr.as<AstAtomicLoad>());
+      case AstExprKind::AtomicRMW:
+        return EncodeAtomicRMW(e, expr.as<AstAtomicRMW>());
+      case AstExprKind::AtomicStore:
+        return EncodeAtomicStore(e, expr.as<AstAtomicStore>());
+      case AstExprKind::Wait:
+        return EncodeWait(e, expr.as<AstWait>());
+      case AstExprKind::Wake:
+        return EncodeWake(e, expr.as<AstWake>());
     }
     MOZ_CRASH("Bad expr kind");
 }
@@ -4376,7 +5081,12 @@ EncodeBytes(Encoder& e, AstName wasmName)
 static bool
 EncodeLimits(Encoder& e, const Limits& limits)
 {
-    uint32_t flags = limits.maximum ? 1 : 0;
+    uint32_t flags = limits.maximum
+                   ? uint32_t(MemoryTableFlags::HasMaximum)
+                   : uint32_t(MemoryTableFlags::Default);
+    if (limits.shared == Shareable::True)
+        flags |= uint32_t(MemoryTableFlags::IsShared);
+
     if (!e.writeVarU32(flags))
         return false;
 
@@ -4824,12 +5534,12 @@ EncodeBinaryModule(const AstModule& module, Bytes* bytes)
 /*****************************************************************************/
 
 bool
-wasm::TextToBinary(const char16_t* text, Bytes* bytes, UniqueChars* error)
+wasm::TextToBinary(const char16_t* text, uintptr_t stackLimit, Bytes* bytes, UniqueChars* error)
 {
     LifoAlloc lifo(AST_LIFO_DEFAULT_CHUNK_SIZE);
 
     bool binary = false;
-    AstModule* module = ParseModule(text, lifo, error, &binary);
+    AstModule* module = ParseModule(text, stackLimit, lifo, error, &binary);
     if (!module)
         return false;
 

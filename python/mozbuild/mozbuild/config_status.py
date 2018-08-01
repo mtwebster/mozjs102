@@ -38,13 +38,10 @@ ANDROID_IDE_ADVERTISEMENT = '''
 ADVERTISEMENT
 
 You are building Firefox for Android. After your build completes, you can open
-the top source directory in IntelliJ or Android Studio directly and build using
-Gradle.  See the documentation at
+the top source directory in Android Studio directly and build using Gradle.
+See the documentation at
 
 https://developer.mozilla.org/en-US/docs/Simple_Firefox_for_Android_build
-
-PLEASE BE AWARE THAT GRADLE AND INTELLIJ/ANDROID STUDIO SUPPORT IS EXPERIMENTAL.
-You should verify any changes using |mach build|.
 =============
 '''.strip()
 
@@ -154,6 +151,9 @@ def config_status(topobjdir='.', topsrcdir='.', defines=None,
         summary = obj.summary()
         print(summary, file=sys.stderr)
         execution_time += summary.execution_time
+        if hasattr(obj, 'gyp_summary'):
+            summary = obj.gyp_summary()
+            print(summary, file=sys.stderr)
 
     cpu_time = time.clock() - cpu_start
     wall_time = time.time() - time_start
@@ -176,7 +176,6 @@ def config_status(topobjdir='.', topsrcdir='.', defines=None,
     if os.name == 'nt' and 'VisualStudio' not in options.backend:
         print(VISUAL_STUDIO_ADVERTISEMENT)
 
-    # Advertise Eclipse if it is appropriate.
+    # Advertise Android Studio if it is appropriate.
     if MachCommandConditions.is_android(env):
-        if 'AndroidEclipse' not in options.backend:
-            print(ANDROID_IDE_ADVERTISEMENT)
+        print(ANDROID_IDE_ADVERTISEMENT)

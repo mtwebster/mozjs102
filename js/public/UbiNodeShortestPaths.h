@@ -11,8 +11,7 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/Move.h"
 
-#include "jsalloc.h"
-
+#include "js/AllocPolicy.h"
 #include "js/UbiNodeBreadthFirst.h"
 #include "js/Vector.h"
 
@@ -109,7 +108,7 @@ struct JS_PUBLIC_API(ShortestPaths)
         }
 
         bool
-        operator()(Traversal& traversal, JS::ubi::Node origin, JS::ubi::Edge& edge,
+        operator()(Traversal& traversal, const JS::ubi::Node& origin, JS::ubi::Edge& edge,
                    BackEdge* back, bool first)
         {
             MOZ_ASSERT(back);

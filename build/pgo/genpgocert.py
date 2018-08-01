@@ -127,7 +127,7 @@ def constructCertDatabase(build, srcDir):
             if status:
               return status
 
-        status = runUtil(certutil, ["-A", "-n", name, "-t", "P,,", "-i", pem, "-d", "dbm:"+srcDir, "-f", pwfile.name])
+        status = runUtil(certutil, ["-A", "-n", name, "-t", "P,,", "-i", pem, "-d", srcDir, "-f", pwfile.name])
         if status:
           return status
 
@@ -160,7 +160,7 @@ def constructCertDatabase(build, srcDir):
           return status
 
         print("Importing private key {} to database".format(key_pem))
-        status = runUtil(pk12util, ["-i", p12, "-d", "dbm:"+srcDir, "-w", pwfile.name, "-k", pwfile.name])
+        status = runUtil(pk12util, ["-i", p12, "-d", srcDir, "-w", pwfile.name, "-k", pwfile.name])
         if status:
           return status
 

@@ -281,19 +281,12 @@ class RegisterAllocator
         allRegisters_(RegisterSet::All())
     {
         if (mir->compilingWasm()) {
-#if defined(JS_CODEGEN_X64)
-            allRegisters_.take(AnyRegister(HeapReg));
-#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
-            allRegisters_.take(AnyRegister(HeapReg));
-            allRegisters_.take(AnyRegister(GlobalReg));
-#elif defined(JS_CODEGEN_ARM64)
-            allRegisters_.take(AnyRegister(HeapReg));
-            allRegisters_.take(AnyRegister(HeapLenReg));
-            allRegisters_.take(AnyRegister(GlobalReg));
-#endif
+            takeWasmRegisters(allRegisters_);
         } else {
-            if (FramePointer != InvalidReg && mir->instrumentedProfiling())
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_ARM64)
+            if (mir->instrumentedProfiling())
                 allRegisters_.take(AnyRegister(FramePointer));
+#endif
         }
     }
 
@@ -359,6 +352,16 @@ class RegisterAllocator
     }
 
     void dumpInstructions();
+
+  public:
+    template<typename TakeableSet>
+    static void takeWasmRegisters(TakeableSet& regs) {
+#if defined(JS_CODEGEN_X64) || defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_ARM64) || \
+    defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
+            regs.take(HeapReg);
+#endif
+            regs.take(FramePointer);
+    }
 };
 
 static inline AnyRegister

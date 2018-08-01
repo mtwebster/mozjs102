@@ -19,10 +19,6 @@ namespace js {
 JSObject*
 InitRegExpClass(JSContext* cx, HandleObject obj);
 
-// Whether RegExp statics should be updated with the input and results of a
-// regular expression execution.
-enum RegExpStaticsUpdate { UpdateRegExpStatics, DontUpdateRegExpStatics };
-
 /*
  * Legacy behavior of ExecuteRegExp(), which is baked into the JSAPI.
  *
@@ -31,7 +27,7 @@ enum RegExpStaticsUpdate { UpdateRegExpStatics, DontUpdateRegExpStatics };
  * |chars| and |length|.
  */
 MOZ_MUST_USE bool
-ExecuteRegExpLegacy(JSContext* cx, RegExpStatics* res, RegExpObject& reobj,
+ExecuteRegExpLegacy(JSContext* cx, RegExpStatics* res, Handle<RegExpObject*> reobj,
                     HandleLinearString input, size_t* lastIndex, bool test,
                     MutableHandleValue rval);
 
@@ -72,36 +68,16 @@ intrinsic_GetStringDataProperty(JSContext* cx, unsigned argc, Value* vp);
  */
 
 /*
- * Behaves like regexp.exec(string), but doesn't set RegExp statics.
- *
- * Usage: match = regexp_exec_no_statics(regexp, string)
- */
-extern MOZ_MUST_USE bool
-regexp_exec_no_statics(JSContext* cx, unsigned argc, Value* vp);
-
-/*
- * Behaves like regexp.test(string), but doesn't set RegExp statics.
- *
- * Usage: does_match = regexp_test_no_statics(regexp, string)
- */
-extern MOZ_MUST_USE bool
-regexp_test_no_statics(JSContext* cx, unsigned argc, Value* vp);
-
-/*
- * Behaves like RegExp(pattern, flags).
- * |pattern| should be a RegExp object, |flags| should be a raw integer value.
+ * Behaves like RegExp(source, flags).
+ * |source| must be a valid regular expression pattern, |flags| is a raw
+ * integer value representing the regular expression flags.
  * Must be called without |new|.
- * Dedicated function for RegExp.prototype[@@split] optimized path.
+ *
+ * Dedicated function for RegExp.prototype[@@replace] and
+ * RegExp.prototype[@@split] optimized paths.
  */
 extern MOZ_MUST_USE bool
 regexp_construct_raw_flags(JSContext* cx, unsigned argc, Value* vp);
-
-/*
- * Clone given RegExp object, inheriting pattern and flags, ignoring other
- * properties.
- */
-extern MOZ_MUST_USE bool
-regexp_clone(JSContext* cx, unsigned argc, Value* vp);
 
 extern MOZ_MUST_USE bool
 IsRegExp(JSContext* cx, HandleValue value, bool* result);
@@ -122,15 +98,15 @@ extern MOZ_MUST_USE bool
 RegExpInstanceOptimizableRaw(JSContext* cx, JSObject* obj, JSObject* proto);
 
 extern MOZ_MUST_USE bool
-RegExpGetSubstitution(JSContext* cx, HandleLinearString matched, HandleLinearString string,
-                      size_t position, HandleObject capturesObj, HandleLinearString replacement,
-                      size_t firstDollarIndex, MutableHandleValue rval);
+RegExpGetSubstitution(JSContext* cx, HandleArrayObject matchResult, HandleLinearString string,
+                      size_t position, HandleLinearString replacement, size_t firstDollarIndex,
+                      MutableHandleValue rval);
 
 extern MOZ_MUST_USE bool
 GetFirstDollarIndex(JSContext* cx, unsigned argc, Value* vp);
 
 extern MOZ_MUST_USE bool
-GetFirstDollarIndexRaw(JSContext* cx, HandleString str, int32_t* index);
+GetFirstDollarIndexRaw(JSContext* cx, JSString* str, int32_t* index);
 
 extern int32_t
 GetFirstDollarIndexRawFlat(JSLinearString* text);

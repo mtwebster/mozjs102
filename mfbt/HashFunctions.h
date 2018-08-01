@@ -52,23 +52,16 @@
 #include "mozilla/Char16.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Types.h"
+#include "mozilla/WrappingOperations.h"
 
 #include <stdint.h>
 
-#ifdef __cplusplus
 namespace mozilla {
 
 /**
  * The golden ratio as a 32-bit fixed-point value.
  */
 static const uint32_t kGoldenRatioU32 = 0x9E3779B9U;
-
-inline uint32_t
-RotateBitsLeft32(uint32_t aValue, uint8_t aBits)
-{
-  MOZ_ASSERT(aBits < 32);
-  return (aValue << aBits) | (aValue >> (32 - aBits));
-}
 
 namespace detail {
 
@@ -96,25 +89,28 @@ AddU32ToHash(uint32_t aHash, uint32_t aValue)
    * Otherwise, if |aHash| is 0 (as it often is for the beginning of a
    * message), the expression
    *
-   *   (kGoldenRatioU32 * RotateBitsLeft(aHash, 5)) |xor| aValue
+   *   mozilla::WrappingMultiply(kGoldenRatioU32, RotateBitsLeft(aHash, 5))
+   *   |xor|
+   *   aValue
    *
    * evaluates to |aValue|.
    *
    * (Number-theoretic aside: Because any odd number |m| is relatively prime to
-   * our modulus (2^32), the list
+   * our modulus (2**32), the list
    *
-   *    [x * m (mod 2^32) for 0 <= x < 2^32]
+   *    [x * m (mod 2**32) for 0 <= x < 2**32]
    *
    * has no duplicate elements.  This means that multiplying by |m| does not
    * cause us to skip any possible hash values.
    *
-   * It's also nice if |m| has large-ish order mod 2^32 -- that is, if the
-   * smallest k such that m^k == 1 (mod 2^32) is large -- so we can safely
+   * It's also nice if |m| has large-ish order mod 2**32 -- that is, if the
+   * smallest k such that m**k == 1 (mod 2**32) is large -- so we can safely
    * multiply our hash value by |m| a few times without negating the
-   * multiplicative effect.  Our golden ratio constant has order 2^29, which is
+   * multiplicative effect.  Our golden ratio constant has order 2**29, which is
    * more than enough for our purposes.)
    */
-  return kGoldenRatioU32 * (RotateBitsLeft32(aHash, 5) ^ aValue);
+  return mozilla::WrappingMultiply(kGoldenRatioU32,
+                                   RotateLeft(aHash, 5) ^ aValue);
 }
 
 /**
@@ -122,11 +118,7 @@ AddU32ToHash(uint32_t aHash, uint32_t aValue)
  */
 template<size_t PtrSize>
 inline uint32_t
-AddUintptrToHash(uint32_t aHash, uintptr_t aValue);
-
-template<>
-inline uint32_t
-AddUintptrToHash<4>(uint32_t aHash, uintptr_t aValue)
+AddUintptrToHash(uint32_t aHash, uintptr_t aValue)
 {
   return AddU32ToHash(aHash, static_cast<uint32_t>(aValue));
 }
@@ -135,13 +127,6 @@ template<>
 inline uint32_t
 AddUintptrToHash<8>(uint32_t aHash, uintptr_t aValue)
 {
-  /*
-   * The static cast to uint64_t below is necessary because this function
-   * sometimes gets compiled on 32-bit platforms (yes, even though it's a
-   * template and we never call this particular override in a 32-bit build).  If
-   * we do aValue >> 32 on a 32-bit machine, we're shifting a 32-bit uintptr_t
-   * right 32 bits, and the compiler throws an error.
-   */
   uint32_t v1 = static_cast<uint32_t>(aValue);
   uint32_t v2 = static_cast<uint32_t>(static_cast<uint64_t>(aValue) >> 32);
   return AddU32ToHash(AddU32ToHash(aHash, v1), v2);
@@ -156,9 +141,11 @@ AddUintptrToHash<8>(uint32_t aHash, uintptr_t aValue)
  * Currently, we support hashing uint32_t's, values which we can implicitly
  * convert to uint32_t, data pointers, and function pointers.
  */
-template<typename A>
+template<typename T,
+         bool TypeIsNotIntegral = !mozilla::IsIntegral<T>::value,
+         typename U = typename mozilla::EnableIf<TypeIsNotIntegral>::Type>
 MOZ_MUST_USE inline uint32_t
-AddToHash(uint32_t aHash, A aA)
+AddToHash(uint32_t aHash, T aA)
 {
   /*
    * Try to convert |A| to uint32_t implicitly.  If this works, great.  If not,
@@ -181,11 +168,15 @@ AddToHash(uint32_t aHash, A* aA)
   return detail::AddUintptrToHash<sizeof(uintptr_t)>(aHash, uintptr_t(aA));
 }
 
-template<>
+// We use AddUintptrToHash() for hashing all integral types.  8-byte integral types
+// are treated the same as 64-bit pointers, and smaller integral types are first
+// implicitly converted to 32 bits and then passed to AddUintptrToHash() to be hashed.
+template<typename T,
+         typename U = typename mozilla::EnableIf<mozilla::IsIntegral<T>::value>::Type>
 MOZ_MUST_USE inline uint32_t
-AddToHash(uint32_t aHash, uintptr_t aA)
+AddToHash(uint32_t aHash, T aA)
 {
-  return detail::AddUintptrToHash<sizeof(uintptr_t)>(aHash, aA);
+  return detail::AddUintptrToHash<sizeof(T)>(aHash, aA);
 }
 
 template<typename A, typename... Args>
@@ -361,6 +352,7 @@ private:
       return mV0 ^ mV1 ^ mV2 ^ mV3;
     }
 
+    MOZ_NO_SANITIZE_UNSIGNED_OVERFLOW
     void sipRound()
     {
       mV0 += mV1;
@@ -384,6 +376,5 @@ private:
 };
 
 } /* namespace mozilla */
-#endif /* __cplusplus */
 
 #endif /* mozilla_HashFunctions_h */

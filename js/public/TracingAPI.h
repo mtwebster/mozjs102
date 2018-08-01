@@ -7,8 +7,7 @@
 #ifndef js_TracingAPI_h
 #define js_TracingAPI_h
 
-#include "jsalloc.h"
-
+#include "js/AllocPolicy.h"
 #include "js/HashTable.h"
 #include "js/HeapAPI.h"
 #include "js/TraceKind.h"
@@ -86,9 +85,14 @@ class JS_PUBLIC_API(JSTracer)
     bool isTenuringTracer() const { return tag_ == TracerKindTag::Tenuring; }
     bool isCallbackTracer() const { return tag_ == TracerKindTag::Callback; }
     inline JS::CallbackTracer* asCallbackTracer();
+    bool traceWeakEdges() const { return traceWeakEdges_; }
 #ifdef DEBUG
     bool checkEdges() { return checkEdges_; }
 #endif
+
+    // Get the current GC number. Only call this method if |isMarkingTracer()|
+    // is true.
+    uint32_t gcNumberForMarking() const;
 
   protected:
     JSTracer(JSRuntime* rt, TracerKindTag tag,
@@ -99,6 +103,7 @@ class JS_PUBLIC_API(JSTracer)
       , checkEdges_(true)
 #endif
       , tag_(tag)
+      , traceWeakEdges_(true)
     {}
 
 #ifdef DEBUG
@@ -117,6 +122,7 @@ class JS_PUBLIC_API(JSTracer)
 
   protected:
     TracerKindTag tag_;
+    bool traceWeakEdges_;
 };
 
 namespace JS {
@@ -160,6 +166,9 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
     }
     virtual void onScopeEdge(js::Scope** scopep) {
         onChild(JS::GCCellPtr(*scopep, JS::TraceKind::Scope));
+    }
+    virtual void onRegExpSharedEdge(js::RegExpShared** sharedp) {
+        onChild(JS::GCCellPtr(*sharedp, JS::TraceKind::RegExpShared));
     }
 
     // Override this method to receive notification when a node in the GC
@@ -212,7 +221,14 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
     };
 
 #ifdef DEBUG
-    enum class TracerKind { DoNotCare, Moving, GrayBuffering, VerifyTraceProtoAndIface };
+    enum class TracerKind {
+        DoNotCare,
+        Moving,
+        GrayBuffering,
+        VerifyTraceProtoAndIface,
+        ClearEdges,
+        UnmarkGray
+    };
     virtual TracerKind getTracerKind() const { return TracerKind::DoNotCare; }
 #endif
 
@@ -231,6 +247,12 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
     void dispatchToOnEdge(js::jit::JitCode** codep) { onJitCodeEdge(codep); }
     void dispatchToOnEdge(js::LazyScript** lazyp) { onLazyScriptEdge(lazyp); }
     void dispatchToOnEdge(js::Scope** scopep) { onScopeEdge(scopep); }
+    void dispatchToOnEdge(js::RegExpShared** sharedp) { onRegExpSharedEdge(sharedp); }
+
+  protected:
+    void setTraceWeakEdges(bool value) {
+        traceWeakEdges_ = value;
+    }
 
   private:
     friend class AutoTracingName;
@@ -319,6 +341,13 @@ JSTracer::asCallbackTracer()
     return static_cast<JS::CallbackTracer*>(this);
 }
 
+namespace js {
+namespace gc {
+template <typename T>
+JS_PUBLIC_API(void) TraceExternalEdge(JSTracer* trc, T* thingp, const char* name);
+} // namespace gc
+} // namespace js
+
 namespace JS {
 
 // The JS::TraceEdge family of functions traces the given GC thing reference.
@@ -335,12 +364,26 @@ namespace JS {
 //
 // Note that while |edgep| must never be null, it is fine for |*edgep| to be
 // nullptr.
-template <typename T>
-extern JS_PUBLIC_API(void)
-TraceEdge(JSTracer* trc, JS::Heap<T>* edgep, const char* name);
 
-extern JS_PUBLIC_API(void)
-TraceEdge(JSTracer* trc, JS::TenuredHeap<JSObject*>* edgep, const char* name);
+template <typename T>
+inline void
+TraceEdge(JSTracer* trc, JS::Heap<T>* thingp, const char* name)
+{
+    MOZ_ASSERT(thingp);
+    if (*thingp)
+        js::gc::TraceExternalEdge(trc, thingp->unsafeGet(), name);
+}
+
+template <typename T>
+inline void
+TraceEdge(JSTracer* trc, JS::TenuredHeap<T>* thingp, const char* name)
+{
+    MOZ_ASSERT(thingp);
+    if (T ptr = thingp->unbarrieredGetPtr()) {
+        js::gc::TraceExternalEdge(trc, &ptr, name);
+        thingp->setPtr(ptr);
+    }
+}
 
 // Edges that are always traced as part of root marking do not require
 // incremental barriers. This function allows for marking non-barriered

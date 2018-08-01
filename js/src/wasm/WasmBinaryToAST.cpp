@@ -18,19 +18,17 @@
 
 #include "wasm/WasmBinaryToAST.h"
 
-#include "mozilla/CheckedInt.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Sprintf.h"
 
-#include "jscntxt.h"
-
-#include "wasm/WasmBinaryFormat.h"
+#include "vm/JSCompartment.h"
+#include "vm/JSContext.h"
 #include "wasm/WasmBinaryIterator.h"
+#include "wasm/WasmValidate.h"
 
 using namespace js;
 using namespace js::wasm;
 
-using mozilla::CheckedInt;
 using mozilla::FloorLog2;
 
 enum AstDecodeTerminationKind
@@ -66,14 +64,10 @@ struct AstDecodeStackItem
 // We don't define a Value type because OpIter doesn't push void values, which
 // we actually need here because we're building an AST, so we maintain our own
 // stack.
-struct AstDecodePolicy : OpIterPolicy
+struct AstDecodePolicy
 {
-    // Enable validation because we can be called from wasmBinaryToText on bytes
-    // which are not necessarily valid, and we shouldn't run the decoder in
-    // non-validating mode on invalid code.
-    static const bool Validate = true;
-
-    static const bool Output = true;
+    typedef Nothing Value;
+    typedef Nothing ControlItem;
 };
 
 typedef OpIter<AstDecodePolicy> AstDecodeOpIter;
@@ -81,7 +75,6 @@ typedef OpIter<AstDecodePolicy> AstDecodeOpIter;
 class AstDecodeContext
 {
   public:
-    typedef AstVector<uint32_t> AstIndexVector;
     typedef AstVector<AstDecodeStackItem> AstDecodeStack;
     typedef AstVector<uint32_t> DepthStack;
 
@@ -91,13 +84,13 @@ class AstDecodeContext
     bool generateNames;
 
   private:
+    ModuleEnvironment env_;
+
     AstModule& module_;
-    AstIndexVector funcDefSigs_;
     AstDecodeOpIter *iter_;
     AstDecodeStack exprs_;
     DepthStack depths_;
     const ValTypeVector* locals_;
-    GlobalDescVector globals_;
     AstNameVector blockLabels_;
     uint32_t currentLabelIndex_;
     ExprType retType_;
@@ -109,8 +102,11 @@ class AstDecodeContext
        lifo(lifo),
        d(d),
        generateNames(generateNames),
+       env_(CompileMode::Once, Tier::Ion, DebugEnabled::False,
+            cx->compartment()->creationOptions().getSharedMemoryAndAtomicsEnabled()
+            ? Shareable::True
+            : Shareable::False),
        module_(module),
-       funcDefSigs_(lifo),
        iter_(nullptr),
        exprs_(lifo),
        depths_(lifo),
@@ -120,8 +116,9 @@ class AstDecodeContext
        retType_(ExprType::Limit)
     {}
 
+    ModuleEnvironment& env() { return env_; }
+
     AstModule& module() { return module_; }
-    AstIndexVector& funcDefSigs() { return funcDefSigs_; }
     AstDecodeOpIter& iter() { return *iter_; }
     AstDecodeStack& exprs() { return exprs_; }
     DepthStack& depths() { return depths_; }
@@ -130,23 +127,6 @@ class AstDecodeContext
 
     ExprType retType() const { return retType_; }
     const ValTypeVector& locals() const { return *locals_; }
-
-    bool addGlobalDesc(ValType type, bool isMutable, bool isImport) {
-        if (isImport)
-            return globals_.append(GlobalDesc(type, isMutable, globals_.length()));
-        // No need to have the precise init expr value; we just need the right
-        // type.
-        Val dummy;
-        switch (type) {
-          case ValType::I32: dummy = Val(uint32_t(0)); break;
-          case ValType::I64: dummy = Val(uint64_t(0)); break;
-          case ValType::F32: dummy = Val(RawF32(0.f)); break;
-          case ValType::F64: dummy = Val(RawF64(0.0)); break;
-          default:           return false;
-        }
-        return globals_.append(GlobalDesc(InitExpr(dummy), isMutable));
-    }
-    const GlobalDescVector& globalDescs() const { return globals_; }
 
     void popBack() { return exprs().popBack(); }
     AstDecodeStackItem popCopy() { return exprs().popCopy(); }
@@ -266,32 +246,32 @@ GenerateRef(AstDecodeContext& c, const AstName& prefix, uint32_t index, AstRef* 
 }
 
 static bool
-AstDecodeCallArgs(AstDecodeContext& c, const AstSig& sig, AstExprVector* funcArgs)
+GenerateFuncRef(AstDecodeContext& c, uint32_t funcIndex, AstRef* ref)
 {
-    MOZ_ASSERT(c.iter().inReachableCode());
-
-    const AstValTypeVector& args = sig.args();
-    uint32_t numArgs = args.length();
-
-    if (!funcArgs->resize(numArgs))
-        return false;
-
-    for (size_t i = 0; i < numArgs; ++i) {
-        ValType argType = args[i];
-        AstDecodeStackItem item;
-        if (!c.iter().readCallArg(argType, numArgs, i, nullptr))
+    if (funcIndex < c.module().numFuncImports()) {
+        *ref = AstRef(c.module().funcImportNames()[funcIndex]);
+    } else {
+        if (!GenerateRef(c, AstName(u"func"), funcIndex, ref))
             return false;
-        (*funcArgs)[i] = c.exprs()[c.exprs().length() - numArgs + i].expr;
     }
-    c.exprs().shrinkBy(numArgs);
-
-    return c.iter().readCallArgsEnd(numArgs);
+    return true;
 }
 
 static bool
-AstDecodeCallReturn(AstDecodeContext& c, const AstSig& sig)
+AstDecodeCallArgs(AstDecodeContext& c, const SigWithId& sig, AstExprVector* funcArgs)
 {
-    return c.iter().readCallReturn(sig.ret());
+    MOZ_ASSERT(!c.iter().currentBlockHasPolymorphicBase());
+
+    uint32_t numArgs = sig.args().length();
+    if (!funcArgs->resize(numArgs))
+        return false;
+
+    for (size_t i = 0; i < numArgs; ++i)
+        (*funcArgs)[i] = c.exprs()[c.exprs().length() - numArgs + i].expr;
+
+    c.exprs().shrinkBy(numArgs);
+
+    return true;
 }
 
 static bool
@@ -323,36 +303,21 @@ static bool
 AstDecodeCall(AstDecodeContext& c)
 {
     uint32_t funcIndex;
-    if (!c.iter().readCall(&funcIndex))
+    AstDecodeOpIter::ValueVector unusedArgs;
+    if (!c.iter().readCall(&funcIndex, &unusedArgs))
         return false;
 
-    if (!c.iter().inReachableCode())
+    if (c.iter().currentBlockHasPolymorphicBase())
         return true;
 
-    uint32_t sigIndex;
     AstRef funcRef;
-    if (funcIndex < c.module().numFuncImports()) {
-        AstImport* import = c.module().imports()[funcIndex];
-        sigIndex = import->funcSig().index();
-        funcRef = AstRef(import->name());
-    } else {
-        uint32_t funcDefIndex = funcIndex - c.module().numFuncImports();
-        if (funcDefIndex >= c.funcDefSigs().length())
-            return c.iter().fail("callee index out of range");
+    if (!GenerateFuncRef(c, funcIndex, &funcRef))
+        return false;
 
-        sigIndex = c.funcDefSigs()[funcDefIndex];
-
-        if (!GenerateRef(c, AstName(u"func"), funcIndex, &funcRef))
-            return false;
-    }
-
-    const AstSig* sig = c.module().sigs()[sigIndex];
+    const SigWithId* sig = c.env().funcSigs[funcIndex];
 
     AstExprVector args(c.lifo);
     if (!AstDecodeCallArgs(c, *sig, &args))
-        return false;
-
-    if (!AstDecodeCallReturn(c, *sig))
         return false;
 
     AstCall* call = new(c.lifo) AstCall(Op::Call, sig->ret(), funcRef, Move(args));
@@ -373,14 +338,12 @@ static bool
 AstDecodeCallIndirect(AstDecodeContext& c)
 {
     uint32_t sigIndex;
-    if (!c.iter().readCallIndirect(&sigIndex, nullptr))
+    AstDecodeOpIter::ValueVector unusedArgs;
+    if (!c.iter().readCallIndirect(&sigIndex, nullptr, &unusedArgs))
         return false;
 
-    if (!c.iter().inReachableCode())
+    if (c.iter().currentBlockHasPolymorphicBase())
         return true;
-
-    if (sigIndex >= c.module().sigs().length())
-        return c.iter().fail("signature index out of range");
 
     AstDecodeStackItem index = c.popCopy();
 
@@ -388,21 +351,17 @@ AstDecodeCallIndirect(AstDecodeContext& c)
     if (!GenerateRef(c, AstName(u"type"), sigIndex, &sigRef))
         return false;
 
-    const AstSig* sig = c.module().sigs()[sigIndex];
+    const SigWithId& sig = c.env().sigs[sigIndex];
     AstExprVector args(c.lifo);
-    if (!AstDecodeCallArgs(c, *sig, &args))
+    if (!AstDecodeCallArgs(c, sig, &args))
         return false;
 
-    if (!AstDecodeCallReturn(c, *sig))
-        return false;
-
-    AstCallIndirect* call = new(c.lifo) AstCallIndirect(sigRef, sig->ret(),
-                                                        Move(args), index.expr);
+    AstCallIndirect* call = new(c.lifo) AstCallIndirect(sigRef, sig.ret(), Move(args), index.expr);
     if (!call)
         return false;
 
     AstExpr* result = call;
-    if (IsVoid(sig->ret()))
+    if (IsVoid(sig.ret()))
         result = c.handleVoidExpr(call);
 
     if (!c.push(AstDecodeStackItem(result)))
@@ -433,26 +392,25 @@ AstDecodeGetBlockRef(AstDecodeContext& c, uint32_t depth, AstRef* ref)
 static bool
 AstDecodeBrTable(AstDecodeContext& c)
 {
-    uint32_t tableLength;
+    bool unreachable = c.iter().currentBlockHasPolymorphicBase();
+
+    Uint32Vector depths;
+    uint32_t defaultDepth;
     ExprType type;
-    if (!c.iter().readBrTable(&tableLength, &type, nullptr, nullptr))
+    if (!c.iter().readBrTable(&depths, &defaultDepth, &type, nullptr, nullptr))
         return false;
+
+    if (unreachable)
+        return true;
 
     AstRefVector table(c.lifo);
-    if (!table.resize(tableLength))
+    if (!table.resize(depths.length()))
         return false;
 
-    uint32_t depth;
-    for (size_t i = 0, e = tableLength; i < e; ++i) {
-        if (!c.iter().readBrTableEntry(&type, nullptr, &depth))
-            return false;
-        if (!AstDecodeGetBlockRef(c, depth, &table[i]))
+    for (size_t i = 0; i < depths.length(); ++i) {
+        if (!AstDecodeGetBlockRef(c, depths[i], &table[i]))
             return false;
     }
-
-    // Read the default label.
-    if (!c.iter().readBrTableDefault(&type, nullptr, &depth))
-        return false;
 
     AstDecodeStackItem index = c.popCopy();
     AstDecodeStackItem value;
@@ -460,11 +418,10 @@ AstDecodeBrTable(AstDecodeContext& c)
         value = c.popCopy();
 
     AstRef def;
-    if (!AstDecodeGetBlockRef(c, depth, &def))
+    if (!AstDecodeGetBlockRef(c, defaultDepth, &def))
         return false;
 
-    AstBranchTable* branchTable = new(c.lifo) AstBranchTable(*index.expr,
-                                                             def, Move(table), value.expr);
+    auto branchTable = new(c.lifo) AstBranchTable(*index.expr, def, Move(table), value.expr);
     if (!branchTable)
         return false;
 
@@ -614,6 +571,8 @@ AstDecodeEnd(AstDecodeContext& c)
     if (!c.iter().readEnd(&kind, &type, nullptr))
         return false;
 
+    c.iter().popEnd();
+
     if (!c.push(AstDecodeStackItem(AstDecodeTerminationKind::End, type)))
         return false;
 
@@ -694,19 +653,23 @@ AstDecodeBinary(AstDecodeContext& c, ValType type, Op op)
 static bool
 AstDecodeSelect(AstDecodeContext& c)
 {
-    ValType type;
+    StackType type;
     if (!c.iter().readSelect(&type, nullptr, nullptr, nullptr))
         return false;
+
+    if (c.iter().currentBlockHasPolymorphicBase())
+        return true;
 
     AstDecodeStackItem selectFalse = c.popCopy();
     AstDecodeStackItem selectTrue = c.popCopy();
     AstDecodeStackItem cond = c.popCopy();
 
-    AstTernaryOperator* ternary = new(c.lifo) AstTernaryOperator(Op::Select, cond.expr, selectTrue.expr, selectFalse.expr);
-    if (!ternary)
+    auto* select = new(c.lifo) AstTernaryOperator(Op::Select, cond.expr, selectTrue.expr,
+                                                  selectFalse.expr);
+    if (!select)
         return false;
 
-    if (!c.push(AstDecodeStackItem(ternary)))
+    if (!c.push(AstDecodeStackItem(select)))
         return false;
 
     return true;
@@ -748,6 +711,27 @@ AstDecodeConversion(AstDecodeContext& c, ValType fromType, ValType toType, Op op
 
     return true;
 }
+
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+static bool
+AstDecodeExtraConversion(AstDecodeContext& c, ValType fromType, ValType toType, NumericOp op)
+{
+    if (!c.iter().readConversion(fromType, toType, nullptr))
+        return false;
+
+    AstDecodeStackItem operand = c.popCopy();
+
+    AstExtraConversionOperator* conversion =
+        new(c.lifo) AstExtraConversionOperator(op, operand.expr);
+    if (!conversion)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(conversion)))
+        return false;
+
+    return true;
+}
+#endif
 
 static AstLoadStoreAddress
 AstDecodeLoadStoreAddress(const LinearMemoryAddress<Nothing>& addr, const AstDecodeStackItem& item)
@@ -946,7 +930,7 @@ static bool
 AstDecodeGetGlobal(AstDecodeContext& c)
 {
     uint32_t globalId;
-    if (!c.iter().readGetGlobal(c.globalDescs(), &globalId))
+    if (!c.iter().readGetGlobal(&globalId))
         return false;
 
     AstRef globalRef;
@@ -967,7 +951,7 @@ static bool
 AstDecodeSetGlobal(AstDecodeContext& c)
 {
     uint32_t globalId;
-    if (!c.iter().readSetGlobal(c.globalDescs(), &globalId, nullptr))
+    if (!c.iter().readSetGlobal(&globalId, nullptr))
         return false;
 
     AstDecodeStackItem value = c.popCopy();
@@ -1011,15 +995,270 @@ AstDecodeReturn(AstDecodeContext& c)
 }
 
 static bool
+AstDecodeAtomicLoad(AstDecodeContext& c, ThreadOp op)
+{
+    ValType type;
+    uint32_t byteSize;
+    switch (op) {
+      case ThreadOp::I32AtomicLoad:    type = ValType::I32; byteSize = 4; break;
+      case ThreadOp::I64AtomicLoad:    type = ValType::I64; byteSize = 8; break;
+      case ThreadOp::I32AtomicLoad8U:  type = ValType::I32; byteSize = 1; break;
+      case ThreadOp::I32AtomicLoad16U: type = ValType::I32; byteSize = 2; break;
+      case ThreadOp::I64AtomicLoad8U:  type = ValType::I64; byteSize = 1; break;
+      case ThreadOp::I64AtomicLoad16U: type = ValType::I64; byteSize = 2; break;
+      case ThreadOp::I64AtomicLoad32U: type = ValType::I64; byteSize = 4; break;
+      default:
+        MOZ_CRASH("Should not happen");
+    }
+
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readAtomicLoad(&addr, type, byteSize))
+        return false;
+
+    AstDecodeStackItem item = c.popCopy();
+
+    AstAtomicLoad* load = new(c.lifo) AstAtomicLoad(op, AstDecodeLoadStoreAddress(addr, item));
+    if (!load)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(load)))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeAtomicStore(AstDecodeContext& c, ThreadOp op)
+{
+    ValType type;
+    uint32_t byteSize;
+    switch (op) {
+      case ThreadOp::I32AtomicStore:    type = ValType::I32; byteSize = 4; break;
+      case ThreadOp::I64AtomicStore:    type = ValType::I64; byteSize = 8; break;
+      case ThreadOp::I32AtomicStore8U:  type = ValType::I32; byteSize = 1; break;
+      case ThreadOp::I32AtomicStore16U: type = ValType::I32; byteSize = 2; break;
+      case ThreadOp::I64AtomicStore8U:  type = ValType::I64; byteSize = 1; break;
+      case ThreadOp::I64AtomicStore16U: type = ValType::I64; byteSize = 2; break;
+      case ThreadOp::I64AtomicStore32U: type = ValType::I64; byteSize = 4; break;
+      default:
+        MOZ_CRASH("Should not happen");
+    }
+
+    Nothing nothing;
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readAtomicStore(&addr, type, byteSize, &nothing))
+        return false;
+
+    AstDecodeStackItem value = c.popCopy();
+    AstDecodeStackItem item = c.popCopy();
+
+    AstAtomicStore* store = new(c.lifo) AstAtomicStore(op, AstDecodeLoadStoreAddress(addr, item), value.expr);
+    if (!store)
+        return false;
+
+    AstExpr* wrapped = c.handleVoidExpr(store);
+    if (!wrapped)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(wrapped)))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeAtomicRMW(AstDecodeContext& c, ThreadOp op)
+{
+    ValType type;
+    uint32_t byteSize;
+    switch (op) {
+      case ThreadOp::I32AtomicAdd:
+      case ThreadOp::I32AtomicSub:
+      case ThreadOp::I32AtomicAnd:
+      case ThreadOp::I32AtomicOr:
+      case ThreadOp::I32AtomicXor:
+      case ThreadOp::I32AtomicXchg:
+        type = ValType::I32;
+        byteSize = 4;
+        break;
+      case ThreadOp::I64AtomicAdd:
+      case ThreadOp::I64AtomicSub:
+      case ThreadOp::I64AtomicAnd:
+      case ThreadOp::I64AtomicOr:
+      case ThreadOp::I64AtomicXor:
+      case ThreadOp::I64AtomicXchg:
+        type = ValType::I64;
+        byteSize = 8;
+        break;
+      case ThreadOp::I32AtomicAdd8U:
+      case ThreadOp::I32AtomicSub8U:
+      case ThreadOp::I32AtomicOr8U:
+      case ThreadOp::I32AtomicXor8U:
+      case ThreadOp::I32AtomicXchg8U:
+      case ThreadOp::I32AtomicAnd8U:
+        type = ValType::I32;
+        byteSize = 1;
+        break;
+      case ThreadOp::I32AtomicAdd16U:
+      case ThreadOp::I32AtomicSub16U:
+      case ThreadOp::I32AtomicAnd16U:
+      case ThreadOp::I32AtomicOr16U:
+      case ThreadOp::I32AtomicXor16U:
+      case ThreadOp::I32AtomicXchg16U:
+        type = ValType::I32;
+        byteSize = 2;
+        break;
+      case ThreadOp::I64AtomicAdd8U:
+      case ThreadOp::I64AtomicSub8U:
+      case ThreadOp::I64AtomicAnd8U:
+      case ThreadOp::I64AtomicOr8U:
+      case ThreadOp::I64AtomicXor8U:
+      case ThreadOp::I64AtomicXchg8U:
+        type = ValType::I64;
+        byteSize = 1;
+        break;
+      case ThreadOp::I64AtomicAdd16U:
+      case ThreadOp::I64AtomicSub16U:
+      case ThreadOp::I64AtomicAnd16U:
+      case ThreadOp::I64AtomicOr16U:
+      case ThreadOp::I64AtomicXor16U:
+      case ThreadOp::I64AtomicXchg16U:
+        type = ValType::I64;
+        byteSize = 2;
+        break;
+      case ThreadOp::I64AtomicAdd32U:
+      case ThreadOp::I64AtomicSub32U:
+      case ThreadOp::I64AtomicAnd32U:
+      case ThreadOp::I64AtomicOr32U:
+      case ThreadOp::I64AtomicXor32U:
+      case ThreadOp::I64AtomicXchg32U:
+        type = ValType::I64;
+        byteSize = 4;
+        break;
+      default:
+        MOZ_CRASH("Should not happen");
+    }
+
+    Nothing nothing;
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readAtomicRMW(&addr, type, byteSize, &nothing))
+        return false;
+
+    AstDecodeStackItem value = c.popCopy();
+    AstDecodeStackItem item = c.popCopy();
+
+    AstAtomicRMW* rmw = new(c.lifo) AstAtomicRMW(op, AstDecodeLoadStoreAddress(addr, item),
+                                                 value.expr);
+    if (!rmw)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(rmw)))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeAtomicCmpXchg(AstDecodeContext& c, ThreadOp op)
+{
+    ValType type;
+    uint32_t byteSize;
+    switch (op) {
+      case ThreadOp::I32AtomicCmpXchg:    type = ValType::I32; byteSize = 4; break;
+      case ThreadOp::I64AtomicCmpXchg:    type = ValType::I64; byteSize = 8; break;
+      case ThreadOp::I32AtomicCmpXchg8U:  type = ValType::I32; byteSize = 1; break;
+      case ThreadOp::I32AtomicCmpXchg16U: type = ValType::I32; byteSize = 2; break;
+      case ThreadOp::I64AtomicCmpXchg8U:  type = ValType::I64; byteSize = 1; break;
+      case ThreadOp::I64AtomicCmpXchg16U: type = ValType::I64; byteSize = 2; break;
+      case ThreadOp::I64AtomicCmpXchg32U: type = ValType::I64; byteSize = 4; break;
+      default:
+        MOZ_CRASH("Should not happen");
+    }
+
+    Nothing nothing;
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readAtomicCmpXchg(&addr, type, byteSize, &nothing, &nothing))
+        return false;
+
+    AstDecodeStackItem replacement = c.popCopy();
+    AstDecodeStackItem expected = c.popCopy();
+    AstDecodeStackItem item = c.popCopy();
+
+    AstAtomicCmpXchg* cmpxchg =
+        new(c.lifo) AstAtomicCmpXchg(op, AstDecodeLoadStoreAddress(addr, item), expected.expr,
+                                     replacement.expr);
+    if (!cmpxchg)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(cmpxchg)))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeWait(AstDecodeContext& c, ThreadOp op)
+{
+    ValType type;
+    uint32_t byteSize;
+    switch (op) {
+      case ThreadOp::I32Wait: type = ValType::I32; byteSize = 4; break;
+      case ThreadOp::I64Wait: type = ValType::I64; byteSize = 8; break;
+      default:
+        MOZ_CRASH("Should not happen");
+    }
+
+    Nothing nothing;
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readWait(&addr, type, byteSize, &nothing, &nothing))
+        return false;
+
+    AstDecodeStackItem timeout = c.popCopy();
+    AstDecodeStackItem value = c.popCopy();
+    AstDecodeStackItem item = c.popCopy();
+
+    AstWait* wait = new(c.lifo) AstWait(op, AstDecodeLoadStoreAddress(addr, item), value.expr,
+                                        timeout.expr);
+    if (!wait)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(wait)))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeWake(AstDecodeContext& c)
+{
+    Nothing nothing;
+    LinearMemoryAddress<Nothing> addr;
+    if (!c.iter().readWake(&addr, &nothing))
+        return false;
+
+    AstDecodeStackItem count = c.popCopy();
+    AstDecodeStackItem item = c.popCopy();
+
+    AstWake* wake = new(c.lifo) AstWake(AstDecodeLoadStoreAddress(addr, item), count.expr);
+    if (!wake)
+        return false;
+
+    if (!c.push(AstDecodeStackItem(wake)))
+        return false;
+
+    return true;
+}
+
+static bool
 AstDecodeExpr(AstDecodeContext& c)
 {
     uint32_t exprOffset = c.iter().currentOffset();
-    uint16_t op;
+    OpBytes op;
     if (!c.iter().readOp(&op))
         return false;
 
     AstExpr* tmp;
-    switch (op) {
+    switch (op.b0) {
       case uint16_t(Op::Nop):
         if (!AstDecodeNop(c))
             return false;
@@ -1053,7 +1292,7 @@ AstDecodeExpr(AstDecodeContext& c)
             return false;
         break;
       case uint16_t(Op::F32Const): {
-        RawF32 f32;
+        float f32;
         if (!c.iter().readF32Const(&f32))
             return false;
         tmp = new(c.lifo) AstConst(Val(f32));
@@ -1062,7 +1301,7 @@ AstDecodeExpr(AstDecodeContext& c)
         break;
       }
       case uint16_t(Op::F64Const): {
-        RawF64 f64;
+        double f64;
         if (!c.iter().readF64Const(&f64))
             return false;
         tmp = new(c.lifo) AstConst(Val(f64));
@@ -1088,7 +1327,7 @@ AstDecodeExpr(AstDecodeContext& c)
         break;
       case uint16_t(Op::Block):
       case uint16_t(Op::Loop):
-        if (!AstDecodeBlock(c, Op(op)))
+        if (!AstDecodeBlock(c, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::If):
@@ -1106,13 +1345,13 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::I32Clz):
       case uint16_t(Op::I32Ctz):
       case uint16_t(Op::I32Popcnt):
-        if (!AstDecodeUnary(c, ValType::I32, Op(op)))
+        if (!AstDecodeUnary(c, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Clz):
       case uint16_t(Op::I64Ctz):
       case uint16_t(Op::I64Popcnt):
-        if (!AstDecodeUnary(c, ValType::I64, Op(op)))
+        if (!AstDecodeUnary(c, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32Abs):
@@ -1122,7 +1361,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F32Sqrt):
       case uint16_t(Op::F32Trunc):
       case uint16_t(Op::F32Nearest):
-        if (!AstDecodeUnary(c, ValType::F32, Op(op)))
+        if (!AstDecodeUnary(c, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64Abs):
@@ -1132,7 +1371,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F64Sqrt):
       case uint16_t(Op::F64Trunc):
       case uint16_t(Op::F64Nearest):
-        if (!AstDecodeUnary(c, ValType::F64, Op(op)))
+        if (!AstDecodeUnary(c, ValType::F64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Add):
@@ -1150,7 +1389,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::I32ShrU):
       case uint16_t(Op::I32Rotl):
       case uint16_t(Op::I32Rotr):
-        if (!AstDecodeBinary(c, ValType::I32, Op(op)))
+        if (!AstDecodeBinary(c, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Add):
@@ -1168,7 +1407,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::I64ShrU):
       case uint16_t(Op::I64Rotl):
       case uint16_t(Op::I64Rotr):
-        if (!AstDecodeBinary(c, ValType::I64, Op(op)))
+        if (!AstDecodeBinary(c, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32Add):
@@ -1178,7 +1417,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F32Min):
       case uint16_t(Op::F32Max):
       case uint16_t(Op::F32CopySign):
-        if (!AstDecodeBinary(c, ValType::F32, Op(op)))
+        if (!AstDecodeBinary(c, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64Add):
@@ -1188,7 +1427,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F64Min):
       case uint16_t(Op::F64Max):
       case uint16_t(Op::F64CopySign):
-        if (!AstDecodeBinary(c, ValType::F64, Op(op)))
+        if (!AstDecodeBinary(c, ValType::F64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Eq):
@@ -1201,7 +1440,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::I32GtU):
       case uint16_t(Op::I32GeS):
       case uint16_t(Op::I32GeU):
-        if (!AstDecodeComparison(c, ValType::I32, Op(op)))
+        if (!AstDecodeComparison(c, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Eq):
@@ -1214,7 +1453,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::I64GtU):
       case uint16_t(Op::I64GeS):
       case uint16_t(Op::I64GeU):
-        if (!AstDecodeComparison(c, ValType::I64, Op(op)))
+        if (!AstDecodeComparison(c, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32Eq):
@@ -1223,7 +1462,7 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F32Le):
       case uint16_t(Op::F32Gt):
       case uint16_t(Op::F32Ge):
-        if (!AstDecodeComparison(c, ValType::F32, Op(op)))
+        if (!AstDecodeComparison(c, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64Eq):
@@ -1232,150 +1471,163 @@ AstDecodeExpr(AstDecodeContext& c)
       case uint16_t(Op::F64Le):
       case uint16_t(Op::F64Gt):
       case uint16_t(Op::F64Ge):
-        if (!AstDecodeComparison(c, ValType::F64, Op(op)))
+        if (!AstDecodeComparison(c, ValType::F64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Eqz):
-        if (!AstDecodeConversion(c, ValType::I32, ValType::I32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I32, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Eqz):
       case uint16_t(Op::I32WrapI64):
-        if (!AstDecodeConversion(c, ValType::I64, ValType::I32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I64, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32TruncSF32):
       case uint16_t(Op::I32TruncUF32):
       case uint16_t(Op::I32ReinterpretF32):
-        if (!AstDecodeConversion(c, ValType::F32, ValType::I32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F32, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32TruncSF64):
       case uint16_t(Op::I32TruncUF64):
-        if (!AstDecodeConversion(c, ValType::F64, ValType::I32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F64, ValType::I32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64ExtendSI32):
       case uint16_t(Op::I64ExtendUI32):
-        if (!AstDecodeConversion(c, ValType::I32, ValType::I64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I32, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64TruncSF32):
       case uint16_t(Op::I64TruncUF32):
-        if (!AstDecodeConversion(c, ValType::F32, ValType::I64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F32, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64TruncSF64):
       case uint16_t(Op::I64TruncUF64):
       case uint16_t(Op::I64ReinterpretF64):
-        if (!AstDecodeConversion(c, ValType::F64, ValType::I64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F64, ValType::I64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32ConvertSI32):
       case uint16_t(Op::F32ConvertUI32):
       case uint16_t(Op::F32ReinterpretI32):
-        if (!AstDecodeConversion(c, ValType::I32, ValType::F32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I32, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32ConvertSI64):
       case uint16_t(Op::F32ConvertUI64):
-        if (!AstDecodeConversion(c, ValType::I64, ValType::F32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I64, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32DemoteF64):
-        if (!AstDecodeConversion(c, ValType::F64, ValType::F32, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F64, ValType::F32, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64ConvertSI32):
       case uint16_t(Op::F64ConvertUI32):
-        if (!AstDecodeConversion(c, ValType::I32, ValType::F64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I32, ValType::F64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64ConvertSI64):
       case uint16_t(Op::F64ConvertUI64):
       case uint16_t(Op::F64ReinterpretI64):
-        if (!AstDecodeConversion(c, ValType::I64, ValType::F64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::I64, ValType::F64, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64PromoteF32):
-        if (!AstDecodeConversion(c, ValType::F32, ValType::F64, Op(op)))
+        if (!AstDecodeConversion(c, ValType::F32, ValType::F64, Op(op.b0)))
             return false;
         break;
+#ifdef ENABLE_WASM_SIGNEXTEND_OPS
+      case uint16_t(Op::I32Extend8S):
+      case uint16_t(Op::I32Extend16S):
+        if (!AstDecodeConversion(c, ValType::I32, ValType::I32, Op(op.b0)))
+            return false;
+        break;
+      case uint16_t(Op::I64Extend8S):
+      case uint16_t(Op::I64Extend16S):
+      case uint16_t(Op::I64Extend32S):
+        if (!AstDecodeConversion(c, ValType::I64, ValType::I64, Op(op.b0)))
+            return false;
+        break;
+#endif
       case uint16_t(Op::I32Load8S):
       case uint16_t(Op::I32Load8U):
-        if (!AstDecodeLoad(c, ValType::I32, 1, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I32, 1, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Load16S):
       case uint16_t(Op::I32Load16U):
-        if (!AstDecodeLoad(c, ValType::I32, 2, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I32, 2, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Load):
-        if (!AstDecodeLoad(c, ValType::I32, 4, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I32, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Load8S):
       case uint16_t(Op::I64Load8U):
-        if (!AstDecodeLoad(c, ValType::I64, 1, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I64, 1, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Load16S):
       case uint16_t(Op::I64Load16U):
-        if (!AstDecodeLoad(c, ValType::I64, 2, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I64, 2, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Load32S):
       case uint16_t(Op::I64Load32U):
-        if (!AstDecodeLoad(c, ValType::I64, 4, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I64, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Load):
-        if (!AstDecodeLoad(c, ValType::I64, 8, Op(op)))
+        if (!AstDecodeLoad(c, ValType::I64, 8, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32Load):
-        if (!AstDecodeLoad(c, ValType::F32, 4, Op(op)))
+        if (!AstDecodeLoad(c, ValType::F32, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64Load):
-        if (!AstDecodeLoad(c, ValType::F64, 8, Op(op)))
+        if (!AstDecodeLoad(c, ValType::F64, 8, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Store8):
-        if (!AstDecodeStore(c, ValType::I32, 1, Op(op)))
+        if (!AstDecodeStore(c, ValType::I32, 1, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Store16):
-        if (!AstDecodeStore(c, ValType::I32, 2, Op(op)))
+        if (!AstDecodeStore(c, ValType::I32, 2, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I32Store):
-        if (!AstDecodeStore(c, ValType::I32, 4, Op(op)))
+        if (!AstDecodeStore(c, ValType::I32, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Store8):
-        if (!AstDecodeStore(c, ValType::I64, 1, Op(op)))
+        if (!AstDecodeStore(c, ValType::I64, 1, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Store16):
-        if (!AstDecodeStore(c, ValType::I64, 2, Op(op)))
+        if (!AstDecodeStore(c, ValType::I64, 2, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Store32):
-        if (!AstDecodeStore(c, ValType::I64, 4, Op(op)))
+        if (!AstDecodeStore(c, ValType::I64, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::I64Store):
-        if (!AstDecodeStore(c, ValType::I64, 8, Op(op)))
+        if (!AstDecodeStore(c, ValType::I64, 8, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F32Store):
-        if (!AstDecodeStore(c, ValType::F32, 4, Op(op)))
+        if (!AstDecodeStore(c, ValType::F32, 4, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::F64Store):
-        if (!AstDecodeStore(c, ValType::F64, 8, Op(op)))
+        if (!AstDecodeStore(c, ValType::F64, 8, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::CurrentMemory):
@@ -1396,7 +1648,7 @@ AstDecodeExpr(AstDecodeContext& c)
         break;
       case uint16_t(Op::Br):
       case uint16_t(Op::BrIf):
-        if (!AstDecodeBranch(c, Op(op)))
+        if (!AstDecodeBranch(c, Op(op.b0)))
             return false;
         break;
       case uint16_t(Op::BrTable):
@@ -1416,13 +1668,237 @@ AstDecodeExpr(AstDecodeContext& c)
         if (!c.push(AstDecodeStackItem(tmp)))
             return false;
         break;
+#ifdef ENABLE_WASM_SATURATING_TRUNC_OPS
+      case uint16_t(Op::NumericPrefix):
+        switch (op.b1) {
+          case uint16_t(NumericOp::I32TruncSSatF32):
+          case uint16_t(NumericOp::I32TruncUSatF32):
+            if (!AstDecodeExtraConversion(c, ValType::F32, ValType::I32, NumericOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(NumericOp::I32TruncSSatF64):
+          case uint16_t(NumericOp::I32TruncUSatF64):
+            if (!AstDecodeExtraConversion(c, ValType::F64, ValType::I32, NumericOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(NumericOp::I64TruncSSatF32):
+          case uint16_t(NumericOp::I64TruncUSatF32):
+            if (!AstDecodeExtraConversion(c, ValType::F32, ValType::I64, NumericOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(NumericOp::I64TruncSSatF64):
+          case uint16_t(NumericOp::I64TruncUSatF64):
+            if (!AstDecodeExtraConversion(c, ValType::F64, ValType::I64, NumericOp(op.b1)))
+                return false;
+            break;
+          default:
+            return c.iter().unrecognizedOpcode(&op);
+        }
+        break;
+#endif
+      case uint16_t(Op::ThreadPrefix):
+        switch (op.b1) {
+          case uint16_t(ThreadOp::Wake):
+            if (!AstDecodeWake(c))
+                return false;
+            break;
+          case uint16_t(ThreadOp::I32Wait):
+          case uint16_t(ThreadOp::I64Wait):
+            if (!AstDecodeWait(c, ThreadOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(ThreadOp::I32AtomicLoad):
+          case uint16_t(ThreadOp::I64AtomicLoad):
+          case uint16_t(ThreadOp::I32AtomicLoad8U):
+          case uint16_t(ThreadOp::I32AtomicLoad16U):
+          case uint16_t(ThreadOp::I64AtomicLoad8U):
+          case uint16_t(ThreadOp::I64AtomicLoad16U):
+          case uint16_t(ThreadOp::I64AtomicLoad32U):
+            if (!AstDecodeAtomicLoad(c, ThreadOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(ThreadOp::I32AtomicStore):
+          case uint16_t(ThreadOp::I64AtomicStore):
+          case uint16_t(ThreadOp::I32AtomicStore8U):
+          case uint16_t(ThreadOp::I32AtomicStore16U):
+          case uint16_t(ThreadOp::I64AtomicStore8U):
+          case uint16_t(ThreadOp::I64AtomicStore16U):
+          case uint16_t(ThreadOp::I64AtomicStore32U):
+            if (!AstDecodeAtomicStore(c, ThreadOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(ThreadOp::I32AtomicAdd):
+          case uint16_t(ThreadOp::I64AtomicAdd):
+          case uint16_t(ThreadOp::I32AtomicAdd8U):
+          case uint16_t(ThreadOp::I32AtomicAdd16U):
+          case uint16_t(ThreadOp::I64AtomicAdd8U):
+          case uint16_t(ThreadOp::I64AtomicAdd16U):
+          case uint16_t(ThreadOp::I64AtomicAdd32U):
+          case uint16_t(ThreadOp::I32AtomicSub):
+          case uint16_t(ThreadOp::I64AtomicSub):
+          case uint16_t(ThreadOp::I32AtomicSub8U):
+          case uint16_t(ThreadOp::I32AtomicSub16U):
+          case uint16_t(ThreadOp::I64AtomicSub8U):
+          case uint16_t(ThreadOp::I64AtomicSub16U):
+          case uint16_t(ThreadOp::I64AtomicSub32U):
+          case uint16_t(ThreadOp::I32AtomicAnd):
+          case uint16_t(ThreadOp::I64AtomicAnd):
+          case uint16_t(ThreadOp::I32AtomicAnd8U):
+          case uint16_t(ThreadOp::I32AtomicAnd16U):
+          case uint16_t(ThreadOp::I64AtomicAnd8U):
+          case uint16_t(ThreadOp::I64AtomicAnd16U):
+          case uint16_t(ThreadOp::I64AtomicAnd32U):
+          case uint16_t(ThreadOp::I32AtomicOr):
+          case uint16_t(ThreadOp::I64AtomicOr):
+          case uint16_t(ThreadOp::I32AtomicOr8U):
+          case uint16_t(ThreadOp::I32AtomicOr16U):
+          case uint16_t(ThreadOp::I64AtomicOr8U):
+          case uint16_t(ThreadOp::I64AtomicOr16U):
+          case uint16_t(ThreadOp::I64AtomicOr32U):
+          case uint16_t(ThreadOp::I32AtomicXor):
+          case uint16_t(ThreadOp::I64AtomicXor):
+          case uint16_t(ThreadOp::I32AtomicXor8U):
+          case uint16_t(ThreadOp::I32AtomicXor16U):
+          case uint16_t(ThreadOp::I64AtomicXor8U):
+          case uint16_t(ThreadOp::I64AtomicXor16U):
+          case uint16_t(ThreadOp::I64AtomicXor32U):
+          case uint16_t(ThreadOp::I32AtomicXchg):
+          case uint16_t(ThreadOp::I64AtomicXchg):
+          case uint16_t(ThreadOp::I32AtomicXchg8U):
+          case uint16_t(ThreadOp::I32AtomicXchg16U):
+          case uint16_t(ThreadOp::I64AtomicXchg8U):
+          case uint16_t(ThreadOp::I64AtomicXchg16U):
+          case uint16_t(ThreadOp::I64AtomicXchg32U):
+            if (!AstDecodeAtomicRMW(c, ThreadOp(op.b1)))
+                return false;
+            break;
+          case uint16_t(ThreadOp::I32AtomicCmpXchg):
+          case uint16_t(ThreadOp::I64AtomicCmpXchg):
+          case uint16_t(ThreadOp::I32AtomicCmpXchg8U):
+          case uint16_t(ThreadOp::I32AtomicCmpXchg16U):
+          case uint16_t(ThreadOp::I64AtomicCmpXchg8U):
+          case uint16_t(ThreadOp::I64AtomicCmpXchg16U):
+          case uint16_t(ThreadOp::I64AtomicCmpXchg32U):
+            if (!AstDecodeAtomicCmpXchg(c, ThreadOp(op.b1)))
+                return false;
+            break;
+          default:
+            return c.iter().unrecognizedOpcode(&op);
+        }
+        break;
+      case uint16_t(Op::MozPrefix):
+        return c.iter().unrecognizedOpcode(&op);
       default:
-        return c.iter().unrecognizedOpcode(op);
+        return c.iter().unrecognizedOpcode(&op);
     }
 
     AstExpr* lastExpr = c.top().expr;
-    if (lastExpr)
-        lastExpr->setOffset(exprOffset);
+    if (lastExpr) {
+        // If last node is a 'first' node, the offset must assigned to it
+        // last child.
+        if (lastExpr->kind() == AstExprKind::First)
+            lastExpr->as<AstFirst>().exprs().back()->setOffset(exprOffset);
+        else
+            lastExpr->setOffset(exprOffset);
+    }
+    return true;
+}
+
+static bool
+AstDecodeFunctionBody(AstDecodeContext &c, uint32_t funcIndex, AstFunc** func)
+{
+    uint32_t offset = c.d.currentOffset();
+    uint32_t bodySize;
+    if (!c.d.readVarU32(&bodySize))
+        return c.d.fail("expected number of function body bytes");
+
+    if (c.d.bytesRemain() < bodySize)
+        return c.d.fail("function body length too big");
+
+    const uint8_t* bodyBegin = c.d.currentPosition();
+    const uint8_t* bodyEnd = bodyBegin + bodySize;
+
+    const SigWithId* sig = c.env().funcSigs[funcIndex];
+
+    ValTypeVector locals;
+    if (!locals.appendAll(sig->args()))
+        return false;
+
+    if (!DecodeLocalEntries(c.d, ModuleKind::Wasm, &locals))
+        return false;
+
+    AstDecodeOpIter iter(c.env(), c.d);
+    c.startFunction(&iter, &locals, sig->ret());
+
+    AstName funcName;
+    if (!GenerateName(c, AstName(u"func"), funcIndex, &funcName))
+        return false;
+
+    uint32_t numParams = sig->args().length();
+    uint32_t numLocals = locals.length();
+
+    AstValTypeVector vars(c.lifo);
+    for (uint32_t i = numParams; i < numLocals; i++) {
+        if (!vars.append(locals[i]))
+            return false;
+    }
+
+    AstNameVector localsNames(c.lifo);
+    for (uint32_t i = 0; i < numLocals; i++) {
+        AstName varName;
+        if (!GenerateName(c, AstName(u"var"), i, &varName))
+            return false;
+        if (!localsNames.append(varName))
+            return false;
+    }
+
+    if (!c.iter().readFunctionStart(sig->ret()))
+        return false;
+
+    if (!c.depths().append(c.exprs().length()))
+        return false;
+
+    uint32_t endOffset = offset;
+    while (c.d.currentPosition() < bodyEnd) {
+        if (!AstDecodeExpr(c))
+            return false;
+
+        const AstDecodeStackItem& item = c.top();
+        if (!item.expr) { // Op::End was found
+            c.popBack();
+            break;
+        }
+
+        endOffset = c.d.currentOffset();
+    }
+
+    AstExprVector body(c.lifo);
+    for (auto i = c.exprs().begin() + c.depths().back(), e = c.exprs().end(); i != e; ++i) {
+        if (!body.append(i->expr))
+            return false;
+    }
+    c.exprs().shrinkTo(c.depths().popCopy());
+
+    if (!c.iter().readFunctionEnd(bodyEnd))
+        return false;
+
+    c.endFunction();
+
+    if (c.d.currentPosition() != bodyEnd)
+        return c.d.fail("function body length mismatch");
+
+    size_t sigIndex = c.env().funcIndexToSigIndex(funcIndex);
+
+    AstRef sigRef;
+    if (!GenerateRef(c, AstName(u"type"), sigIndex, &sigRef))
+        return false;
+
+    *func = new(c.lifo) AstFunc(funcName, sigRef, Move(vars), Move(localsNames), Move(body));
+    if (!*func)
+        return false;
+    (*func)->setOffset(offset);
+    (*func)->setEndOffset(endOffset);
+
     return true;
 }
 
@@ -1430,19 +1906,19 @@ AstDecodeExpr(AstDecodeContext& c)
 // wasm decoding and generation
 
 static bool
-AstDecodeTypeSection(AstDecodeContext& c, SigWithIdVector* sigs)
+AstCreateSignatures(AstDecodeContext& c)
 {
-    if (!DecodeTypeSection(c.d, sigs))
-        return false;
+    SigWithIdVector& sigs = c.env().sigs;
 
-    for (size_t sigIndex = 0; sigIndex < sigs->length(); sigIndex++) {
-        const Sig& sig = (*sigs)[sigIndex];
+    for (size_t sigIndex = 0; sigIndex < sigs.length(); sigIndex++) {
+        const Sig& sig = sigs[sigIndex];
 
         AstValTypeVector args(c.lifo);
         if (!args.appendAll(sig.args()))
             return false;
 
         AstSig sigNoName(Move(args), sig.ret());
+
         AstName sigName;
         if (!GenerateName(c, AstName(u"type"), sigIndex, &sigName))
             return false;
@@ -1455,41 +1931,48 @@ AstDecodeTypeSection(AstDecodeContext& c, SigWithIdVector* sigs)
     return true;
 }
 
-static AstName
-ToAstName(AstDecodeContext& c, const UniqueChars& name)
+static bool
+ToAstName(AstDecodeContext& c, const char* name, AstName* out)
 {
-    size_t len = strlen(name.get());
+    size_t len = strlen(name);
     char16_t* buffer = static_cast<char16_t *>(c.lifo.alloc(len * sizeof(char16_t)));
     if (!buffer)
-        return AstName();
+        return false;
 
     for (size_t i = 0; i < len; i++)
-        buffer[i] = name.get()[i];
+        buffer[i] = name[i];
 
-    return AstName(buffer, len);
+    *out = AstName(buffer, len);
+    return true;
 }
 
 static bool
-AstDecodeImportSection(AstDecodeContext& c, const SigWithIdVector& sigs)
+AstCreateImports(AstDecodeContext& c)
 {
-    Uint32Vector funcSigIndices;
-    GlobalDescVector globals;
-    TableDescVector tables;
-    Maybe<Limits> memory;
-    ImportVector imports;
-    if (!DecodeImportSection(c.d, sigs, &funcSigIndices, &globals, &tables, &memory, &imports))
-        return false;
-
     size_t lastFunc = 0;
     size_t lastGlobal = 0;
     size_t lastTable = 0;
     size_t lastMemory = 0;
 
-    for (size_t importIndex = 0; importIndex < imports.length(); importIndex++) {
-        const Import& import = imports[importIndex];
+    Maybe<Limits> memory;
+    if (c.env().usesMemory()) {
+        memory = Some(Limits(c.env().minMemoryLength,
+                             c.env().maxMemoryLength,
+                             c.env().memoryUsage == MemoryUsage::Shared
+                               ? Shareable::True
+                               : Shareable::False));
+    }
 
-        AstName moduleName = ToAstName(c, import.module);
-        AstName fieldName = ToAstName(c, import.field);
+    for (size_t importIndex = 0; importIndex < c.env().imports.length(); importIndex++) {
+        const Import& import = c.env().imports[importIndex];
+
+        AstName moduleName;
+        if (!ToAstName(c, import.module.get(), &moduleName))
+            return false;
+
+        AstName fieldName;
+        if (!ToAstName(c, import.field.get(), &fieldName))
+            return false;
 
         AstImport* ast = nullptr;
         switch (import.kind) {
@@ -1498,8 +1981,10 @@ AstDecodeImportSection(AstDecodeContext& c, const SigWithIdVector& sigs)
             if (!GenerateName(c, AstName(u"import"), lastFunc, &importName))
                 return false;
 
+            size_t sigIndex = c.env().funcIndexToSigIndex(lastFunc);
+
             AstRef sigRef;
-            if (!GenerateRef(c, AstName(u"type"), funcSigIndices[lastFunc], &sigRef))
+            if (!GenerateRef(c, AstName(u"type"), sigIndex, &sigRef))
                 return false;
 
             ast = new(c.lifo) AstImport(importName, moduleName, fieldName, sigRef);
@@ -1511,12 +1996,9 @@ AstDecodeImportSection(AstDecodeContext& c, const SigWithIdVector& sigs)
             if (!GenerateName(c, AstName(u"global"), lastGlobal, &importName))
                 return false;
 
-            const GlobalDesc& global = globals[lastGlobal];
+            const GlobalDesc& global = c.env().globals[lastGlobal];
             ValType type = global.type();
             bool isMutable = global.isMutable();
-
-            if (!c.addGlobalDesc(type, isMutable, /* import */ true))
-                return false;
 
             ast = new(c.lifo) AstImport(importName, moduleName, fieldName,
                                         AstGlobal(importName, type, isMutable));
@@ -1529,7 +2011,7 @@ AstDecodeImportSection(AstDecodeContext& c, const SigWithIdVector& sigs)
                 return false;
 
             ast = new(c.lifo) AstImport(importName, moduleName, fieldName, DefinitionKind::Table,
-                                        tables[lastTable].limits);
+                                        c.env().tables[lastTable].limits);
             lastTable++;
             break;
           }
@@ -1553,97 +2035,37 @@ AstDecodeImportSection(AstDecodeContext& c, const SigWithIdVector& sigs)
 }
 
 static bool
-AstDecodeFunctionSection(AstDecodeContext& c, const SigWithIdVector& sigs)
+AstCreateTables(AstDecodeContext& c)
 {
-    Uint32Vector funcSigIndexes;
-    if (!DecodeFunctionSection(c.d, sigs, c.module().numFuncImports(), &funcSigIndexes))
-        return false;
+    size_t numImported = c.module().tables().length();
 
-    return c.funcDefSigs().appendAll(funcSigIndexes);
-}
-
-static bool
-AstDecodeTableSection(AstDecodeContext& c)
-{
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Table, &sectionStart, &sectionSize, "table"))
-        return false;
-    if (sectionStart == Decoder::NotStarted)
-        return true;
-
-    uint32_t numTables;
-    if (!c.d.readVarU32(&numTables))
-        return c.d.fail("failed to read number of tables");
-
-    if (numTables != 1)
-        return c.d.fail("the number of tables must be exactly one");
-
-    uint32_t typeConstructorValue;
-    if (!c.d.readVarU32(&typeConstructorValue))
-        return c.d.fail("expected type constructor kind");
-
-    if (typeConstructorValue != uint32_t(TypeCode::AnyFunc))
-        return c.d.fail("unknown type constructor kind");
-
-    Limits table;
-    if (!DecodeLimits(c.d, &table))
-        return false;
-
-    if (table.initial > MaxTableElems)
-        return c.d.fail("too many table elements");
-
-    if (c.module().hasTable())
-        return c.d.fail("already have a table");
-
-    AstName name;
-    if (!GenerateName(c, AstName(u"table"), c.module().tables().length(), &name))
-        return false;
-
-    if (!c.module().addTable(name, table))
-        return false;
-
-    if (!c.d.finishSection(sectionStart, sectionSize, "table"))
-        return false;
-
-    return true;
-}
-
-static bool
-AstDecodeName(AstDecodeContext& c, AstName* name)
-{
-    uint32_t length;
-    if (!c.d.readVarU32(&length))
-        return false;
-
-    const uint8_t* bytes;
-    if (!c.d.readBytes(length, &bytes))
-        return false;
-
-    char16_t* buffer = static_cast<char16_t *>(c.lifo.alloc(length * sizeof(char16_t)));
-    for (size_t i = 0; i < length; i++)
-        buffer[i] = bytes[i];
-
-    *name = AstName(buffer, length);
-    return true;
-}
-
-static bool
-AstDecodeMemorySection(AstDecodeContext& c)
-{
-    bool present;
-    Limits memory;
-    if (!DecodeMemorySection(c.d, c.module().hasMemory(), &memory, &present))
-        return false;
-
-    if (present) {
+    for (size_t i = numImported; i < c.env().tables.length(); i++) {
         AstName name;
-        if (!GenerateName(c, AstName(u"memory"), c.module().memories().length(), &name))
+        if (!GenerateName(c, AstName(u"table"), i, &name))
             return false;
-        if (!c.module().addMemory(name, memory))
+        if (!c.module().addTable(name, c.env().tables[i].limits))
             return false;
     }
 
     return true;
+}
+
+static bool
+AstCreateMemory(AstDecodeContext& c)
+{
+    bool importedMemory = !!c.module().memories().length();
+    if (!c.env().usesMemory() || importedMemory)
+        return true;
+
+    AstName name;
+    if (!GenerateName(c, AstName(u"memory"), c.module().memories().length(), &name))
+        return false;
+
+    return c.module().addMemory(name, Limits(c.env().minMemoryLength,
+                                             c.env().maxMemoryLength,
+                                             c.env().memoryUsage == MemoryUsage::Shared
+                                               ? Shareable::True
+                                               : Shareable::False));
 }
 
 static AstExpr*
@@ -1664,265 +2086,164 @@ ToAstExpr(AstDecodeContext& c, const InitExpr& initExpr)
 }
 
 static bool
-AstDecodeInitializerExpression(AstDecodeContext& c, ValType type, AstExpr** init)
+AstCreateGlobals(AstDecodeContext& c)
 {
-    InitExpr initExpr;
-    if (!DecodeInitializerExpression(c.d, c.globalDescs(), type, &initExpr))
-        return false;
+    for (uint32_t i = 0; i < c.env().globals.length(); i++) {
+        const GlobalDesc& global = c.env().globals[i];
+        if (global.isImport())
+            continue;
 
-    *init = ToAstExpr(c, initExpr);
-    return !!*init;
-}
-
-static bool
-AstDecodeGlobal(AstDecodeContext& c, uint32_t i, AstGlobal* global)
-{
-    AstName name;
-    if (!GenerateName(c, AstName(u"global"), i, &name))
-        return false;
-
-    ValType type;
-    bool isMutable;
-    if (!DecodeGlobalType(c.d, &type, &isMutable))
-        return false;
-
-    AstExpr* init;
-    if (!AstDecodeInitializerExpression(c, type, &init))
-        return false;
-
-    if (!c.addGlobalDesc(type, isMutable, /* import */ false))
-        return false;
-
-    *global = AstGlobal(name, type, isMutable, Some(init));
-    return true;
-}
-
-static bool
-AstDecodeGlobalSection(AstDecodeContext& c)
-{
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Global, &sectionStart, &sectionSize, "global"))
-        return false;
-    if (sectionStart == Decoder::NotStarted)
-        return true;
-
-    uint32_t numGlobals;
-    if (!c.d.readVarU32(&numGlobals))
-        return c.d.fail("expected number of globals");
-
-    uint32_t numImported = c.globalDescs().length();
-
-    for (uint32_t i = 0; i < numGlobals; i++) {
-        auto* global = new(c.lifo) AstGlobal;
-        if (!AstDecodeGlobal(c, i + numImported, global))
+        AstName name;
+        if (!GenerateName(c, AstName(u"global"), i, &name))
             return false;
-        if (!c.module().append(global))
+
+        AstExpr* init = global.isConstant()
+                        ? new(c.lifo) AstConst(global.constantValue())
+                        : ToAstExpr(c, global.initExpr());
+        if (!init)
+            return false;
+
+        auto* g = new(c.lifo) AstGlobal(name, global.type(), global.isMutable(), Some(init));
+        if (!g || !c.module().append(g))
             return false;
     }
-
-    if (!c.d.finishSection(sectionStart, sectionSize, "global"))
-        return false;
 
     return true;
 }
 
 static bool
-AstDecodeExport(AstDecodeContext& c, AstExport** export_)
+AstCreateExports(AstDecodeContext& c)
 {
-    AstName fieldName;
-    if (!AstDecodeName(c, &fieldName))
-        return c.d.fail("expected export name");
-
-    uint32_t kindValue;
-    if (!c.d.readVarU32(&kindValue))
-        return c.d.fail("expected export kind");
-
-    uint32_t index;
-    if (!c.d.readVarU32(&index))
-        return c.d.fail("expected export internal index");
-
-    *export_ = new(c.lifo) AstExport(fieldName, DefinitionKind(kindValue), AstRef(index));
-    if (!*export_)
-        return false;
-
-    return true;
-}
-
-static bool
-AstDecodeExportSection(AstDecodeContext& c)
-{
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Export, &sectionStart, &sectionSize, "export"))
-        return false;
-    if (sectionStart == Decoder::NotStarted)
-        return true;
-
-    uint32_t numExports;
-    if (!c.d.readVarU32(&numExports))
-        return c.d.fail("failed to read number of exports");
-
-    if (numExports > MaxExports)
-        return c.d.fail("too many exports");
-
-    for (uint32_t i = 0; i < numExports; i++) {
-        AstExport* export_ = nullptr;
-        if (!AstDecodeExport(c, &export_))
-            return false;
-        if (!c.module().append(export_))
-            return false;
-    }
-
-    if (!c.d.finishSection(sectionStart, sectionSize, "export"))
-        return false;
-
-    return true;
-}
-
-static bool
-AstDecodeFunctionBody(AstDecodeContext &c, uint32_t funcDefIndex, AstFunc** func)
-{
-    uint32_t offset = c.d.currentOffset();
-    uint32_t bodySize;
-    if (!c.d.readVarU32(&bodySize))
-        return c.d.fail("expected number of function body bytes");
-
-    if (c.d.bytesRemain() < bodySize)
-        return c.d.fail("function body length too big");
-
-    const uint8_t* bodyBegin = c.d.currentPosition();
-    const uint8_t* bodyEnd = bodyBegin + bodySize;
-
-    AstDecodeOpIter iter(c.d);
-
-    uint32_t sigIndex = c.funcDefSigs()[funcDefIndex];
-    const AstSig* sig = c.module().sigs()[sigIndex];
-
-    AstValTypeVector vars(c.lifo);
-    AstNameVector localsNames(c.lifo);
-    AstExprVector body(c.lifo);
-
-    ValTypeVector locals;
-    if (!locals.appendAll(sig->args()))
-        return false;
-
-    if (!DecodeLocalEntries(c.d, ModuleKind::Wasm, &locals))
-        return c.d.fail("failed decoding local entries");
-
-    c.startFunction(&iter, &locals, sig->ret());
-
-    AstName funcName;
-    if (!GenerateName(c, AstName(u"func"), c.module().numFuncImports() + funcDefIndex, &funcName))
-        return false;
-
-    uint32_t numParams = sig->args().length();
-    uint32_t numLocals = locals.length();
-    for (uint32_t i = numParams; i < numLocals; i++) {
-        if (!vars.append(locals[i]))
-            return false;
-    }
-    for (uint32_t i = 0; i < numLocals; i++) {
-        AstName varName;
-        if (!GenerateName(c, AstName(u"var"), i, &varName))
-            return false;
-        if (!localsNames.append(varName))
-            return false;
-    }
-
-    if (!c.iter().readFunctionStart(sig->ret()))
-        return false;
-
-    if (!c.depths().append(c.exprs().length()))
-        return false;
-
-    while (c.d.currentPosition() < bodyEnd) {
-        if (!AstDecodeExpr(c))
-            return false;
-
-        const AstDecodeStackItem& item = c.top();
-        if (!item.expr) { // Op::End was found
-            c.popBack();
-            break;
+    for (const Export& exp : c.env().exports) {
+        size_t index;
+        switch (exp.kind()) {
+          case DefinitionKind::Function: index = exp.funcIndex(); break;
+          case DefinitionKind::Global: index = exp.globalIndex(); break;
+          case DefinitionKind::Memory: index = 0; break;
+          case DefinitionKind::Table: index = 0; break;
         }
-    }
 
-    for (auto i = c.exprs().begin() + c.depths().back(), e = c.exprs().end();
-         i != e; ++i) {
-        if (!body.append(i->expr))
+        AstName name;
+        if (!ToAstName(c, exp.fieldName(), &name))
+            return false;
+
+        AstExport* e = new(c.lifo) AstExport(name, exp.kind(), AstRef(index));
+        if (!e || !c.module().append(e))
             return false;
     }
-    c.exprs().shrinkTo(c.depths().popCopy());
-
-    if (!c.iter().readFunctionEnd())
-        return false;
-
-    c.endFunction();
-
-    if (c.d.currentPosition() != bodyEnd)
-        return c.d.fail("function body length mismatch");
-
-    AstRef sigRef;
-    if (!GenerateRef(c, AstName(u"type"), sigIndex, &sigRef))
-        return false;
-
-    *func = new(c.lifo) AstFunc(funcName, sigRef, Move(vars), Move(localsNames), Move(body));
-    if (!*func)
-        return false;
-    (*func)->setOffset(offset);
 
     return true;
 }
 
 static bool
-AstDecodeCodeSection(AstDecodeContext &c)
+AstCreateStartFunc(AstDecodeContext &c)
 {
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Code, &sectionStart, &sectionSize, "code"))
+    if (!c.env().startFuncIndex)
+        return true;
+
+    AstRef funcRef;
+    if (!GenerateFuncRef(c, *c.env().startFuncIndex, &funcRef))
         return false;
 
-    if (sectionStart == Decoder::NotStarted) {
-        if (c.funcDefSigs().length() != 0)
+    c.module().setStartFunc(AstStartFunc(funcRef));
+    return true;
+}
+
+static bool
+AstCreateElems(AstDecodeContext &c)
+{
+    for (const ElemSegment& seg : c.env().elemSegments) {
+        AstRefVector elems(c.lifo);
+        if (!elems.reserve(seg.elemFuncIndices.length()))
+            return false;
+
+        for (uint32_t i : seg.elemFuncIndices)
+            elems.infallibleAppend(AstRef(i));
+
+        AstExpr* offset = ToAstExpr(c, seg.offset);
+        if (!offset)
+            return false;
+
+        AstElemSegment* segment = new(c.lifo) AstElemSegment(offset, Move(elems));
+        if (!segment || !c.module().append(segment))
+            return false;
+    }
+
+    return true;
+}
+
+static bool
+AstDecodeEnvironment(AstDecodeContext& c)
+{
+    if (!DecodeModuleEnvironment(c.d, &c.env()))
+        return false;
+
+    if (!AstCreateSignatures(c))
+        return false;
+
+    if (!AstCreateImports(c))
+        return false;
+
+    if (!AstCreateTables(c))
+        return false;
+
+    if (!AstCreateMemory(c))
+        return false;
+
+    if (!AstCreateGlobals(c))
+        return false;
+
+    if (!AstCreateExports(c))
+        return false;
+
+    if (!AstCreateStartFunc(c))
+        return false;
+
+    if (!AstCreateElems(c))
+        return false;
+
+    return true;
+}
+
+static bool
+AstDecodeCodeSection(AstDecodeContext& c)
+{
+    if (!c.env().codeSection) {
+        if (c.env().numFuncDefs() != 0)
             return c.d.fail("expected function bodies");
-
-        return false;
+        return true;
     }
 
     uint32_t numFuncBodies;
     if (!c.d.readVarU32(&numFuncBodies))
         return c.d.fail("expected function body count");
 
-    if (numFuncBodies != c.funcDefSigs().length())
+    if (numFuncBodies != c.env().numFuncDefs())
         return c.d.fail("function body count does not match function signature count");
 
     for (uint32_t funcDefIndex = 0; funcDefIndex < numFuncBodies; funcDefIndex++) {
         AstFunc* func;
-        if (!AstDecodeFunctionBody(c, funcDefIndex, &func))
+        if (!AstDecodeFunctionBody(c, c.module().numFuncImports() + funcDefIndex, &func))
             return false;
         if (!c.module().append(func))
             return false;
     }
 
-    if (!c.d.finishSection(sectionStart, sectionSize, "code"))
-        return false;
-
-    return true;
+    return c.d.finishSection(*c.env().codeSection, "code");
 }
 
 // Number of bytes to display in a single fragment of a data section (per line).
 static const size_t WRAP_DATA_BYTES = 30;
 
 static bool
-AstDecodeDataSection(AstDecodeContext &c)
+AstDecodeModuleTail(AstDecodeContext& c)
 {
-    DataSegmentVector segments;
-    bool hasMemory = c.module().hasMemory();
-
     MOZ_ASSERT(c.module().memories().length() <= 1, "at most one memory in MVP");
-    uint32_t memByteLength = hasMemory ? c.module().memories()[0].limits.initial : 0;
 
-    if (!DecodeDataSection(c.d, hasMemory, memByteLength, c.globalDescs(), &segments))
+    if (!DecodeModuleTail(c.d, &c.env()))
         return false;
 
-    for (DataSegment& s : segments) {
+    for (DataSegment& s : c.env().dataSegments) {
         const uint8_t* src = c.d.begin() + s.bytecodeOffset;
         char16_t* buffer = static_cast<char16_t*>(c.lifo.alloc(s.length * sizeof(char16_t)));
         for (size_t i = 0; i < s.length; i++)
@@ -1947,113 +2268,25 @@ AstDecodeDataSection(AstDecodeContext &c)
     return true;
 }
 
-static bool
-AstDecodeElemSection(AstDecodeContext &c)
-{
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Elem, &sectionStart, &sectionSize, "elem"))
-        return false;
-    if (sectionStart == Decoder::NotStarted)
-        return true;
-
-    uint32_t numElems;
-    if (!c.d.readVarU32(&numElems))
-        return c.d.fail("failed to read number of table elements");
-
-    for (uint32_t i = 0; i < numElems; i++) {
-        uint32_t tableIndex;
-        if (!c.d.readVarU32(&tableIndex))
-            return c.d.fail("expected table index for element");
-
-        if (tableIndex != 0)
-            return c.d.fail("non-zero table index for element");
-
-        AstExpr* offset;
-        if (!AstDecodeInitializerExpression(c, ValType::I32, &offset))
-            return false;
-
-        uint32_t count;
-        if (!c.d.readVarU32(&count))
-            return c.d.fail("expected element count");
-
-        AstRefVector elems(c.lifo);
-        if (!elems.resize(count))
-            return false;
-
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t index;
-            if (!c.d.readVarU32(&index))
-                return c.d.fail("expected element index");
-
-            elems[i] = AstRef(index);
-        }
-
-        AstElemSegment* segment = new(c.lifo) AstElemSegment(offset, Move(elems));
-        if (!segment || !c.module().append(segment))
-            return false;
-    }
-
-    if (!c.d.finishSection(sectionStart, sectionSize, "elem"))
-        return false;
-
-    return true;
-}
-
-static bool
-AstDecodeStartSection(AstDecodeContext &c)
-{
-    uint32_t sectionStart, sectionSize;
-    if (!c.d.startSection(SectionId::Start, &sectionStart, &sectionSize, "start"))
-        return false;
-    if (sectionStart == Decoder::NotStarted)
-        return true;
-
-    uint32_t funcIndex;
-    if (!c.d.readVarU32(&funcIndex))
-        return c.d.fail("failed to read start func index");
-
-    AstRef funcRef;
-    if (!GenerateRef(c, AstName(u"func"), funcIndex, &funcRef))
-        return false;
-
-    c.module().setStartFunc(AstStartFunc(funcRef));
-
-    if (!c.d.finishSection(sectionStart, sectionSize, "start"))
-        return false;
-
-    return true;
-}
-
 bool
-wasm::BinaryToAst(JSContext* cx, const uint8_t* bytes, uint32_t length,
-                  LifoAlloc& lifo, AstModule** module)
+wasm::BinaryToAst(JSContext* cx, const uint8_t* bytes, uint32_t length, LifoAlloc& lifo,
+                  AstModule** module)
 {
     AstModule* result = new(lifo) AstModule(lifo);
-    if (!result->init())
+    if (!result || !result->init())
         return false;
 
     UniqueChars error;
-    Decoder d(bytes, bytes + length, &error);
+    Decoder d(bytes, bytes + length, 0, &error, /* resilient */ true);
     AstDecodeContext c(cx, lifo, d, *result, true);
 
-    SigWithIdVector sigs;
-    if (!DecodePreamble(d) ||
-        !AstDecodeTypeSection(c, &sigs) ||
-        !AstDecodeImportSection(c, sigs) ||
-        !AstDecodeFunctionSection(c, sigs) ||
-        !AstDecodeTableSection(c) ||
-        !AstDecodeMemorySection(c) ||
-        !AstDecodeGlobalSection(c) ||
-        !AstDecodeExportSection(c) ||
-        !AstDecodeStartSection(c) ||
-        !AstDecodeElemSection(c) ||
+    if (!AstDecodeEnvironment(c) ||
         !AstDecodeCodeSection(c) ||
-        !AstDecodeDataSection(c) ||
-        !DecodeUnknownSections(c.d))
+        !AstDecodeModuleTail(c))
     {
         if (error) {
-            JS_ReportErrorNumberASCII(c.cx, GetErrorMessage, nullptr, JSMSG_WASM_COMPILE_ERROR,
-                                      error.get());
+            JS_ReportErrorNumberUTF8(c.cx, GetErrorMessage, nullptr, JSMSG_WASM_COMPILE_ERROR,
+                                     error.get());
             return false;
         }
         ReportOutOfMemory(c.cx);

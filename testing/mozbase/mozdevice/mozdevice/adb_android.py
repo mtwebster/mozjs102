@@ -2,15 +2,17 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import, print_function
+
 import os
 import re
 import time
 
 from abc import ABCMeta
 
-import version_codes
+from . import version_codes
 
-from adb import ADBDevice, ADBError
+from .adb import ADBDevice, ADBError, ADBRootError
 
 
 class ADBAndroid(ADBDevice):
@@ -22,9 +24,9 @@ class ADBAndroid(ADBDevice):
        from mozdevice import ADBAndroid
 
        adbdevice = ADBAndroid()
-       print adbdevice.list_files("/mnt/sdcard")
+       print(adbdevice.list_files("/mnt/sdcard"))
        if adbdevice.process_exist("org.mozilla.fennec"):
-           print "Fennec is running"
+           print("Fennec is running")
     """
     __metaclass__ = ABCMeta
 
@@ -90,7 +92,8 @@ class ADBAndroid(ADBDevice):
             if self.shell_output('getenforce', timeout=timeout) != 'Permissive':
                 self._logger.info('Setting SELinux Permissive Mode')
                 self.shell_output("setenforce Permissive", timeout=timeout, root=True)
-        except ADBError:
+        except (ADBError, ADBRootError) as e:
+            self._logger.warning('Unable to set SELinux Permissive due to %s.' % e)
             self.selinux = False
 
         self.version = int(self.shell_output("getprop ro.build.version.sdk",
@@ -145,7 +148,7 @@ class ADBAndroid(ADBDevice):
         percentage = 0
         cmd = "dumpsys battery"
         re_parameter = re.compile(r'\s+(\w+):\s+(\d+)')
-        lines = self.shell_output(cmd, timeout=timeout).split('\r')
+        lines = self.shell_output(cmd, timeout=timeout).splitlines()
         for line in lines:
             match = re_parameter.match(line)
             if match:
@@ -159,6 +162,42 @@ class ADBAndroid(ADBDevice):
                     percentage = 100.0 * level / scale
                     break
         return percentage
+
+    def get_top_activity(self, timeout=None):
+        """Returns the name of the top activity (focused app) reported by dumpsys
+
+        :param timeout: The maximum time in
+            seconds for any spawned adb process to complete before
+            throwing an ADBTimeoutError.
+            This timeout is per adb call. The total time spent
+            may exceed this value. If it is not specified, the value
+            set in the ADBDevice constructor is used.
+        :type timeout: integer or None
+        :returns: package name of top activity or None (cannot be determined)
+        :raises: * ADBTimeoutError
+                 * ADBError
+        """
+        package = None
+        data = None
+        cmd = "dumpsys window windows"
+        try:
+            data = self.shell_output(cmd, timeout=timeout)
+        except Exception:
+            # dumpsys intermittently fails on some platforms (4.3 arm emulator)
+            return package
+        m = re.search('mFocusedApp(.+)/', data)
+        if not m:
+            # alternative format seen on newer versions of Android
+            m = re.search('FocusedApplication(.+)/', data)
+        if m:
+            line = m.group(0)
+            # Extract package name: string of non-whitespace ending in forward slash
+            m = re.search('(\S+)/$', line)
+            if m:
+                package = m.group(1)
+        if self._verbose:
+            self._logger.debug('get_top_activity: %s' % str(package))
+        return package
 
     # System control methods
 
@@ -202,10 +241,10 @@ class ADBAndroid(ADBDevice):
                                                            timeout=timeout) != 'Permissive'):
                         self._logger.info('Setting SELinux Permissive Mode')
                         self.shell_output("setenforce Permissive", timeout=timeout, root=True)
-                    if self.is_dir(ready_path, timeout=timeout, root=True):
-                        self.rmdir(ready_path, timeout=timeout, root=True)
-                    self.mkdir(ready_path, timeout=timeout, root=True)
-                    self.rmdir(ready_path, timeout=timeout, root=True)
+                    if self.is_dir(ready_path, timeout=timeout):
+                        self.rmdir(ready_path, timeout=timeout)
+                    self.mkdir(ready_path, timeout=timeout)
+                    self.rmdir(ready_path, timeout=timeout)
                     # Invoke the pm list commands to see if it is up and
                     # running.
                     for pm_list_cmd in pm_list_commands:
@@ -253,10 +292,11 @@ class ADBAndroid(ADBDevice):
 
     # Application management methods
 
-    def install_app(self, apk_path, timeout=None):
+    def install_app(self, apk_path, replace=False, timeout=None):
         """Installs an app on the device.
 
         :param str apk_path: The apk file name to be installed.
+        :param bool replace: If True, replace existing application.
         :param timeout: The maximum time in
             seconds for any spawned adb process to complete before
             throwing an ADBTimeoutError.
@@ -270,6 +310,8 @@ class ADBAndroid(ADBDevice):
         cmd = ["install"]
         if self.version >= version_codes.M:
             cmd.append("-g")
+        if replace:
+            cmd.append("-r")
         cmd.append(apk_path)
         data = self.command_output(cmd, timeout=timeout)
         if data.find('Success') == -1:
@@ -397,7 +439,7 @@ class ADBAndroid(ADBDevice):
         if extra_args:
             extras['args'] = " ".join(extra_args)
 
-        self.launch_application(app_name, "org.mozilla.gecko.BrowserApp",
+        self.launch_application(app_name, ".App",
                                 intent, url=url, extras=extras,
                                 wait=wait, fail_if_running=fail_if_running,
                                 timeout=timeout)

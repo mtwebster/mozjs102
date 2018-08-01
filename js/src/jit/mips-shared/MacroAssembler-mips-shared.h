@@ -54,6 +54,7 @@ class MacroAssemblerMIPSShared : public Assembler
     const MacroAssembler& asMasm() const;
 
     Condition ma_cmp(Register rd, Register lhs, Register rhs, Condition c);
+    Condition ma_cmp(Register rd, Register lhs, Imm32 imm, Condition c);
 
     void compareFloatingPoint(FloatFormat fmt, FloatRegister lhs, FloatRegister rhs,
                               DoubleCondition c, FloatTestKind* testKind,
@@ -65,6 +66,7 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_li(Register dest, ImmGCPtr ptr);
 
     void ma_li(Register dest, Imm32 imm);
+    void ma_liPatchable(Register dest, Imm32 imm);
 
     // Shift operations
     void ma_sll(Register rd, Register rt, Imm32 shift);
@@ -83,6 +85,14 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_negu(Register rd, Register rs);
 
     void ma_not(Register rd, Register rs);
+
+    // Bit extract/insert
+    void ma_ext(Register rt, Register rs, uint16_t pos, uint16_t size);
+    void ma_ins(Register rt, Register rs, uint16_t pos, uint16_t size);
+
+    // Sign extend
+    void ma_seb(Register rd, Register rt);
+    void ma_seh(Register rd, Register rt);
 
     // and
     void ma_and(Register rd, Register rs);
@@ -104,7 +114,7 @@ class MacroAssemblerMIPSShared : public Assembler
     // load
     void ma_load(Register dest, const BaseIndex& src, LoadStoreSize size = SizeWord,
                  LoadStoreExtension extension = SignExtend);
-    void ma_load_unaligned(Register dest, const BaseIndex& src, Register temp,
+    void ma_load_unaligned(const wasm::MemoryAccessDesc& access, Register dest, const BaseIndex& src, Register temp,
                            LoadStoreSize size, LoadStoreExtension extension);
 
     // store
@@ -112,7 +122,7 @@ class MacroAssemblerMIPSShared : public Assembler
                   LoadStoreExtension extension = SignExtend);
     void ma_store(Imm32 imm, const BaseIndex& dest, LoadStoreSize size = SizeWord,
                   LoadStoreExtension extension = SignExtend);
-    void ma_store_unaligned(Register data, const BaseIndex& dest, Register temp,
+    void ma_store_unaligned(const wasm::MemoryAccessDesc& access, Register data, const BaseIndex& dest, Register temp,
                             LoadStoreSize size, LoadStoreExtension extension);
 
     // arithmetic based ops
@@ -155,19 +165,20 @@ class MacroAssemblerMIPSShared : public Assembler
         ma_b(lhs, ScratchRegister, l, c, jumpKind);
     }
     template <typename T>
-    void ma_b(Register lhs, T rhs, wasm::TrapDesc target, Condition c,
+    void ma_b(Register lhs, T rhs, wasm::OldTrapDesc target, Condition c,
               JumpKind jumpKind = LongJump);
 
     void ma_b(Label* l, JumpKind jumpKind = LongJump);
-    void ma_b(wasm::TrapDesc target, JumpKind jumpKind = LongJump);
+    void ma_b(wasm::OldTrapDesc target, JumpKind jumpKind = LongJump);
 
     // fp instructions
     void ma_lis(FloatRegister dest, float value);
-    void ma_lis(FloatRegister dest, wasm::RawF32 value);
-    void ma_liNegZero(FloatRegister dest);
 
-    void ma_sd(FloatRegister fd, BaseIndex address);
-    void ma_ss(FloatRegister fd, BaseIndex address);
+    void ma_sd(FloatRegister src, BaseIndex address);
+    void ma_ss(FloatRegister src, BaseIndex address);
+
+    void ma_ld(FloatRegister dest, const BaseIndex& src);
+    void ma_ls(FloatRegister dest, const BaseIndex& src);
 
     //FP branches
     void ma_bc1s(FloatRegister lhs, FloatRegister rhs, Label* label, DoubleCondition c,
@@ -203,57 +214,28 @@ class MacroAssemblerMIPSShared : public Assembler
     void minMaxDouble(FloatRegister srcDest, FloatRegister other, bool handleNaN, bool isMax);
     void minMaxFloat32(FloatRegister srcDest, FloatRegister other, bool handleNaN, bool isMax);
 
-  private:
-    void atomicEffectOpMIPSr2(int nbytes, AtomicOp op, const Register& value, const Register& addr,
-                              Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
-    void atomicFetchOpMIPSr2(int nbytes, bool signExtend, AtomicOp op, const Register& value, const Register& addr,
-                             Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp,
-                             Register output);
-    void compareExchangeMIPSr2(int nbytes, bool signExtend, const Register& addr, Register oldval,
-                               Register newval, Register flagTemp, Register valueTemp, Register offsetTemp,
-                               Register maskTemp, Register output);
+    void loadDouble(const Address& addr, FloatRegister dest);
+    void loadDouble(const BaseIndex& src, FloatRegister dest);
+
+    // Load a float value into a register, then expand it to a double.
+    void loadFloatAsDouble(const Address& addr, FloatRegister dest);
+    void loadFloatAsDouble(const BaseIndex& src, FloatRegister dest);
+
+    void loadFloat32(const Address& addr, FloatRegister dest);
+    void loadFloat32(const BaseIndex& src, FloatRegister dest);
+
+   void outOfLineWasmTruncateToInt32Check(FloatRegister input, Register output, MIRType fromType,
+                                           TruncFlags flags, Label* rejoin,
+                                           wasm::BytecodeOffset trapOffset);
+    void outOfLineWasmTruncateToInt64Check(FloatRegister input, Register64 output, MIRType fromType,
+                                           TruncFlags flags, Label* rejoin,
+                                           wasm::BytecodeOffset trapOffset);
 
   protected:
-    void atomicEffectOp(int nbytes, AtomicOp op, const Imm32& value, const Address& address,
-                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
-    void atomicEffectOp(int nbytes, AtomicOp op, const Imm32& value, const BaseIndex& address,
-                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
-    void atomicEffectOp(int nbytes, AtomicOp op, const Register& value, const Address& address,
-                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
-    void atomicEffectOp(int nbytes, AtomicOp op, const Register& value, const BaseIndex& address,
-                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
-
-    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Imm32& value,
-                       const Address& address, Register flagTemp, Register valueTemp,
-                       Register offsetTemp, Register maskTemp, Register output);
-    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Imm32& value,
-                       const BaseIndex& address, Register flagTemp, Register valueTemp,
-                       Register offsetTemp, Register maskTemp, Register output);
-    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Register& value,
-                       const Address& address, Register flagTemp, Register valueTemp,
-                       Register offsetTemp, Register maskTemp, Register output);
-    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Register& value,
-                       const BaseIndex& address, Register flagTemp, Register valueTemp,
-                       Register offsetTemp, Register maskTemp, Register output);
-
-    void compareExchange(int nbytes, bool signExtend, const Address& address, Register oldval,
-                         Register newval, Register valueTemp, Register offsetTemp, Register maskTemp,
-                         Register output);
-    void compareExchange(int nbytes, bool signExtend, const BaseIndex& address, Register oldval,
-                         Register newval, Register valueTemp, Register offsetTemp, Register maskTemp,
-                         Register output);
-
-    void atomicExchange(int nbytes, bool signExtend, const Address& address, Register value,
-                        Register valueTemp, Register offsetTemp, Register maskTemp,
-                        Register output);
-    void atomicExchange(int nbytes, bool signExtend, const BaseIndex& address, Register value,
-                        Register valueTemp, Register offsetTemp, Register maskTemp,
-                        Register output);
-
-  public:
-    struct AutoPrepareForPatching {
-        explicit AutoPrepareForPatching(MacroAssemblerMIPSShared&) {}
-    };
+    void wasmLoadImpl(const wasm::MemoryAccessDesc& access, Register memoryBase, Register ptr,
+                      Register ptrScratch, AnyRegister output, Register tmp);
+    void wasmStoreImpl(const wasm::MemoryAccessDesc& access, AnyRegister value, Register memoryBase,
+                       Register ptr, Register ptrScratch, Register tmp);
 };
 
 } // namespace jit

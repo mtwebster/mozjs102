@@ -29,7 +29,7 @@
 
 #include "vm/Probes.h"
 
-#include "jscntxtinlines.h"
+#include "vm/JSContext-inl.h"
 
 using namespace js;
 
@@ -180,7 +180,7 @@ JS_DumpProfile(const char* outfile, const char* profileName)
 {
     bool ok = true;
 #ifdef MOZ_CALLGRIND
-    js_DumpCallgrind(outfile);
+    ok = js_DumpCallgrind(outfile);
 #endif
     return ok;
 }
@@ -316,7 +316,7 @@ static bool
 GetMaxGCPauseSinceClear(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    args.rval().setNumber(uint32_t(cx->runtime()->gc.stats.getMaxGCPauseSinceClear()));
+    args.rval().setNumber(cx->runtime()->gc.stats().getMaxGCPauseSinceClear().ToMicroseconds());
     return true;
 }
 
@@ -324,7 +324,7 @@ static bool
 ClearMaxGCPauseAccumulator(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    args.rval().setNumber(uint32_t(cx->runtime()->gc.stats.clearMaxGCPauseAccumulator()));
+    args.rval().setNumber(cx->runtime()->gc.stats().clearMaxGCPauseAccumulator().ToMicroseconds());
     return true;
 }
 

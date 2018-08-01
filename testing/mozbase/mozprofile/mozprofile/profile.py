@@ -2,21 +2,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import os
+import platform
 import time
 import tempfile
 import uuid
 
-from addons import AddonManager
+from .addons import AddonManager
 import mozfile
-from permissions import Permissions
-from prefs import Preferences
+from .permissions import Permissions
+from .prefs import Preferences
 from shutil import copytree
-from webapps import WebappCollection
 
 __all__ = ['Profile',
            'FirefoxProfile',
-           'MetroFirefoxProfile',
            'ThunderbirdProfile']
 
 
@@ -44,21 +45,22 @@ class Profile(object):
       # profile.cleanup() has been called here
     """
 
-    def __init__(self, profile=None, addons=None, addon_manifests=None, apps=None,
-                 preferences=None, locations=None, proxy=None, restore=True):
+    def __init__(self, profile=None, addons=None, addon_manifests=None,
+                 preferences=None, locations=None, proxy=None, restore=True,
+                 whitelistpaths=None):
         """
         :param profile: Path to the profile
         :param addons: String of one or list of addons to install
         :param addon_manifests: Manifest for addons (see http://bit.ly/17jQ7i6)
-        :param apps: Dictionary or class of webapps to install
         :param preferences: Dictionary or class of preferences
         :param locations: ServerLocations object
         :param proxy: Setup a proxy
         :param restore: Flag for removing all custom settings during cleanup
+        :param whitelistpaths: List of paths to pass to Firefox to allow read
+            access to from the content process sandbox.
         """
         self._addons = addons
         self._addon_manifests = addon_manifests
-        self._apps = apps
         self._locations = locations
         self._proxy = proxy
 
@@ -73,6 +75,7 @@ class Profile(object):
         else:
             preferences = []
         self._preferences = preferences
+        self._whitelistpaths = whitelistpaths
 
         # Handle profile creation
         self.create_new = not profile
@@ -109,16 +112,31 @@ class Profile(object):
 
         self.permissions = Permissions(self.profile, self._locations)
         prefs_js, user_js = self.permissions.network_prefs(self._proxy)
+
+        if self._whitelistpaths:
+            # On macOS we don't want to support a generalized read whitelist,
+            # and the macOS sandbox policy language doesn't have support for
+            # lists, so we handle these specially.
+            if platform.system() == "Darwin":
+                assert len(self._whitelistpaths) <= 2
+                if len(self._whitelistpaths) == 2:
+                    prefs_js.append((
+                        "security.sandbox.content.mac.testing_read_path2",
+                        self._whitelistpaths[1]
+                    ))
+                prefs_js.append((
+                    "security.sandbox.content.mac.testing_read_path1",
+                    self._whitelistpaths[0]
+                ))
+            else:
+                prefs_js.append(("security.sandbox.content.read_path_whitelist",
+                                 ",".join(self._whitelistpaths)))
         self.set_preferences(prefs_js, 'prefs.js')
         self.set_preferences(user_js)
 
         # handle add-on installation
         self.addon_manager = AddonManager(self.profile, restore=self.restore)
         self.addon_manager.install_addons(self._addons, self._addon_manifests)
-
-        # handle webapps
-        self.webapps = WebappCollection(profile=self.profile, apps=self._apps)
-        self.webapps.update_manifests()
 
     def __enter__(self):
         return self
@@ -142,8 +160,6 @@ class Profile(object):
                 self.addon_manager.clean()
             if getattr(self, 'permissions', None) is not None:
                 self.permissions.clean_db()
-            if getattr(self, 'webapps', None) is not None:
-                self.webapps.clean()
 
             # If it's a temporary profile we have to remove it
             if self.create_new:
@@ -168,16 +184,17 @@ class Profile(object):
                     break
 
     @classmethod
-    def clone(cls, path_from, path_to=None, **kwargs):
+    def clone(cls, path_from, path_to=None, ignore=None, **kwargs):
         """Instantiate a temporary profile via cloning
         - path: path of the basis to clone
+        - ignore: callable passed to shutil.copytree
         - kwargs: arguments to the profile constructor
         """
         if not path_to:
             tempdir = tempfile.mkdtemp()  # need an unused temp dir name
             mozfile.remove(tempdir)  # copytree requires that dest does not exist
             path_to = tempdir
-        copytree(path_from, path_to)
+        copytree(path_from, path_to, ignore=ignore)
 
         c = cls(path_to, **kwargs)
         c.create_new = True  # deletes a cloned profile when restore is True
@@ -238,7 +255,7 @@ class Profile(object):
         """
 
         path = os.path.join(self.profile, filename)
-        with file(path) as f:
+        with open(path) as f:
             lines = f.read().splitlines()
 
         def last_index(_list, value):
@@ -265,7 +282,7 @@ class Profile(object):
 
         # write the prefs
         cleaned_prefs = '\n'.join(lines[:s] + lines[e + 1:])
-        with file(path, 'w') as f:
+        with open(path, 'w') as f:
             f.write(cleaned_prefs)
         return True
 
@@ -362,6 +379,8 @@ class FirefoxProfile(Profile):
         'browser.warnOnQuit': False,
         # Don't send Firefox health reports to the production server
         'datareporting.healthreport.documentServerURI': 'http://%(server)s/healthreport/',
+        # Skip data reporting policy notifications
+        'datareporting.policy.dataSubmissionPolicyBypassNotification': True,
         # Only install add-ons from the profile and the application scope
         # Also ensure that those are not getting disabled.
         # see: https://developer.mozilla.org/en/Installing_extensions
@@ -385,55 +404,6 @@ class FirefoxProfile(Profile):
         'security.notification_enable_delay': 0,
         # Suppress automatic safe mode after crashes
         'toolkit.startup.max_resumed_crashes': -1,
-        # Don't report telemetry information
-        'toolkit.telemetry.enabled': False,
-        # Don't send Telemetry reports to the production server. This is
-        # needed as Telemetry sends pings also if FHR upload is enabled.
-        'toolkit.telemetry.server': 'http://%(server)s/telemetry-dummy/',
-    }
-
-
-class MetroFirefoxProfile(Profile):
-    """Specialized Profile subclass for Firefox Metro"""
-
-    preferences = {  # Don't automatically update the application for desktop and metro build
-        'app.update.enabled': False,
-        'app.update.metro.enabled': False,
-        # Dismiss first run content overlay
-        'browser.firstrun-content.dismissed': True,
-        # Don't restore the last open set of tabs if the browser has crashed
-        'browser.sessionstore.resume_from_crash': False,
-        # Don't check for the default web browser during startup
-        'browser.shell.checkDefaultBrowser': False,
-        # Don't send Firefox health reports to the production server
-        'datareporting.healthreport.documentServerURI': 'http://%(server)s/healthreport/',
-        # Enable extensions
-        'extensions.defaultProviders.enabled': True,
-        # Only install add-ons from the profile and the application scope
-        # Also ensure that those are not getting disabled.
-        # see: https://developer.mozilla.org/en/Installing_extensions
-        'extensions.enabledScopes': 5,
-        'extensions.autoDisableScopes': 10,
-        # Don't send the list of installed addons to AMO
-        'extensions.getAddons.cache.enabled': False,
-        # Don't install distribution add-ons from the app folder
-        'extensions.installDistroAddons': False,
-        # Dont' run the add-on compatibility check during start-up
-        'extensions.showMismatchUI': False,
-        # Disable strict compatibility checks to allow add-ons enabled by default
-        'extensions.strictCompatibility': False,
-        # Don't automatically update add-ons
-        'extensions.update.enabled': False,
-        # Don't open a dialog to show available add-on updates
-        'extensions.update.notifyUser': False,
-        # Enable test mode to run multiple tests in parallel
-        'focusmanager.testmode': True,
-        # Suppress delay for main action in popup notifications
-        'security.notification_enable_delay': 0,
-        # Suppress automatic safe mode after crashes
-        'toolkit.startup.max_resumed_crashes': -1,
-        # Don't report telemetry information
-        'toolkit.telemetry.enabled': False,
         # Don't send Telemetry reports to the production server. This is
         # needed as Telemetry sends pings also if FHR upload is enabled.
         'toolkit.telemetry.server': 'http://%(server)s/telemetry-dummy/',

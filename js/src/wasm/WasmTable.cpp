@@ -20,8 +20,8 @@
 
 #include "mozilla/CheckedInt.h"
 
-#include "jscntxt.h"
-
+#include "vm/JSCompartment.h"
+#include "vm/JSContext.h"
 #include "wasm/WasmInstance.h"
 #include "wasm/WasmJS.h"
 
@@ -32,7 +32,7 @@ using mozilla::CheckedInt;
 Table::Table(JSContext* cx, const TableDesc& desc, HandleWasmTableObject maybeObject,
              UniqueByteArray array)
   : maybeObject_(maybeObject),
-    observers_(cx->zone(), InstanceSet()),
+    observers_(cx->zone()),
     array_(Move(array)),
     kind_(desc.kind),
     length_(desc.limits.initial),
@@ -118,7 +118,7 @@ Table::set(uint32_t index, void* code, Instance& instance)
             JSObject::writeBarrierPre(elem.tls->instance->objectUnbarriered());
 
         elem.code = code;
-        elem.tls = &instance.tlsData();
+        elem.tls = instance.tlsData();
 
         MOZ_ASSERT(elem.tls->instance->objectUnbarriered()->isTenured(), "no writeBarrierPost");
     } else {
@@ -158,7 +158,7 @@ Table::grow(uint32_t delta, JSContext* cx)
 
     MOZ_ASSERT(movingGrowable());
 
-    JSRuntime* rt = cx;  // Use JSRuntime's MallocProvider to avoid throwing.
+    JSRuntime* rt = cx->runtime();  // Use JSRuntime's MallocProvider to avoid throwing.
 
     // Note that realloc does not release array_'s pointee (which is returned by
     // externalArray()) on failure which is exactly what we need here.

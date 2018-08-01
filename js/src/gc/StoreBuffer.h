@@ -8,19 +8,21 @@
 #define gc_StoreBuffer_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/HashFunctions.h"
 #include "mozilla/ReentrancyGuard.h"
 
 #include <algorithm>
 
-#include "jsalloc.h"
-
+#include "ds/BitArray.h"
 #include "ds/LifoAlloc.h"
 #include "gc/Nursery.h"
+#include "js/AllocPolicy.h"
 #include "js/MemoryMetrics.h"
 
 namespace js {
 namespace gc {
 
+class Arena;
 class ArenaCellSet;
 
 /*
@@ -40,7 +42,7 @@ class BufferableRef
     bool maybeInRememberedSet(const Nursery&) const { return true; }
 };
 
-typedef HashSet<void*, PointerHasher<void*, 3>, SystemAllocPolicy> EdgeSet;
+typedef HashSet<void*, PointerHasher<void*>, SystemAllocPolicy> EdgeSet;
 
 /* The size of a single block of store buffer storage space. */
 static const size_t LifoAllocBlockSize = 1 << 13; /* 8KiB */
@@ -121,7 +123,7 @@ class StoreBuffer
             last_ = T();
 
             if (MOZ_UNLIKELY(stores_.count() > MaxEntries))
-                owner->setAboutToOverflow();
+                owner->setAboutToOverflow(T::FullBufferReason);
         }
 
         bool has(StoreBuffer* owner, const T& v) {
@@ -188,7 +190,7 @@ class StoreBuffer
                 oomUnsafe.crash("Failed to allocate for GenericBuffer::put.");
 
             if (isAboutToOverflow())
-                owner->setAboutToOverflow();
+                owner->setAboutToOverflow(JS::gcreason::FULL_GENERIC_BUFFER);
         }
 
         size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
@@ -207,7 +209,7 @@ class StoreBuffer
     struct PointerEdgeHasher
     {
         typedef Edge Lookup;
-        static HashNumber hash(const Lookup& l) { return uintptr_t(l.edge) >> 3; }
+        static HashNumber hash(const Lookup& l) { return mozilla::HashGeneric(l.edge); }
         static bool match(const Edge& k, const Lookup& l) { return k == l; }
     };
 
@@ -234,6 +236,8 @@ class StoreBuffer
         explicit operator bool() const { return edge != nullptr; }
 
         typedef PointerEdgeHasher<CellPtrEdge> Hasher;
+
+        static const auto FullBufferReason = JS::gcreason::FULL_CELL_PTR_BUFFER;
     };
 
     struct ValueEdge
@@ -261,6 +265,8 @@ class StoreBuffer
         explicit operator bool() const { return edge != nullptr; }
 
         typedef PointerEdgeHasher<ValueEdge> Hasher;
+
+        static const auto FullBufferReason = JS::gcreason::FULL_VALUE_BUFFER;
     };
 
     struct SlotsEdge
@@ -270,17 +276,17 @@ class StoreBuffer
         const static int ElementKind = 1;
 
         uintptr_t objectAndKind_; // NativeObject* | Kind
-        int32_t start_;
-        int32_t count_;
+        uint32_t start_;
+        uint32_t count_;
 
         SlotsEdge() : objectAndKind_(0), start_(0), count_(0) {}
-        SlotsEdge(NativeObject* object, int kind, int32_t start, int32_t count)
+        SlotsEdge(NativeObject* object, int kind, uint32_t start, uint32_t count)
           : objectAndKind_(uintptr_t(object) | kind), start_(start), count_(count)
         {
             MOZ_ASSERT((uintptr_t(object) & 1) == 0);
             MOZ_ASSERT(kind <= 1);
-            MOZ_ASSERT(start >= 0);
             MOZ_ASSERT(count > 0);
+            MOZ_ASSERT(start + count > start);
         }
 
         NativeObject* object() const { return reinterpret_cast<NativeObject*>(objectAndKind_ & ~1); }
@@ -307,10 +313,12 @@ class StoreBuffer
             // is particularly useful for coalescing a series of increasing or
             // decreasing single index writes 0, 1, 2, ..., N into a SlotsEdge
             // range of elements [0, N].
-            auto end = start_ + count_ + 1;
-            auto start = start_ - 1;
+            uint32_t end = start_ + count_ + 1;
+            uint32_t start = start_ > 0 ? start_ - 1 : 0;
+            MOZ_ASSERT(start < end);
 
-            auto otherEnd = other.start_ + other.count_;
+            uint32_t otherEnd = other.start_ + other.count_;
+            MOZ_ASSERT(other.start_ <= otherEnd);
             return (start <= other.start_ && other.start_ <= end) ||
                    (start <= otherEnd && otherEnd <= end);
         }
@@ -320,7 +328,7 @@ class StoreBuffer
         // overlap.
         void merge(const SlotsEdge& other) {
             MOZ_ASSERT(overlaps(other));
-            auto end = Max(start_ + count_, other.start_ + other.count_);
+            uint32_t end = Max(start_ + count_, other.start_ + other.count_);
             start_ = Min(start_, other.start_);
             count_ = end - start_;
         }
@@ -335,14 +343,18 @@ class StoreBuffer
 
         typedef struct {
             typedef SlotsEdge Lookup;
-            static HashNumber hash(const Lookup& l) { return l.objectAndKind_ ^ l.start_ ^ l.count_; }
+            static HashNumber hash(const Lookup& l) {
+                return mozilla::HashGeneric(l.objectAndKind_, l.start_, l.count_);
+            }
             static bool match(const SlotsEdge& k, const Lookup& l) { return k == l; }
         } Hasher;
+
+        static const auto FullBufferReason = JS::gcreason::FULL_SLOT_BUFFER;
     };
 
     template <typename Buffer, typename Edge>
     void unput(Buffer& buffer, const Edge& edge) {
-        MOZ_ASSERT(!JS::shadow::Runtime::asShadowRuntime(runtime_)->isHeapBusy());
+        MOZ_ASSERT(!JS::CurrentThreadIsHeapBusy());
         MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
         if (!isEnabled())
             return;
@@ -352,7 +364,7 @@ class StoreBuffer
 
     template <typename Buffer, typename Edge>
     void put(Buffer& buffer, const Edge& edge) {
-        MOZ_ASSERT(!JS::shadow::Runtime::asShadowRuntime(runtime_)->isHeapBusy());
+        MOZ_ASSERT(!JS::CurrentThreadIsHeapBusy());
         MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
         if (!isEnabled())
             return;
@@ -394,6 +406,8 @@ class StoreBuffer
 
     void clear();
 
+    const Nursery& nursery() const { return nursery_; }
+
     /* Get the overflowed status. */
     bool isAboutToOverflow() const { return aboutToOverflow_; }
 
@@ -404,7 +418,7 @@ class StoreBuffer
     void unputValue(JS::Value* vp) { unput(bufferVal, ValueEdge(vp)); }
     void putCell(Cell** cellp) { put(bufferCell, CellPtrEdge(cellp)); }
     void unputCell(Cell** cellp) { unput(bufferCell, CellPtrEdge(cellp)); }
-    void putSlot(NativeObject* obj, int kind, int32_t start, int32_t count) {
+    void putSlot(NativeObject* obj, int kind, uint32_t start, uint32_t count) {
         SlotsEdge edge(obj, kind, start, count);
         if (bufferSlot.last_.overlaps(edge))
             bufferSlot.last_.merge(edge);
@@ -431,7 +445,7 @@ class StoreBuffer
     void traceWholeCell(TenuringTracer& mover, JS::TraceKind kind, Cell* cell);
 
     /* For use by our owned buffers and for testing. */
-    void setAboutToOverflow();
+    void setAboutToOverflow(JS::gcreason::Reason);
 
     void addToWholeCellBuffer(ArenaCellSet* set);
 
@@ -450,7 +464,7 @@ class ArenaCellSet
     ArenaCellSet* next;
 
     // Bit vector for each possible cell start position.
-    BitArray<ArenaCellCount> bits;
+    BitArray<MaxArenaCellIndex> bits;
 
   public:
     explicit ArenaCellSet(Arena* arena);

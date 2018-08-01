@@ -20,11 +20,16 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/ThreadLocal.h"
 
 #include "jit/AtomicOperations.h"
 #include "jit/Disassembler.h"
 #include "vm/Runtime.h"
+#include "wasm/WasmBuiltins.h"
 #include "wasm/WasmInstance.h"
+
+#include "vm/ArrayBufferObject-inl.h"
 
 using namespace js;
 using namespace js::jit;
@@ -41,46 +46,33 @@ extern "C" MFBT_API bool IsSignalHandlingBroken();
 # endif
 #endif
 
-// For platforms where the signal/exception handler runs on the same
-// thread/stack as the victim (Unix and Windows), we can use TLS to find any
-// currently executing wasm code.
-static JSRuntime*
-RuntimeForCurrentThread()
-{
-    PerThreadData* threadData = TlsPerThreadData.get();
-    if (!threadData)
-        return nullptr;
-
-    return threadData->runtimeIfOnOwnerThread();
-}
-
 // Crashing inside the signal handler can cause the handler to be recursively
 // invoked, eventually blowing the stack without actually showing a crash
 // report dialog via Breakpad. To guard against this we watch for such
 // recursion and fall through to the next handler immediately rather than
 // trying to handle it.
-class AutoSetHandlingSegFault
-{
-    JSRuntime* rt;
 
-  public:
-    explicit AutoSetHandlingSegFault(JSRuntime* rt)
-      : rt(rt)
+static MOZ_THREAD_LOCAL(bool) sAlreadyInSignalHandler;
+
+struct AutoSignalHandler
+{
+    explicit AutoSignalHandler()
     {
-        MOZ_ASSERT(!rt->handlingSegFault);
-        rt->handlingSegFault = true;
+        MOZ_ASSERT(!sAlreadyInSignalHandler.get());
+        sAlreadyInSignalHandler.set(true);
     }
 
-    ~AutoSetHandlingSegFault()
-    {
-        MOZ_ASSERT(rt->handlingSegFault);
-        rt->handlingSegFault = false;
+    ~AutoSignalHandler() {
+        MOZ_ASSERT(sAlreadyInSignalHandler.get());
+        sAlreadyInSignalHandler.set(false);
     }
 };
 
 #if defined(XP_WIN)
 # define XMM_sig(p,i) ((p)->Xmm##i)
 # define EIP_sig(p) ((p)->Eip)
+# define EBP_sig(p) ((p)->Ebp)
+# define ESP_sig(p) ((p)->Esp)
 # define RIP_sig(p) ((p)->Rip)
 # define RAX_sig(p) ((p)->Rax)
 # define RCX_sig(p) ((p)->Rcx)
@@ -101,6 +93,8 @@ class AutoSetHandlingSegFault
 #elif defined(__OpenBSD__)
 # define XMM_sig(p,i) ((p)->sc_fpstate->fx_xmm[i])
 # define EIP_sig(p) ((p)->sc_eip)
+# define EBP_sig(p) ((p)->sc_ebp)
+# define ESP_sig(p) ((p)->sc_esp)
 # define RIP_sig(p) ((p)->sc_rip)
 # define RAX_sig(p) ((p)->sc_rax)
 # define RCX_sig(p) ((p)->sc_rcx)
@@ -115,28 +109,36 @@ class AutoSetHandlingSegFault
 # define R10_sig(p) ((p)->sc_r10)
 # define R11_sig(p) ((p)->sc_r11)
 # define R12_sig(p) ((p)->sc_r12)
-# define R13_sig(p) ((p)->sc_r13)
-# define R14_sig(p) ((p)->sc_r14)
 # if defined(__arm__)
+#  define R13_sig(p) ((p)->sc_usr_sp)
+#  define R14_sig(p) ((p)->sc_usr_lr)
 #  define R15_sig(p) ((p)->sc_pc)
 # else
+#  define R13_sig(p) ((p)->sc_r13)
+#  define R14_sig(p) ((p)->sc_r14)
 #  define R15_sig(p) ((p)->sc_r15)
 # endif
 # if defined(__aarch64__)
 #  define EPC_sig(p) ((p)->sc_elr)
 #  define RFP_sig(p) ((p)->sc_x[29])
+#  define RLR_sig(p) ((p)->sc_lr)
+#  define R31_sig(p) ((p)->sc_sp)
 # endif
 # if defined(__mips__)
 #  define EPC_sig(p) ((p)->sc_pc)
 #  define RFP_sig(p) ((p)->sc_regs[30])
 # endif
-#elif defined(__linux__) || defined(SOLARIS)
+#elif defined(__linux__) || defined(__sun)
 # if defined(__linux__)
 #  define XMM_sig(p,i) ((p)->uc_mcontext.fpregs->_xmm[i])
 #  define EIP_sig(p) ((p)->uc_mcontext.gregs[REG_EIP])
+#  define EBP_sig(p) ((p)->uc_mcontext.gregs[REG_EBP])
+#  define ESP_sig(p) ((p)->uc_mcontext.gregs[REG_ESP])
 # else
 #  define XMM_sig(p,i) ((p)->uc_mcontext.fpregs.fp_reg_set.fpchip_state.xmm[i])
 #  define EIP_sig(p) ((p)->uc_mcontext.gregs[REG_PC])
+#  define EBP_sig(p) ((p)->uc_mcontext.gregs[REG_EBP])
+#  define ESP_sig(p) ((p)->uc_mcontext.gregs[REG_ESP])
 # endif
 # define RIP_sig(p) ((p)->uc_mcontext.gregs[REG_RIP])
 # define RAX_sig(p) ((p)->uc_mcontext.gregs[REG_RAX])
@@ -150,26 +152,47 @@ class AutoSetHandlingSegFault
 # define R8_sig(p) ((p)->uc_mcontext.gregs[REG_R8])
 # define R9_sig(p) ((p)->uc_mcontext.gregs[REG_R9])
 # define R10_sig(p) ((p)->uc_mcontext.gregs[REG_R10])
-# define R11_sig(p) ((p)->uc_mcontext.gregs[REG_R11])
 # define R12_sig(p) ((p)->uc_mcontext.gregs[REG_R12])
-# define R13_sig(p) ((p)->uc_mcontext.gregs[REG_R13])
-# define R14_sig(p) ((p)->uc_mcontext.gregs[REG_R14])
 # if defined(__linux__) && defined(__arm__)
+#  define R11_sig(p) ((p)->uc_mcontext.arm_fp)
+#  define R13_sig(p) ((p)->uc_mcontext.arm_sp)
+#  define R14_sig(p) ((p)->uc_mcontext.arm_lr)
 #  define R15_sig(p) ((p)->uc_mcontext.arm_pc)
 # else
+#  define R11_sig(p) ((p)->uc_mcontext.gregs[REG_R11])
+#  define R13_sig(p) ((p)->uc_mcontext.gregs[REG_R13])
+#  define R14_sig(p) ((p)->uc_mcontext.gregs[REG_R14])
 #  define R15_sig(p) ((p)->uc_mcontext.gregs[REG_R15])
 # endif
 # if defined(__linux__) && defined(__aarch64__)
 #  define EPC_sig(p) ((p)->uc_mcontext.pc)
+#  define RFP_sig(p) ((p)->uc_mcontext.regs[29])
+#  define RLR_sig(p) ((p)->uc_mcontext.regs[30])
+#  define R31_sig(p) ((p)->uc_mcontext.regs[31])
 # endif
 # if defined(__linux__) && defined(__mips__)
 #  define EPC_sig(p) ((p)->uc_mcontext.pc)
-#  define RSP_sig(p) ((p)->uc_mcontext.gregs[29])
 #  define RFP_sig(p) ((p)->uc_mcontext.gregs[30])
+#  define RSP_sig(p) ((p)->uc_mcontext.gregs[29])
+#  define R31_sig(p) ((p)->uc_mcontext.gregs[31])
+# endif
+# if defined(__linux__) && (defined(__sparc__) && defined(__arch64__))
+#  define PC_sig(p) ((p)->uc_mcontext.mc_gregs[MC_PC])
+#  define FP_sig(p) ((p)->uc_mcontext.mc_fp)
+#  define SP_sig(p) ((p)->uc_mcontext.mc_i7)
+# endif
+# if defined(__linux__) && \
+     (defined(__ppc64__) ||  defined (__PPC64__) || defined(__ppc64le__) || defined (__PPC64LE__))
+// powerpc stack frame pointer (SFP or SP or FP)
+#  define R01_sig(p) ((p)->uc_mcontext.gp_regs[1])
+// powerpc next instruction pointer (NIP or PC)
+#  define R32_sig(p) ((p)->uc_mcontext.gp_regs[32])
 # endif
 #elif defined(__NetBSD__)
 # define XMM_sig(p,i) (((struct fxsave64*)(p)->uc_mcontext.__fpregs)->fx_xmm[i])
 # define EIP_sig(p) ((p)->uc_mcontext.__gregs[_REG_EIP])
+# define EBP_sig(p) ((p)->uc_mcontext.__gregs[_REG_EBP])
+# define ESP_sig(p) ((p)->uc_mcontext.__gregs[_REG_ESP])
 # define RIP_sig(p) ((p)->uc_mcontext.__gregs[_REG_RIP])
 # define RAX_sig(p) ((p)->uc_mcontext.__gregs[_REG_RAX])
 # define RCX_sig(p) ((p)->uc_mcontext.__gregs[_REG_RCX])
@@ -190,6 +213,8 @@ class AutoSetHandlingSegFault
 # if defined(__aarch64__)
 #  define EPC_sig(p) ((p)->uc_mcontext.__gregs[_REG_PC])
 #  define RFP_sig(p) ((p)->uc_mcontext.__gregs[_REG_X29])
+#  define RLR_sig(p) ((p)->uc_mcontext.__gregs[_REG_X30])
+#  define R31_sig(p) ((p)->uc_mcontext.__gregs[_REG_SP])
 # endif
 # if defined(__mips__)
 #  define EPC_sig(p) ((p)->uc_mcontext.__gregs[_REG_EPC])
@@ -202,6 +227,8 @@ class AutoSetHandlingSegFault
 #  define XMM_sig(p,i) (((struct savefpu*)(p)->uc_mcontext.mc_fpstate)->sv_xmm[i])
 # endif
 # define EIP_sig(p) ((p)->uc_mcontext.mc_eip)
+# define EBP_sig(p) ((p)->uc_mcontext.mc_ebp)
+# define ESP_sig(p) ((p)->uc_mcontext.mc_esp)
 # define RIP_sig(p) ((p)->uc_mcontext.mc_rip)
 # define RAX_sig(p) ((p)->uc_mcontext.mc_rax)
 # define RCX_sig(p) ((p)->uc_mcontext.mc_rcx)
@@ -214,18 +241,23 @@ class AutoSetHandlingSegFault
 # define R8_sig(p) ((p)->uc_mcontext.mc_r8)
 # define R9_sig(p) ((p)->uc_mcontext.mc_r9)
 # define R10_sig(p) ((p)->uc_mcontext.mc_r10)
-# define R11_sig(p) ((p)->uc_mcontext.mc_r11)
 # define R12_sig(p) ((p)->uc_mcontext.mc_r12)
-# define R13_sig(p) ((p)->uc_mcontext.mc_r13)
-# define R14_sig(p) ((p)->uc_mcontext.mc_r14)
 # if defined(__FreeBSD__) && defined(__arm__)
+#  define R11_sig(p) ((p)->uc_mcontext.__gregs[_REG_R11])
+#  define R13_sig(p) ((p)->uc_mcontext.__gregs[_REG_R13])
+#  define R14_sig(p) ((p)->uc_mcontext.__gregs[_REG_R14])
 #  define R15_sig(p) ((p)->uc_mcontext.__gregs[_REG_R15])
 # else
+#  define R11_sig(p) ((p)->uc_mcontext.mc_r11)
+#  define R13_sig(p) ((p)->uc_mcontext.mc_r13)
+#  define R14_sig(p) ((p)->uc_mcontext.mc_r14)
 #  define R15_sig(p) ((p)->uc_mcontext.mc_r15)
 # endif
 # if defined(__FreeBSD__) && defined(__aarch64__)
 #  define EPC_sig(p) ((p)->uc_mcontext.mc_gpregs.gp_elr)
 #  define RFP_sig(p) ((p)->uc_mcontext.mc_gpregs.gp_x[29])
+#  define RLR_sig(p) ((p)->uc_mcontext.mc_gpregs.gp_lr)
+#  define R31_sig(p) ((p)->uc_mcontext.mc_gpregs.gp_sp)
 # endif
 # if defined(__FreeBSD__) && defined(__mips__)
 #  define EPC_sig(p) ((p)->uc_mcontext.mc_pc)
@@ -233,14 +265,19 @@ class AutoSetHandlingSegFault
 # endif
 #elif defined(XP_DARWIN)
 # define EIP_sig(p) ((p)->uc_mcontext->__ss.__eip)
+# define EBP_sig(p) ((p)->uc_mcontext->__ss.__ebp)
+# define ESP_sig(p) ((p)->uc_mcontext->__ss.__esp)
 # define RIP_sig(p) ((p)->uc_mcontext->__ss.__rip)
+# define RBP_sig(p) ((p)->uc_mcontext->__ss.__rbp)
+# define RSP_sig(p) ((p)->uc_mcontext->__ss.__rsp)
+# define R14_sig(p) ((p)->uc_mcontext->__ss.__lr)
 # define R15_sig(p) ((p)->uc_mcontext->__ss.__pc)
 #else
 # error "Don't know how to read/write to the thread state via the mcontext_t."
 #endif
 
 #if defined(XP_WIN)
-# include "jswin.h"
+# include "util/Windows.h"
 #else
 # include <signal.h>
 # include <sys/mman.h>
@@ -250,7 +287,7 @@ class AutoSetHandlingSegFault
 # include <sys/ucontext.h> // for ucontext_t, mcontext_t
 #endif
 
-#if defined(JS_CPU_X64)
+#if defined(__x86_64__)
 # if defined(__DragonFly__)
 #  include <machine/npx.h> // for union savefpu
 # elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || \
@@ -348,19 +385,19 @@ enum { REG_EIP = 14 };
 // into the emulator code from a Mach exception handler rather than a
 // sigaction-style signal handler.
 #if defined(XP_DARWIN)
-# if defined(JS_CPU_X64)
+# if defined(__x86_64__)
 struct macos_x64_context {
     x86_thread_state64_t thread;
     x86_float_state64_t float_;
 };
 #  define EMULATOR_CONTEXT macos_x64_context
-# elif defined(JS_CPU_X86)
+# elif defined(__i386__)
 struct macos_x86_context {
     x86_thread_state_t thread;
     x86_float_state_t float_;
 };
 #  define EMULATOR_CONTEXT macos_x86_context
-# elif defined(JS_CPU_ARM)
+# elif defined(__arm__)
 struct macos_arm_context {
     arm_thread_state_t thread;
     arm_neon_state_t float_;
@@ -373,25 +410,161 @@ struct macos_arm_context {
 # define EMULATOR_CONTEXT CONTEXT
 #endif
 
-#if defined(JS_CPU_X64)
+#if defined(_M_X64) || defined(__x86_64__)
 # define PC_sig(p) RIP_sig(p)
-#elif defined(JS_CPU_X86)
+# define FP_sig(p) RBP_sig(p)
+# define SP_sig(p) RSP_sig(p)
+#elif defined(_M_IX86) || defined(__i386__)
 # define PC_sig(p) EIP_sig(p)
-#elif defined(JS_CPU_ARM)
+# define FP_sig(p) EBP_sig(p)
+# define SP_sig(p) ESP_sig(p)
+#elif defined(__arm__)
+# define FP_sig(p) R11_sig(p)
+# define SP_sig(p) R13_sig(p)
+# define LR_sig(p) R14_sig(p)
 # define PC_sig(p) R15_sig(p)
 #elif defined(__aarch64__)
 # define PC_sig(p) EPC_sig(p)
-#elif defined(JS_CPU_MIPS)
+# define FP_sig(p) RFP_sig(p)
+# define SP_sig(p) R31_sig(p)
+# define LR_sig(p) RLR_sig(p)
+#elif defined(__mips__)
 # define PC_sig(p) EPC_sig(p)
+# define FP_sig(p) RFP_sig(p)
+# define SP_sig(p) RSP_sig(p)
+# define LR_sig(p) R31_sig(p)
+#elif defined(__ppc64__) ||  defined (__PPC64__) || defined(__ppc64le__) || defined (__PPC64LE__)
+# define PC_sig(p) R32_sig(p)
+# define SP_sig(p) R01_sig(p)
+# define FP_sig(p) R01_sig(p)
+#endif
+
+#if defined(PC_sig) && defined(FP_sig) && defined(SP_sig)
+# define KNOWS_MACHINE_STATE
 #endif
 
 static uint8_t**
 ContextToPC(CONTEXT* context)
 {
-#ifdef JS_CODEGEN_NONE
-    MOZ_CRASH();
-#else
+#ifdef KNOWS_MACHINE_STATE
     return reinterpret_cast<uint8_t**>(&PC_sig(context));
+#else
+    MOZ_CRASH();
+#endif
+}
+
+static uint8_t*
+ContextToFP(CONTEXT* context)
+{
+#ifdef KNOWS_MACHINE_STATE
+    return reinterpret_cast<uint8_t*>(FP_sig(context));
+#else
+    MOZ_CRASH();
+#endif
+}
+
+#ifdef KNOWS_MACHINE_STATE
+static uint8_t*
+ContextToSP(CONTEXT* context)
+{
+    return reinterpret_cast<uint8_t*>(SP_sig(context));
+}
+
+# if defined(__arm__) || defined(__aarch64__) || defined(__mips__)
+static uint8_t*
+ContextToLR(CONTEXT* context)
+{
+    return reinterpret_cast<uint8_t*>(LR_sig(context));
+}
+# endif
+#endif // KNOWS_MACHINE_STATE
+
+#if defined(XP_DARWIN)
+
+static uint8_t**
+ContextToPC(EMULATOR_CONTEXT* context)
+{
+# if defined(__x86_64__)
+    static_assert(sizeof(context->thread.__rip) == sizeof(void*),
+                  "stored IP should be compile-time pointer-sized");
+    return reinterpret_cast<uint8_t**>(&context->thread.__rip);
+# elif defined(__i386__)
+    static_assert(sizeof(context->thread.uts.ts32.__eip) == sizeof(void*),
+                  "stored IP should be compile-time pointer-sized");
+    return reinterpret_cast<uint8_t**>(&context->thread.uts.ts32.__eip);
+# elif defined(__arm__)
+    static_assert(sizeof(context->thread.__pc) == sizeof(void*),
+                  "stored IP should be compile-time pointer-sized");
+    return reinterpret_cast<uint8_t**>(&context->thread.__pc);
+# else
+#  error Unsupported architecture
+# endif
+}
+
+static uint8_t*
+ContextToFP(EMULATOR_CONTEXT* context)
+{
+# if defined(__x86_64__)
+    return (uint8_t*)context->thread.__rbp;
+# elif defined(__i386__)
+    return (uint8_t*)context->thread.uts.ts32.__ebp;
+# elif defined(__arm__)
+    return (uint8_t*)context->thread.__r[11];
+# else
+#  error Unsupported architecture
+# endif
+}
+
+# if defined(__arm__) || defined(__aarch64__)
+static uint8_t*
+ContextToLR(EMULATOR_CONTEXT* context)
+{
+    return (uint8_t*)context->thread.__lr;
+}
+# endif
+
+static uint8_t*
+ContextToSP(EMULATOR_CONTEXT* context)
+{
+# if defined(__x86_64__)
+    return (uint8_t*)context->thread.__rsp;
+# elif defined(__i386__)
+    return (uint8_t*)context->thread.uts.ts32.__esp;
+# elif defined(__arm__)
+    return (uint8_t*)context->thread.__sp;
+# else
+#  error Unsupported architecture
+# endif
+}
+
+static JS::ProfilingFrameIterator::RegisterState
+ToRegisterState(EMULATOR_CONTEXT* context)
+{
+    JS::ProfilingFrameIterator::RegisterState state;
+    state.fp = ContextToFP(context);
+    state.pc = *ContextToPC(context);
+    state.sp = ContextToSP(context);
+# if defined(__arm__) || defined(__aarch64__)
+    state.lr = ContextToLR(context);
+# endif
+    return state;
+}
+#endif // XP_DARWIN
+
+static JS::ProfilingFrameIterator::RegisterState
+ToRegisterState(CONTEXT* context)
+{
+#ifdef KNOWS_MACHINE_STATE
+    JS::ProfilingFrameIterator::RegisterState state;
+    state.fp = ContextToFP(context);
+    state.pc = *ContextToPC(context);
+    state.sp = ContextToSP(context);
+# if defined(__arm__) || defined(__aarch64__) || defined(__mips__)
+    state.lr = ContextToLR(context);
+# endif
+    return state;
+#else
+    MOZ_CRASH();
 #endif
 }
 
@@ -463,6 +636,7 @@ StoreValueFromGPImm(SharedMem<void*> addr, size_t size, int32_t imm)
     AtomicOperations::memcpySafeWhenRacy(addr, static_cast<void*>(&imm), size);
 }
 
+#if defined(JS_CODEGEN_X64)
 # if !defined(XP_DARWIN)
 MOZ_COLD static void*
 AddressOfFPRegisterSlot(CONTEXT* context, FloatRegisters::Encoding encoding)
@@ -564,6 +738,19 @@ AddressOfGPRegisterSlot(EMULATOR_CONTEXT* context, Registers::Code code)
     MOZ_CRASH();
 }
 # endif  // !XP_DARWIN
+#elif defined(JS_CODEGEN_ARM64)
+MOZ_COLD static void*
+AddressOfFPRegisterSlot(EMULATOR_CONTEXT* context, FloatRegisters::Encoding encoding)
+{
+    MOZ_CRASH("NYI - asm.js not supported yet on this platform");
+}
+
+MOZ_COLD static void*
+AddressOfGPRegisterSlot(EMULATOR_CONTEXT* context, Registers::Code code)
+{
+    MOZ_CRASH("NYI - asm.js not supported yet on this platform");
+}
+#endif
 
 MOZ_COLD static void
 SetRegisterToCoercedUndefined(EMULATOR_CONTEXT* context, size_t size,
@@ -631,9 +818,10 @@ ComputeAccessAddress(EMULATOR_CONTEXT* context, const Disassembler::ComplexAddre
 
 MOZ_COLD static void
 HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddress,
-                   const Instance& instance, uint8_t** ppc)
+                   const ModuleSegment* segment, const Instance& instance, JitActivation* activation,
+                   uint8_t** ppc)
 {
-    MOZ_RELEASE_ASSERT(instance.codeSegment().containsFunctionPC(pc));
+    MOZ_RELEASE_ASSERT(instance.code().containsCodePC(pc));
 
     const MemoryAccess* memoryAccess = instance.code().lookupMemoryAccess(pc);
     if (!memoryAccess) {
@@ -641,11 +829,12 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
         // experimental SIMD.js or Atomics. When these are converted to
         // non-experimental wasm features, this case, as well as outOfBoundsCode,
         // can be removed.
-        *ppc = instance.codeSegment().outOfBoundsCode();
+        MOZ_ALWAYS_TRUE(activation->startWasmInterrupt(ToRegisterState(context)));
+        *ppc = segment->outOfBoundsCode();
         return;
     }
 
-    MOZ_RELEASE_ASSERT(memoryAccess->insnOffset() == (pc - instance.codeBase()));
+    MOZ_RELEASE_ASSERT(memoryAccess->insnOffset() == (pc - segment->base()));
 
     // On WASM_HUGE_MEMORY platforms, asm.js code may fault. asm.js does not
     // trap on fault and so has no trap out-of-line path. Instead, stores are
@@ -653,11 +842,20 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
     // loads silently succeed with a JS-semantics-determined value.
 
     if (memoryAccess->hasTrapOutOfLineCode()) {
-        *ppc = memoryAccess->trapOutOfLineCode(instance.codeBase());
+        *ppc = memoryAccess->trapOutOfLineCode(segment->base());
         return;
     }
 
     MOZ_RELEASE_ASSERT(instance.isAsmJS());
+
+    // Asm.JS memory cannot grow or shrink - only wasm can grow or shrink it,
+    // and asm.js is not allowed to use wasm memory.  On this Asm.JS-only path
+    // we therefore need not worry about memory growing or shrinking while the
+    // signal handler is executing, and we can read the length without locking
+    // the memory.  Indeed, the buffer's byteLength always holds the correct
+    // value.
+
+    uint32_t memoryLength = instance.memory()->buffer().byteLength();
 
     // Disassemble the instruction which caused the trap so that we can extract
     // information about it and decide what to do.
@@ -665,7 +863,7 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
     uint8_t* end = Disassembler::DisassembleHeapAccess(pc, &access);
     const Disassembler::ComplexAddress& address = access.address();
     MOZ_RELEASE_ASSERT(end > pc);
-    MOZ_RELEASE_ASSERT(instance.codeSegment().containsFunctionPC(end));
+    MOZ_RELEASE_ASSERT(segment->containsCodePC(end));
 
     // Check x64 asm.js heap access invariants.
     MOZ_RELEASE_ASSERT(address.disp() >= 0);
@@ -699,7 +897,7 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
                        instance.memoryMappedSize(),
                        "Access extends beyond the asm.js heap guard region");
     MOZ_RELEASE_ASSERT(accessAddress + access.size() > instance.memoryBase() +
-                       instance.memoryLength(),
+                       memoryLength,
                        "Computed access address is not actually out of bounds");
 
     // The basic sandbox model is that all heap accesses are a heap base
@@ -720,7 +918,7 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
     uint32_t wrappedOffset = uint32_t(unwrappedOffset);
     size_t size = access.size();
     MOZ_RELEASE_ASSERT(wrappedOffset + size > wrappedOffset);
-    bool inBounds = wrappedOffset + size < instance.memoryLength();
+    bool inBounds = wrappedOffset + size < memoryLength;
 
     if (inBounds) {
         // We now know that this is an access that is actually in bounds when
@@ -729,7 +927,7 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
         SharedMem<uint8_t*> wrappedAddress = instance.memoryBase() + wrappedOffset;
         MOZ_RELEASE_ASSERT(wrappedAddress >= instance.memoryBase());
         MOZ_RELEASE_ASSERT(wrappedAddress + size > wrappedAddress);
-        MOZ_RELEASE_ASSERT(wrappedAddress + size <= instance.memoryBase() + instance.memoryLength());
+        MOZ_RELEASE_ASSERT(wrappedAddress + size <= instance.memoryBase() + memoryLength);
         switch (access.kind()) {
           case Disassembler::HeapAccess::Load:
             SetRegisterToLoadedValue(context, wrappedAddress.cast<void*>(), size, access.otherOperand());
@@ -776,19 +974,21 @@ HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddr
 
 MOZ_COLD static void
 HandleMemoryAccess(EMULATOR_CONTEXT* context, uint8_t* pc, uint8_t* faultingAddress,
-                   const Instance& instance, uint8_t** ppc)
+                   const ModuleSegment* segment, const Instance& instance, JitActivation* activation,
+                   uint8_t** ppc)
 {
-    MOZ_RELEASE_ASSERT(instance.codeSegment().containsFunctionPC(pc));
+    MOZ_RELEASE_ASSERT(instance.code().containsCodePC(pc));
 
     const MemoryAccess* memoryAccess = instance.code().lookupMemoryAccess(pc);
     if (!memoryAccess) {
         // See explanation in the WASM_HUGE_MEMORY HandleMemoryAccess.
-        *ppc = instance.codeSegment().outOfBoundsCode();
+        MOZ_ALWAYS_TRUE(activation->startWasmInterrupt(ToRegisterState(context)));
+        *ppc = segment->outOfBoundsCode();
         return;
     }
 
     MOZ_RELEASE_ASSERT(memoryAccess->hasTrapOutOfLineCode());
-    *ppc = memoryAccess->trapOutOfLineCode(instance.codeBase());
+    *ppc = memoryAccess->trapOutOfLineCode(segment->base());
 }
 
 #endif // WASM_HUGE_MEMORY
@@ -811,27 +1011,67 @@ HandleFault(PEXCEPTION_POINTERS exception)
     EXCEPTION_RECORD* record = exception->ExceptionRecord;
     CONTEXT* context = exception->ContextRecord;
 
-    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
+        record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION)
+    {
         return false;
+    }
 
     uint8_t** ppc = ContextToPC(context);
     uint8_t* pc = *ppc;
 
+    const CodeSegment* codeSegment = LookupCodeSegment(pc);
+    if (!codeSegment || !codeSegment->isModule())
+        return false;
+
+    const ModuleSegment* moduleSegment = codeSegment->asModule();
+
+    JitActivation* activation = TlsContext.get()->activation()->asJit();
+    MOZ_ASSERT(activation);
+
+    const Instance* instance = LookupFaultingInstance(*moduleSegment, pc, ContextToFP(context));
+    if (!instance) {
+        // On Windows, it is possible for InterruptRunningJitCode to execute
+        // between a faulting instruction and the handling of the fault due
+        // to InterruptRunningJitCode's use of SuspendThread. When this happens,
+        // after ResumeThread, the exception handler is called with pc equal to
+        // ModuleSegment.interrupt, which is logically wrong. The Right Thing would
+        // be for the OS to make fault-handling atomic (so that CONTEXT.pc was
+        // always the logically-faulting pc). Fortunately, we can detect this
+        // case and silence the exception ourselves (the exception will
+        // retrigger after the interrupt jumps back to resumePC).
+        return activation->isWasmInterrupted() &&
+               pc == moduleSegment->interruptCode() &&
+               moduleSegment->containsCodePC(activation->wasmInterruptResumePC());
+    }
+
+    // In the same race-with-interrupt situation above, it's *also* possible
+    // that the reported 'pc' is the pre-interrupt pc, not post-interrupt
+    // moduleSegment->interruptCode (this may be windows-version-specific). In
+    // this case, lookupTrap()/lookupMemoryAccess() will all succeed causing the
+    // pc to be redirected *again* (to a trap stub), leading to the interrupt
+    // stub never being called. Since the goal of the async interrupt is to break
+    // out iloops and trapping does just that, this is fine, we just clear the
+    // "interrupted" state.
+    if (activation->isWasmInterrupted()) {
+        MOZ_ASSERT(activation->wasmInterruptResumePC() == pc);
+        activation->finishWasmInterrupt();
+    }
+
+    if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        Trap trap;
+        BytecodeOffset bytecode;
+        if (!moduleSegment->code().lookupTrap(pc, &trap, &bytecode))
+            return false;
+
+        activation->startWasmTrap(trap, bytecode.offset, ToRegisterState(context));
+        *ppc = moduleSegment->trapCode();
+        return true;
+    }
+
+    MOZ_RELEASE_ASSERT(&instance->code() == &moduleSegment->code());
+
     if (record->NumberParameters < 2)
-        return false;
-
-    // Don't allow recursive handling of signals, see AutoSetHandlingSegFault.
-    JSRuntime* rt = RuntimeForCurrentThread();
-    if (!rt || rt->handlingSegFault)
-        return false;
-    AutoSetHandlingSegFault handling(rt);
-
-    WasmActivation* activation = rt->wasmActivationStack();
-    if (!activation)
-        return false;
-
-    const Instance* instance = activation->compartment()->wasm.lookupInstanceDeprecated(pc);
-    if (!instance)
         return false;
 
     uint8_t* faultingAddress = reinterpret_cast<uint8_t*>(record->ExceptionInformation[1]);
@@ -841,27 +1081,20 @@ HandleFault(PEXCEPTION_POINTERS exception)
     if (!IsHeapAccessAddress(*instance, faultingAddress))
         return false;
 
-    if (!instance->codeSegment().containsFunctionPC(pc)) {
-        // On Windows, it is possible for InterruptRunningCode to execute
-        // between a faulting heap access and the handling of the fault due
-        // to InterruptRunningCode's use of SuspendThread. When this happens,
-        // after ResumeThread, the exception handler is called with pc equal to
-        // instance.interrupt, which is logically wrong. The Right Thing would
-        // be for the OS to make fault-handling atomic (so that CONTEXT.pc was
-        // always the logically-faulting pc). Fortunately, we can detect this
-        // case and silence the exception ourselves (the exception will
-        // retrigger after the interrupt jumps back to resumePC).
-        return pc == instance->codeSegment().interruptCode() &&
-               instance->codeSegment().containsFunctionPC(activation->resumePC());
-    }
+    MOZ_ASSERT(activation->compartment() == instance->compartment());
 
-    HandleMemoryAccess(context, pc, faultingAddress, *instance, ppc);
+    HandleMemoryAccess(context, pc, faultingAddress, moduleSegment, *instance, activation, ppc);
     return true;
 }
 
 static LONG WINAPI
 WasmFaultHandler(LPEXCEPTION_POINTERS exception)
 {
+    // Before anything else, prevent handler recursion.
+    if (sAlreadyInSignalHandler.get())
+        return EXCEPTION_CONTINUE_SEARCH;
+    AutoSignalHandler ash;
+
     if (HandleFault(exception))
         return EXCEPTION_CONTINUE_EXECUTION;
 
@@ -871,26 +1104,6 @@ WasmFaultHandler(LPEXCEPTION_POINTERS exception)
 
 #elif defined(XP_DARWIN)
 # include <mach/exc.h>
-
-static uint8_t**
-ContextToPC(EMULATOR_CONTEXT* context)
-{
-# if defined(JS_CPU_X64)
-    static_assert(sizeof(context->thread.__rip) == sizeof(void*),
-                  "stored IP should be compile-time pointer-sized");
-    return reinterpret_cast<uint8_t**>(&context->thread.__rip);
-# elif defined(JS_CPU_X86)
-    static_assert(sizeof(context->thread.uts.ts32.__eip) == sizeof(void*),
-                  "stored IP should be compile-time pointer-sized");
-    return reinterpret_cast<uint8_t**>(&context->thread.uts.ts32.__eip);
-# elif defined(JS_CPU_ARM)
-    static_assert(sizeof(context->thread.__pc) == sizeof(void*),
-                  "stored IP should be compile-time pointer-sized");
-    return reinterpret_cast<uint8_t**>(&context->thread.__pc);
-# else
-#  error Unsupported architecture
-# endif
-}
 
 // This definition was generated by mig (the Mach Interface Generator) for the
 // routine 'exception_raise' (exc.defs).
@@ -917,29 +1130,24 @@ struct ExceptionRequest
 };
 
 static bool
-HandleMachException(JSRuntime* rt, const ExceptionRequest& request)
+HandleMachException(JSContext* cx, const ExceptionRequest& request)
 {
-    // Don't allow recursive handling of signals, see AutoSetHandlingSegFault.
-    if (rt->handlingSegFault)
-        return false;
-    AutoSetHandlingSegFault handling(rt);
-
-    // Get the port of the JSRuntime's thread from the message.
-    mach_port_t rtThread = request.body.thread.name;
+    // Get the port of the JSContext's thread from the message.
+    mach_port_t cxThread = request.body.thread.name;
 
     // Read out the JSRuntime thread's register state.
     EMULATOR_CONTEXT context;
-# if defined(JS_CPU_X64)
+# if defined(__x86_64__)
     unsigned int thread_state_count = x86_THREAD_STATE64_COUNT;
     unsigned int float_state_count = x86_FLOAT_STATE64_COUNT;
     int thread_state = x86_THREAD_STATE64;
     int float_state = x86_FLOAT_STATE64;
-# elif defined(JS_CPU_X86)
+# elif defined(__i386__)
     unsigned int thread_state_count = x86_THREAD_STATE_COUNT;
     unsigned int float_state_count = x86_FLOAT_STATE_COUNT;
     int thread_state = x86_THREAD_STATE;
     int float_state = x86_FLOAT_STATE;
-# elif defined(JS_CPU_ARM)
+# elif defined(__arm__)
     unsigned int thread_state_count = ARM_THREAD_STATE_COUNT;
     unsigned int float_state_count = ARM_NEON_STATE_COUNT;
     int thread_state = ARM_THREAD_STATE;
@@ -948,11 +1156,11 @@ HandleMachException(JSRuntime* rt, const ExceptionRequest& request)
 #  error Unsupported architecture
 # endif
     kern_return_t kret;
-    kret = thread_get_state(rtThread, thread_state,
+    kret = thread_get_state(cxThread, thread_state,
                             (thread_state_t)&context.thread, &thread_state_count);
     if (kret != KERN_SUCCESS)
         return false;
-    kret = thread_get_state(rtThread, float_state,
+    kret = thread_get_state(cxThread, float_state,
                             (thread_state_t)&context.float_, &float_state_count);
     if (kret != KERN_SUCCESS)
         return false;
@@ -960,31 +1168,59 @@ HandleMachException(JSRuntime* rt, const ExceptionRequest& request)
     uint8_t** ppc = ContextToPC(&context);
     uint8_t* pc = *ppc;
 
-    if (request.body.exception != EXC_BAD_ACCESS || request.body.codeCnt != 2)
+    if (request.body.exception != EXC_BAD_ACCESS &&
+        request.body.exception != EXC_BAD_INSTRUCTION)
+    {
+        return false;
+    }
+
+    // The faulting thread is suspended so we can access cx fields that can
+    // normally only be accessed by the cx's active thread.
+    AutoNoteSingleThreadedRegion anstr;
+
+    const CodeSegment* codeSegment = LookupCodeSegment(pc);
+    if (!codeSegment || !codeSegment->isModule())
         return false;
 
-    WasmActivation* activation = rt->wasmActivationStack();
-    if (!activation)
+    const ModuleSegment* moduleSegment = codeSegment->asModule();
+
+    const Instance* instance = LookupFaultingInstance(*moduleSegment, pc, ContextToFP(&context));
+    if (!instance)
         return false;
 
-    const Instance* instance = activation->compartment()->wasm.lookupInstanceDeprecated(pc);
-    if (!instance || !instance->codeSegment().containsFunctionPC(pc))
-        return false;
+    JitActivation* activation = cx->activation()->asJit();
+    MOZ_ASSERT(activation->compartment() == instance->compartment());
 
-    uint8_t* faultingAddress = reinterpret_cast<uint8_t*>(request.body.code[1]);
+    if (request.body.exception == EXC_BAD_INSTRUCTION) {
+        Trap trap;
+        BytecodeOffset bytecode;
+        if (!moduleSegment->code().lookupTrap(pc, &trap, &bytecode))
+            return false;
 
-    // This check isn't necessary, but, since we can, check anyway to make
-    // sure we aren't covering up a real bug.
-    if (!IsHeapAccessAddress(*instance, faultingAddress))
-        return false;
+        activation->startWasmTrap(trap, bytecode.offset, ToRegisterState(&context));
+        *ppc = moduleSegment->trapCode();
+    } else {
+        MOZ_RELEASE_ASSERT(&instance->code() == &moduleSegment->code());
 
-    HandleMemoryAccess(&context, pc, faultingAddress, *instance, ppc);
+        MOZ_ASSERT(request.body.exception == EXC_BAD_ACCESS);
+        if (request.body.codeCnt != 2)
+            return false;
+
+        uint8_t* faultingAddress = reinterpret_cast<uint8_t*>(request.body.code[1]);
+
+        // This check isn't necessary, but, since we can, check anyway to make
+        // sure we aren't covering up a real bug.
+        if (!IsHeapAccessAddress(*instance, faultingAddress))
+            return false;
+
+        HandleMemoryAccess(&context, pc, faultingAddress, moduleSegment, *instance, activation, ppc);
+    }
 
     // Update the thread state with the new pc and register values.
-    kret = thread_set_state(rtThread, float_state, (thread_state_t)&context.float_, float_state_count);
+    kret = thread_set_state(cxThread, float_state, (thread_state_t)&context.float_, float_state_count);
     if (kret != KERN_SUCCESS)
         return false;
-    kret = thread_set_state(rtThread, thread_state, (thread_state_t)&context.thread, thread_state_count);
+    kret = thread_set_state(cxThread, thread_state, (thread_state_t)&context.thread, thread_state_count);
     if (kret != KERN_SUCCESS)
         return false;
 
@@ -998,9 +1234,9 @@ static const mach_msg_id_t sExceptionId = 2405;
 static const mach_msg_id_t sQuitId = 42;
 
 static void
-MachExceptionHandlerThread(JSRuntime* rt)
+MachExceptionHandlerThread(JSContext* cx)
 {
-    mach_port_t port = rt->wasmMachExceptionHandler.port();
+    mach_port_t port = cx->wasmMachExceptionHandler.port();
     kern_return_t kret;
 
     while(true) {
@@ -1031,7 +1267,7 @@ MachExceptionHandlerThread(JSRuntime* rt)
         // of the reply to KERN_FAILURE) which tells the kernel to continue
         // searching at the process and system level. If this is an asm.js
         // expected exception, we handle it and return KERN_SUCCESS.
-        bool handled = HandleMachException(rt, request);
+        bool handled = HandleMachException(cx, request);
         kern_return_t replyCode = handled ? KERN_SUCCESS : KERN_FAILURE;
 
         // This magic incantation to send a reply back to the kernel was derived
@@ -1061,7 +1297,7 @@ MachExceptionHandler::uninstall()
     if (installed_) {
         thread_port_t thread = mach_thread_self();
         kern_return_t kret = thread_set_exception_ports(thread,
-                                                        EXC_MASK_BAD_ACCESS,
+                                                        EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION,
                                                         MACH_PORT_NULL,
                                                         EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
                                                         THREAD_STATE_NONE);
@@ -1097,23 +1333,27 @@ MachExceptionHandler::uninstall()
 }
 
 bool
-MachExceptionHandler::install(JSRuntime* rt)
+MachExceptionHandler::install(JSContext* cx)
 {
     MOZ_ASSERT(!installed());
     kern_return_t kret;
     mach_port_t thread;
 
+    auto onFailure = mozilla::MakeScopeExit([&] {
+        uninstall();
+    });
+
     // Get a port which can send and receive data.
     kret = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &port_);
     if (kret != KERN_SUCCESS)
-        goto error;
+        return false;
     kret = mach_port_insert_right(mach_task_self(), port_, port_, MACH_MSG_TYPE_MAKE_SEND);
     if (kret != KERN_SUCCESS)
-        goto error;
+        return false;
 
     // Create a thread to block on reading port_.
-    if (!thread_.init(MachExceptionHandlerThread, rt))
-        goto error;
+    if (!thread_.init(MachExceptionHandlerThread, cx))
+        return false;
 
     // Direct exceptions on this thread to port_ (and thus our handler thread).
     // Note: we are totally clobbering any existing *thread* exception ports and
@@ -1122,60 +1362,73 @@ MachExceptionHandler::install(JSRuntime* rt)
     // exception, so we should be fine.
     thread = mach_thread_self();
     kret = thread_set_exception_ports(thread,
-                                      EXC_MASK_BAD_ACCESS,
+                                      EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION,
                                       port_,
                                       EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
                                       THREAD_STATE_NONE);
     mach_port_deallocate(mach_task_self(), thread);
     if (kret != KERN_SUCCESS)
-        goto error;
+        return false;
 
     installed_ = true;
+    onFailure.release();
     return true;
-
-  error:
-    uninstall();
-    return false;
 }
 
 #else  // If not Windows or Mac, assume Unix
 
-enum class Signal {
-    SegFault,
-    BusError
-};
+#ifdef __mips__
+    static const uint32_t kWasmTrapSignal = SIGFPE;
+#else
+    static const uint32_t kWasmTrapSignal = SIGILL;
+#endif
 
 // Be very cautious and default to not handling; we don't want to accidentally
 // silence real crashes from real bugs.
-template<Signal signal>
 static bool
 HandleFault(int signum, siginfo_t* info, void* ctx)
 {
-    // The signals we're expecting come from access violations, accessing
-    // mprotected memory. If the signal originates anywhere else, don't try
-    // to handle it.
-    if (signal == Signal::SegFault)
-        MOZ_RELEASE_ASSERT(signum == SIGSEGV);
-    else
-        MOZ_RELEASE_ASSERT(signum == SIGBUS);
+    // Before anything else, prevent handler recursion.
+    if (sAlreadyInSignalHandler.get())
+        return false;
+    AutoSignalHandler ash;
+
+    MOZ_RELEASE_ASSERT(signum == SIGSEGV || signum == SIGBUS || signum == kWasmTrapSignal);
 
     CONTEXT* context = (CONTEXT*)ctx;
     uint8_t** ppc = ContextToPC(context);
     uint8_t* pc = *ppc;
 
-    // Don't allow recursive handling of signals, see AutoSetHandlingSegFault.
-    JSRuntime* rt = RuntimeForCurrentThread();
-    if (!rt || rt->handlingSegFault)
-        return false;
-    AutoSetHandlingSegFault handling(rt);
-
-    WasmActivation* activation = rt->wasmActivationStack();
-    if (!activation)
+    const CodeSegment* segment = LookupCodeSegment(pc);
+    if (!segment || !segment->isModule())
         return false;
 
-    const Instance* instance = activation->compartment()->wasm.lookupInstanceDeprecated(pc);
-    if (!instance || !instance->codeSegment().containsFunctionPC(pc))
+    const ModuleSegment* moduleSegment = segment->asModule();
+
+    const Instance* instance = LookupFaultingInstance(*moduleSegment, pc, ContextToFP(context));
+    if (!instance)
         return false;
+
+    JitActivation* activation = TlsContext.get()->activation()->asJit();
+    MOZ_ASSERT(activation->compartment() == instance->compartment());
+
+    if (signum == kWasmTrapSignal) {
+        // Wasm traps for MIPS raise only integer overflow fp exception.
+#ifdef __mips__
+        if (info->si_code != FPE_INTOVF)
+            return false;
+#endif
+        Trap trap;
+        BytecodeOffset bytecode;
+        if (!moduleSegment->code().lookupTrap(pc, &trap, &bytecode))
+            return false;
+
+        activation->startWasmTrap(trap, bytecode.offset, ToRegisterState(context));
+        *ppc = moduleSegment->trapCode();
+        return true;
+    }
+
+    MOZ_RELEASE_ASSERT(&instance->code() == &moduleSegment->code());
 
     uint8_t* faultingAddress = reinterpret_cast<uint8_t*>(info->si_addr);
 
@@ -1199,29 +1452,38 @@ HandleFault(int signum, siginfo_t* info, void* ctx)
     }
 
 #ifdef JS_CODEGEN_ARM
-    if (signal == Signal::BusError) {
-        *ppc = instance->codeSegment().unalignedAccessCode();
+    if (signum == SIGBUS) {
+        // TODO: We may see a bus error for something that is an unaligned access that
+        // partly overlaps the end of the heap.  In this case, it is an out-of-bounds
+        // error and we should signal that properly, but to do so we must inspect
+        // the operand of the failed access.
+        MOZ_ALWAYS_TRUE(activation->startWasmInterrupt(ToRegisterState(context)));
+        *ppc = moduleSegment->unalignedAccessCode();
         return true;
     }
 #endif
 
-    HandleMemoryAccess(context, pc, faultingAddress, *instance, ppc);
+    HandleMemoryAccess(context, pc, faultingAddress, moduleSegment, *instance, activation, ppc);
     return true;
 }
 
 static struct sigaction sPrevSEGVHandler;
 static struct sigaction sPrevSIGBUSHandler;
+static struct sigaction sPrevWasmTrapHandler;
 
-template<Signal signal>
 static void
 WasmFaultHandler(int signum, siginfo_t* info, void* context)
 {
-    if (HandleFault<signal>(signum, info, context))
+    if (HandleFault(signum, info, context))
         return;
 
-    struct sigaction* previousSignal = signum == SIGSEGV
-                                       ? &sPrevSEGVHandler
-                                       : &sPrevSIGBUSHandler;
+    struct sigaction* previousSignal = nullptr;
+    switch (signum) {
+      case SIGSEGV: previousSignal = &sPrevSEGVHandler; break;
+      case SIGBUS: previousSignal = &sPrevSIGBUSHandler; break;
+      case kWasmTrapSignal: previousSignal = &sPrevWasmTrapHandler; break;
+    }
+    MOZ_ASSERT(previousSignal);
 
     // This signal is not for any asm.js code we expect, so we need to forward
     // the signal to the next handler. If there is no next handler (SIG_IGN or
@@ -1245,48 +1507,89 @@ WasmFaultHandler(int signum, siginfo_t* info, void* context)
 # endif // XP_WIN || XP_DARWIN || assume unix
 
 static void
-RedirectIonBackedgesToInterruptCheck(JSRuntime* rt)
+RedirectIonBackedgesToInterruptCheck(JSContext* cx)
 {
-    if (jit::JitRuntime* jitRuntime = rt->jitRuntime()) {
+    if (!cx->runtime()->hasJitRuntime())
+        return;
+    jit::JitRuntime* jitRuntime = cx->runtime()->jitRuntime();
+    Zone* zone = cx->zoneRaw();
+    if (zone && !zone->isAtomsZone()) {
         // If the backedge list is being mutated, the pc must be in C++ code and
         // thus not in a JIT iloop. We assume that the interrupt flag will be
         // checked at least once before entering JIT code (if not, no big deal;
         // the browser will just request another interrupt in a second).
-        if (!jitRuntime->preventBackedgePatching())
-            jitRuntime->patchIonBackedges(rt, jit::JitRuntime::BackedgeInterruptCheck);
+        if (!jitRuntime->preventBackedgePatching()) {
+            jit::JitZoneGroup* jzg = zone->group()->jitZoneGroup;
+            jzg->patchIonBackedges(cx, jit::JitZoneGroup::BackedgeInterruptCheck);
+        }
     }
+}
+
+bool
+wasm::InInterruptibleCode(JSContext* cx, uint8_t* pc, const ModuleSegment** ms)
+{
+    // Only interrupt in function code so that the frame iterators have the
+    // invariant that resumePC always has a function CodeRange and we can't
+    // get into any weird interrupt-during-interrupt-stub cases.
+
+    if (!cx->compartment())
+        return false;
+
+    const CodeSegment* cs = LookupCodeSegment(pc);
+    if (!cs || !cs->isModule())
+        return false;
+
+    *ms = cs->asModule();
+    return !!(*ms)->code().lookupFuncRange(pc);
 }
 
 // The return value indicates whether the PC was changed, not whether there was
 // a failure.
 static bool
-RedirectJitCodeToInterruptCheck(JSRuntime* rt, CONTEXT* context)
+RedirectJitCodeToInterruptCheck(JSContext* cx, CONTEXT* context)
 {
-    RedirectIonBackedgesToInterruptCheck(rt);
+    // Jitcode may only be modified on the runtime's active thread.
+    if (cx != cx->runtime()->activeContext())
+        return false;
 
-    if (WasmActivation* activation = rt->wasmActivationStack()) {
+    // The faulting thread is suspended so we can access cx fields that can
+    // normally only be accessed by the cx's active thread.
+    AutoNoteSingleThreadedRegion anstr;
+
+    RedirectIonBackedgesToInterruptCheck(cx);
+
 #ifdef JS_SIMULATOR
-        (void)ContextToPC(context);  // silence static 'unused' errors
-
-        void* pc = rt->simulator()->get_pc_as<void*>();
-
-        const Instance* instance = activation->compartment()->wasm.lookupInstanceDeprecated(pc);
-        if (instance && instance->codeSegment().containsFunctionPC(pc))
-            rt->simulator()->set_resume_pc(instance->codeSegment().interruptCode());
+    uint8_t* pc = cx->simulator()->get_pc_as<uint8_t*>();
 #else
-        uint8_t** ppc = ContextToPC(context);
-        uint8_t* pc = *ppc;
-
-        const Instance* instance = activation->compartment()->wasm.lookupInstanceDeprecated(pc);
-        if (instance && instance->codeSegment().containsFunctionPC(pc)) {
-            activation->setResumePC(pc);
-            *ppc = instance->codeSegment().interruptCode();
-            return true;
-        }
+    uint8_t* pc = *ContextToPC(context);
 #endif
-    }
 
-    return false;
+    const ModuleSegment* moduleSegment = nullptr;
+    if (!InInterruptibleCode(cx, pc, &moduleSegment))
+        return false;
+
+#ifdef JS_SIMULATOR
+    // The checks performed by the !JS_SIMULATOR path happen in
+    // Simulator::handleWasmInterrupt.
+    cx->simulator()->trigger_wasm_interrupt();
+#else
+    // Only probe cx->activation() after we know the pc is in wasm code. This
+    // way we don't depend on signal-safe update of cx->activation().
+    JitActivation* activation = cx->activation()->asJit();
+
+    // The out-of-bounds/unaligned trap paths which call startWasmInterrupt() go
+    // through function code, so test if already interrupted. These paths are
+    // temporary though, so this case can be removed later.
+    if (activation->isWasmInterrupted())
+        return false;
+
+    if (!activation->startWasmInterrupt(ToRegisterState(context)))
+        return false;
+
+    *ContextToPC(context) = moduleSegment->interruptCode();
+#endif
+
+    return true;
 }
 
 #if !defined(XP_WIN)
@@ -1300,9 +1603,20 @@ static const int sInterruptSignal = SIGVTALRM;
 static void
 JitInterruptHandler(int signum, siginfo_t* info, void* context)
 {
-    if (JSRuntime* rt = RuntimeForCurrentThread()) {
-        RedirectJitCodeToInterruptCheck(rt, (CONTEXT*)context);
-        rt->finishHandlingJitInterrupt();
+    if (JSContext* cx = TlsContext.get()) {
+
+#if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS32) || defined(JS_SIMULATOR_MIPS64)
+        SimulatorProcess::ICacheCheckingDisableCount++;
+#endif
+
+        RedirectJitCodeToInterruptCheck(cx, (CONTEXT*)context);
+
+#if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS32) || defined(JS_SIMULATOR_MIPS64)
+        SimulatorProcess::cacheInvalidatedBySignalHandler_ = true;
+        SimulatorProcess::ICacheCheckingDisableCount--;
+#endif
+
+        cx->finishHandlingJitInterrupt();
     }
 }
 #endif
@@ -1318,12 +1632,8 @@ ProcessHasSignalHandlers()
         return sHaveSignalHandlers;
     sTriedInstallSignalHandlers = true;
 
-    // Developers might want to forcibly disable signals to avoid seeing
-    // spurious SIGSEGVs in the debugger.
-    if (getenv("JS_DISABLE_SLOW_SCRIPT_SIGNALS") || getenv("JS_NO_SIGNALS"))
-        return false;
-
 #if defined(ANDROID)
+# if !defined(__aarch64__)
     // Before Android 4.4 (SDK version 19), there is a bug
     //   https://android-review.googlesource.com/#/c/52333
     // in Bionic's pthread_join which causes pthread_join to return early when
@@ -1335,6 +1645,7 @@ ProcessHasSignalHandlers()
         if (atol(version_string) < 19)
             return false;
     }
+# endif
 # if defined(MOZ_LINKER)
     // Signal handling is broken on some android systems.
     if (IsSignalHandlingBroken())
@@ -1342,10 +1653,10 @@ ProcessHasSignalHandlers()
 # endif
 #endif
 
-    // The interrupt handler allows the main thread to be paused from another
+    // The interrupt handler allows the active thread to be paused from another
     // thread (see InterruptRunningJitCode).
 #if defined(XP_WIN)
-    // Windows uses SuspendThread to stop the main thread from another thread.
+    // Windows uses SuspendThread to stop the active thread from another thread.
 #else
     struct sigaction interruptHandler;
     interruptHandler.sa_flags = SA_SIGINFO;
@@ -1365,10 +1676,24 @@ ProcessHasSignalHandlers()
     }
 #endif // defined(XP_WIN)
 
+    // Initalize ThreadLocal flag used by WasmFaultHandler
+    sAlreadyInSignalHandler.infallibleInit();
+
     // Install a SIGSEGV handler to handle safely-out-of-bounds asm.js heap
     // access and/or unaligned accesses.
 # if defined(XP_WIN)
-    if (!AddVectoredExceptionHandler(/* FirstHandler = */ true, WasmFaultHandler))
+#  if defined(MOZ_ASAN)
+    // Under ASan we need to let the ASan runtime's ShadowExceptionHandler stay
+    // in the first handler position. This requires some coordination with
+    // MemoryProtectionExceptionHandler::isDisabled().
+    const bool firstHandler = false;
+#  else
+    // Otherwise, WasmFaultHandler needs to go first, so that we can recover
+    // from wasm faults and continue execution without triggering handlers
+    // such as MemoryProtectionExceptionHandler that assume we are crashing.
+    const bool firstHandler = true;
+#  endif
+    if (!AddVectoredExceptionHandler(firstHandler, WasmFaultHandler))
         return false;
 # elif defined(XP_DARWIN)
     // OSX handles seg faults via the Mach exception handler above, so don't
@@ -1380,8 +1705,8 @@ ProcessHasSignalHandlers()
 
     // Allow handling OOB with signals on all architectures
     struct sigaction faultHandler;
-    faultHandler.sa_flags = SA_SIGINFO | SA_NODEFER;
-    faultHandler.sa_sigaction = WasmFaultHandler<Signal::SegFault>;
+    faultHandler.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
+    faultHandler.sa_sigaction = WasmFaultHandler;
     sigemptyset(&faultHandler.sa_mask);
     if (sigaction(SIGSEGV, &faultHandler, &sPrevSEGVHandler))
         MOZ_CRASH("unable to install segv handler");
@@ -1389,12 +1714,21 @@ ProcessHasSignalHandlers()
 #  if defined(JS_CODEGEN_ARM)
     // On Arm Handle Unaligned Accesses
     struct sigaction busHandler;
-    busHandler.sa_flags = SA_SIGINFO | SA_NODEFER;
-    busHandler.sa_sigaction = WasmFaultHandler<Signal::BusError>;
+    busHandler.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
+    busHandler.sa_sigaction = WasmFaultHandler;
     sigemptyset(&busHandler.sa_mask);
     if (sigaction(SIGBUS, &busHandler, &sPrevSIGBUSHandler))
         MOZ_CRASH("unable to install sigbus handler");
 #  endif
+
+    // Install a handler to handle the instructions that are emitted to implement
+    // wasm traps.
+    struct sigaction wasmTrapHandler;
+    wasmTrapHandler.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
+    wasmTrapHandler.sa_sigaction = WasmFaultHandler;
+    sigemptyset(&wasmTrapHandler.sa_mask);
+    if (sigaction(kWasmTrapSignal, &wasmTrapHandler, &sPrevWasmTrapHandler))
+        MOZ_CRASH("unable to install wasm trap handler");
 # endif
 
     sHaveSignalHandlers = true;
@@ -1402,15 +1736,15 @@ ProcessHasSignalHandlers()
 }
 
 bool
-wasm::EnsureSignalHandlers(JSRuntime* rt)
+wasm::EnsureSignalHandlers(JSContext* cx)
 {
     // Nothing to do if the platform doesn't support it.
     if (!ProcessHasSignalHandlers())
         return true;
 
 #if defined(XP_DARWIN)
-    // On OSX, each JSRuntime gets its own handler thread.
-    if (!rt->wasmMachExceptionHandler.installed() && !rt->wasmMachExceptionHandler.install(rt))
+    // On OSX, each JSContext which runs wasm gets its own handler thread.
+    if (!cx->wasmMachExceptionHandler.installed() && !cx->wasmMachExceptionHandler.install(cx))
         return false;
 #endif
 
@@ -1431,10 +1765,10 @@ wasm::HaveSignalHandlers()
 // handled by this function:
 //  1. Ion loop backedges are patched to instead point to a stub that handles
 //     the interrupt;
-//  2. if the main thread's pc is inside wasm code, the pc is updated to point
+//  2. if the active thread's pc is inside wasm code, the pc is updated to point
 //     to a stub that handles the interrupt.
 void
-js::InterruptRunningJitCode(JSRuntime* rt)
+js::InterruptRunningJitCode(JSContext* cx)
 {
     // If signal handlers weren't installed, then Ion and wasm emit normal
     // interrupt checks and don't need asynchronous interruption.
@@ -1443,57 +1777,41 @@ js::InterruptRunningJitCode(JSRuntime* rt)
 
     // Do nothing if we're already handling an interrupt here, to avoid races
     // below and in JitRuntime::patchIonBackedges.
-    if (!rt->startHandlingJitInterrupt())
+    if (!cx->startHandlingJitInterrupt())
         return;
 
-    // If we are on runtime's main thread, then: pc is not in wasm code (so
-    // nothing to do for wasm) and we can patch Ion backedges without any
-    // special synchronization.
-    if (rt == RuntimeForCurrentThread()) {
-        RedirectIonBackedgesToInterruptCheck(rt);
-        rt->finishHandlingJitInterrupt();
+    // If we are on context's thread, then: pc is not in wasm code (so nothing
+    // to do for wasm) and we can patch Ion backedges without any special
+    // synchronization.
+    if (cx == TlsContext.get()) {
+        RedirectIonBackedgesToInterruptCheck(cx);
+        cx->finishHandlingJitInterrupt();
         return;
     }
 
-    // We are not on the runtime's main thread, so to do 1 and 2 above, we need
-    // to halt the runtime's main thread first.
+    // We are not on the runtime's active thread, so to do 1 and 2 above, we need
+    // to halt the runtime's active thread first.
 #if defined(XP_WIN)
-    // On Windows, we can simply suspend the main thread and work directly on
+    // On Windows, we can simply suspend the active thread and work directly on
     // its context from this thread. SuspendThread can sporadically fail if the
     // thread is in the middle of a syscall. Rather than retrying in a loop,
     // just wait for the next request for interrupt.
-    HANDLE thread = (HANDLE)rt->ownerThreadNative();
-    if (SuspendThread(thread) != -1) {
+    HANDLE thread = (HANDLE)cx->threadNative();
+    if (SuspendThread(thread) != (DWORD)-1) {
         CONTEXT context;
-        context.ContextFlags = CONTEXT_CONTROL;
+        context.ContextFlags = CONTEXT_FULL;
         if (GetThreadContext(thread, &context)) {
-            if (RedirectJitCodeToInterruptCheck(rt, &context))
+            if (RedirectJitCodeToInterruptCheck(cx, &context))
                 SetThreadContext(thread, &context);
         }
         ResumeThread(thread);
     }
-    rt->finishHandlingJitInterrupt();
+    cx->finishHandlingJitInterrupt();
 #else
-    // On Unix, we instead deliver an async signal to the main thread which
+    // On Unix, we instead deliver an async signal to the active thread which
     // halts the thread and callers our JitInterruptHandler (which has already
     // been installed by EnsureSignalHandlersInstalled).
-    pthread_t thread = (pthread_t)rt->ownerThreadNative();
+    pthread_t thread = (pthread_t)cx->threadNative();
     pthread_kill(thread, sInterruptSignal);
 #endif
-}
-
-MOZ_COLD bool
-js::wasm::IsPCInWasmCode(void *pc)
-{
-    JSRuntime* rt = RuntimeForCurrentThread();
-    if (!rt)
-        return false;
-
-    MOZ_RELEASE_ASSERT(!rt->handlingSegFault);
-
-    WasmActivation* activation = rt->wasmActivationStack();
-    if (!activation)
-        return false;
-
-    return !!activation->compartment()->wasm.lookupInstanceDeprecated(pc);
 }

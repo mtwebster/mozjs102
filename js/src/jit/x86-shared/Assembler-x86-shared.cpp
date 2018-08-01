@@ -39,49 +39,46 @@ AssemblerX86Shared::copyDataRelocationTable(uint8_t* dest)
         memcpy(dest, dataRelocations_.buffer(), dataRelocations_.length());
 }
 
-void
-AssemblerX86Shared::copyPreBarrierTable(uint8_t* dest)
-{
-    if (preBarriers_.length())
-        memcpy(dest, preBarriers_.buffer(), preBarriers_.length());
-}
-
 static void
-TraceDataRelocations(JSTracer* trc, uint8_t* buffer, CompactBufferReader& reader)
+TraceDataRelocations(JSTracer* trc, CompactBufferReader& reader,
+                     uint8_t* buffer, size_t bufferSize)
 {
     while (reader.more()) {
         size_t offset = reader.readUnsigned();
-        void* ptr = X86Encoding::GetPointer(buffer + offset);
+        MOZ_ASSERT(offset >= sizeof(void*) && offset <= bufferSize);
+
+        uint8_t* src = buffer + offset;
+        void* data = X86Encoding::GetPointer(src);
 
 #ifdef JS_PUNBOX64
         // All pointers on x64 will have the top bits cleared. If those bits
         // are not cleared, this must be a Value.
-        uintptr_t word = reinterpret_cast<uintptr_t>(ptr);
+        uintptr_t word = reinterpret_cast<uintptr_t>(data);
         if (word >> JSVAL_TAG_SHIFT) {
-            Value v = Value::fromRawBits(word);
-            TraceManuallyBarrieredEdge(trc, &v, "jit-masm-value");
-            if (word != v.asRawBits()) {
+            Value value = Value::fromRawBits(word);
+            MOZ_ASSERT_IF(value.isGCThing(), gc::IsCellPointerValid(value.toGCThing()));
+            TraceManuallyBarrieredEdge(trc, &value, "jit-masm-value");
+            if (word != value.asRawBits()) {
                 // Only update the code if the Value changed, because the code
                 // is not writable if we're not moving objects.
-                X86Encoding::SetPointer(buffer + offset, v.bitsAsPunboxPointer());
+                X86Encoding::SetPointer(src, value.bitsAsPunboxPointer());
             }
             continue;
         }
 #endif
 
-        // No barrier needed since these are constants.
-        gc::Cell* cellPtr = reinterpret_cast<gc::Cell*>(ptr);
-        TraceManuallyBarrieredGenericPointerEdge(trc, &cellPtr, "jit-masm-ptr");
-        if (cellPtr != ptr)
-            X86Encoding::SetPointer(buffer + offset, cellPtr);
+        gc::Cell* cell = static_cast<gc::Cell*>(data);
+        MOZ_ASSERT(gc::IsCellPointerValid(cell));
+        TraceManuallyBarrieredGenericPointerEdge(trc, &cell, "jit-masm-ptr");
+        if (cell != data)
+            X86Encoding::SetPointer(src, cell);
     }
 }
-
 
 void
 AssemblerX86Shared::TraceDataRelocations(JSTracer* trc, JitCode* code, CompactBufferReader& reader)
 {
-    ::TraceDataRelocations(trc, code->raw(), reader);
+    ::TraceDataRelocations(trc, reader, code->raw(), code->instructionsSize());
 }
 
 void
@@ -97,7 +94,7 @@ AssemblerX86Shared::trace(JSTracer* trc)
     }
     if (dataRelocations_.length()) {
         CompactBufferReader reader(dataRelocations_);
-        ::TraceDataRelocations(trc, masm.data(), reader);
+        ::TraceDataRelocations(trc, reader, masm.data(), masm.size());
     }
 }
 
@@ -141,9 +138,8 @@ AssemblerX86Shared::executableCopy(void* buffer)
 void
 AssemblerX86Shared::processCodeLabels(uint8_t* rawCode)
 {
-    for (size_t i = 0; i < codeLabels_.length(); i++) {
-        CodeLabel label = codeLabels_[i];
-        Bind(rawCode, label.patchAt(), rawCode + label.target()->offset());
+    for (const CodeLabel& label : codeLabels_) {
+        Bind(rawCode, label);
     }
 }
 
@@ -221,6 +217,39 @@ AssemblerX86Shared::ConditionWithoutEqual(Condition cond)
     }
 }
 
+AssemblerX86Shared::DoubleCondition
+AssemblerX86Shared::InvertCondition(DoubleCondition cond)
+{
+    switch (cond) {
+      case DoubleEqual:
+        return DoubleNotEqualOrUnordered;
+      case DoubleEqualOrUnordered:
+        return DoubleNotEqual;
+      case DoubleNotEqualOrUnordered:
+        return DoubleEqual;
+      case DoubleNotEqual:
+        return DoubleEqualOrUnordered;
+      case DoubleLessThan:
+        return DoubleGreaterThanOrEqualOrUnordered;
+      case DoubleLessThanOrUnordered:
+        return DoubleGreaterThanOrEqual;
+      case DoubleLessThanOrEqual:
+        return DoubleGreaterThanOrUnordered;
+      case DoubleLessThanOrEqualOrUnordered:
+        return DoubleGreaterThan;
+      case DoubleGreaterThan:
+        return DoubleLessThanOrEqualOrUnordered;
+      case DoubleGreaterThanOrUnordered:
+        return DoubleLessThanOrEqual;
+      case DoubleGreaterThanOrEqual:
+        return DoubleLessThanOrUnordered;
+      case DoubleGreaterThanOrEqualOrUnordered:
+        return DoubleLessThan;
+      default:
+        MOZ_CRASH("unexpected condition");
+    }
+}
+
 void
 AssemblerX86Shared::verifyHeapAccessDisassembly(uint32_t begin, uint32_t end,
                                                 const Disassembler::HeapAccess& heapAccess)
@@ -228,7 +257,8 @@ AssemblerX86Shared::verifyHeapAccessDisassembly(uint32_t begin, uint32_t end,
 #ifdef DEBUG
     if (masm.oom())
         return;
-    Disassembler::VerifyHeapAccess(masm.data() + begin, masm.data() + end, heapAccess);
+    unsigned char* code = masm.data();
+    Disassembler::VerifyHeapAccess(code + begin, code + end, heapAccess);
 #endif
 }
 
@@ -335,8 +365,14 @@ CPUInfo::SetSSEVersion()
         avxPresent = (xcr0EAX & xcr0SSEBit) && (xcr0EAX & xcr0AVXBit);
     }
 
-    static const int POPCNTBit = 1 << 23;
+    // CMOV instruction are supposed to be supported by all CPU which have SSE2
+    // enabled. While this might be true, this is not guaranteed by any
+    // documentation, nor AMD, nor Intel.
+    static const int CMOVBit = 1 << 15;
+    MOZ_RELEASE_ASSERT(flagsEDX & CMOVBit,
+                       "CMOVcc instruction is not recognized by this CPU.");
 
+    static const int POPCNTBit = 1 << 23;
     popcntPresent = (flagsECX & POPCNTBit);
 
     // Check if we need to work around an AMD CPU bug (see bug 1281759).
