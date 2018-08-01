@@ -43,9 +43,9 @@ CONFIGURE_FLAGS += --enable-pie
 endif
 
 ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
-ICU_DATA_FILE = icudt58l.dat
+ICU_DATA_FILE = icudt60l.dat
 else
-ICU_DATA_FILE = icudt58b.dat
+ICU_DATA_FILE = icudt60b.dat
 endif
 export ICU_DATA_FILE
 
