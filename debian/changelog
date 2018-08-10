@@ -23,6 +23,12 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
   * d/p/Always-use-the-equivalent-year-to-determine-the-time-zone.patch:
     Apply patch from upstream (Firefox 62) to fix a test failure
     involving daylight saving variants of timezone names
+  * d/test.sh: Update architectures where tests are expected to fail
+    (Closes: #905199)
+    - Remove ppc64el: tests now pass and #878319 has been closed
+    - Add alpha: expected to fail due to #905825
+    - Add sparc64: expected to fail due to #905825 and #905829
+    - Update bug reference for m68k to #905830
 
  -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
 

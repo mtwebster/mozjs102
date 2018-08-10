@@ -23,9 +23,6 @@ else
 		(mips64el)
 			echo "Ignoring test failure, https://bugs.debian.org/877428"
 			;;
-		(ppc64el)
-			echo "Ignoring test failure, https://bugs.debian.org/878319"
-			;;
 		(s390x|ppc64)
 			echo "Ignoring test failure, https://bugs.debian.org/878286"
 			;;
@@ -33,7 +30,13 @@ else
 			echo "Ignoring test failure, https://bugs.debian.org/897117"
 			;;
 		(m68k)
-			echo "Ignoring test failure, see https://bugs.debian.org/903483"
+			echo "Ignoring test failure, https://bugs.debian.org/905830"
+			;;
+		(sparc64)
+			echo "Ignoring test failure, https://bugs.debian.org/905825 / https://bugs.debian.org/905829"
+			;;
+		(alpha)
+			echo "Ignoring test failure, https://bugs.debian.org/905825"
 			;;
 		(*)
 			echo "Test failure is considered serious, causing FTBFS"
