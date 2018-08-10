@@ -17,6 +17,9 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
       Drop, partially obsoleted by use of
       AtomicOperations-feeling-lucky.h; remaining changes need rebasing
       and re-testing
+  * Build with srcdir != builddir. This matches the behaviour of GNOME's
+    various continuous integration systems, and avoids a FTBFS when
+    srcdir = builddir.
 
  -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
 
