@@ -20,6 +20,9 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
   * Build with srcdir != builddir. This matches the behaviour of GNOME's
     various continuous integration systems, and avoids a FTBFS when
     srcdir = builddir.
+  * d/p/Always-use-the-equivalent-year-to-determine-the-time-zone.patch:
+    Apply patch from upstream (Firefox 62) to fix a test failure
+    involving daylight saving variants of timezone names
 
  -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
 
