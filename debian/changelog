@@ -1,3 +1,14 @@
+mozjs52 (52.9.1-2) UNRELEASED; urgency=medium
+
+  * d/test.sh: Update architectures where tests are expected to fail
+    (Closes: #905199)
+    - Remove ppc64el: tests now pass and #878319 has been closed
+    - Add alpha: expected to fail due to #905825
+    - Add sparc64: expected to fail due to #905825 and #905829
+    - Update bug reference for m68k to #905830
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 10 Aug 2018 11:59:29 +0100
+
 mozjs52 (52.9.1-1) unstable; urgency=medium
 
   * Team upload
