@@ -23,6 +23,10 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
   * Build with srcdir != builddir. This matches the behaviour of GNOME's
     various continuous integration systems, and avoids a FTBFS when
     srcdir = builddir.
+  * Explicitly disable jemalloc, which is broken in standalone mozjs
+    releases and causes a trivial embedder to segfault. Again, this
+    matches the "packaging" in GNOME's continuous integration.
+    See https://bugzilla.mozilla.org/show_bug.cgi?id=1465038
   * d/p/Always-use-the-equivalent-year-to-determine-the-time-zone.patch:
     Apply patch from upstream (Firefox 62) to fix a test failure
     involving daylight saving variants of timezone names

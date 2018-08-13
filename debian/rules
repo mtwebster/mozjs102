@@ -91,6 +91,7 @@ override_dh_auto_configure:
 		--with-intl-api \
 		--enable-readline \
 		--disable-optimize \
+		--disable-jemalloc \
 		$(CONFIGURE_FLAGS)
 
 override_dh_install:
