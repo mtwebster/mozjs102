@@ -1,7 +1,10 @@
 mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
 
-  * New upstream release branch (Closes: #904991)
-    - Adapt packaging for major version 60
+  * New upstream release branch, required by gjs 1.53.90+
+    (Closes: #904991)
+    - Adapt mozjs52 packaging for major version 60
+    - This is a new, parallel source package because the latest upstream
+      versions of cjs and policykit-1 currently still require mozjs52
   * Refresh patch series
     - d/p/disable-mozglue.patch:
       Drop, appears to be unnecessary now
@@ -16,7 +19,7 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
     - d/p/sh4-support.patch, d/p/m68k-support.patch:
       Drop, partially obsoleted by use of
       AtomicOperations-feeling-lucky.h; remaining changes need rebasing
-      and re-testing
+      and re-testing (see #905833 for sh4, #905834 for m68k)
   * Build with srcdir != builddir. This matches the behaviour of GNOME's
     various continuous integration systems, and avoids a FTBFS when
     srcdir = builddir.
