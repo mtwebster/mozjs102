@@ -677,88 +677,11 @@ Files: js/src/aclocal.m4
 Copyright: Public Domain
 License: public-domain
 
-Files: memory/jemalloc/*
-Copyright: 2002-2016 Jason Evans
-           2007-2012 Mozilla Foundation
-           2009-2016 Facebook, Inc.
-License: BSD-2-clause
-
-Files: memory/jemalloc/src/test/unit/hash.c
-Copyright: 2010-2012 Austin Appleby
-License: Expat
-
-Files: memory/jemalloc/src/test/unit/SFMT.c
-       memory/jemalloc/src/test/src/SFMT.c
-       memory/jemalloc/src/test/include/test/SFMT-*
-Copyright: 2006-2007 Mutsuo Saito, Makoto Matsumoto and Hiroshima University
-License: BSD-3-clause-Hiroshima-University
-
 Files: memory/build/mozjemalloc.*
 Copyright:
  2006-2008 Jason Evans
  2007-2017 Mozilla Foundation
 License: MPL-2.0 and BSD-2-clause
-
-Files: memory/jemalloc/src/bin/jeprof.in
-Copyright: 1998-2007 Google Inc.
-License: BSD-3-clause-Google-jemalloc
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions
- are met:
- 1. Redistributions of source code must retain the above copyright
-    notice(s), this list of conditions and the following disclaimer as
-    the first lines of this file unmodified other than the possible
-    addition of one or more copyright notices.
- 2. Redistributions in binary form must reproduce the above copyright
-    notice(s), this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
- 3. Neither the name of Google Inc. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
- .
- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER(S) ``AS IS'' AND ANY
- EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) BE
- LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
- BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY
- WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE
- EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-Comment:
- Embeds the SVGPan library which is
- .
- Copyright: 2009-2010 Andrea Leofreddi <a.leofreddi@itcharm.com>
- .
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions
- are met:
- 1. Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
- .
- THIS SOFTWARE IS PROVIDED BY Andrea Leofreddi ``AS IS'' AND ANY
- EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL Andrea Leofreddi OR
- CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
- OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- .
- The views and conclusions contained in the software and documentation
- are those of the authors and should not be interpreted as
- representing official policies, either expressed or implied, of
- Andrea Leofreddi.
 
 Files: mfbt/decimal/*
 Copyright: 2012 Google Inc.
@@ -789,10 +712,6 @@ Files: modules/zlib/*
        js/src/octane/zlib-data.js
 Copyright: 1995-2017 Jean-loup Gailly and Mark Adler
 License: ZLib
-
-Files: mozglue/build/cpuacct.*
-Copyright: 2010 The Android Open Source Project
-License: BSD-2-clause
 
 Files: intl/icu/*
 Copyright:
@@ -836,8 +755,6 @@ Files: intl/icu/source/data/unidata/CaseFolding.txt
   intl/icu/source/data/unidata/norm2/nfkc_cf.txt
   intl/icu/source/data/unidata/norm2/uts46.txt
   intl/icu/source/data/unidata/ppucd.txt
-  intl/unicharutil/util/nsUnicodePropertyData.cpp
-  intl/unicharutil/util/nsUnicodeScriptCodes.h
 Copyright: 1991-2017 Unicode, Inc.
 License: ICU-Unicode
  Permission is hereby granted, free of charge, to any person obtaining a
@@ -1016,219 +933,56 @@ Files: js/src/octane/raytrace.js
 Copyright: 2005-2007, Sam Stephenson
 License: Expat
 
-Files: js/src/tests/test262/*
-Copyright: 2012-2013 Ecma International
+Files:
+ js/src/tests/test262/*
+ js/src/tests/test/expected/import/files/local/smTempBranch/language/export/escaped-foobarbaz.js
+Copyright:
+ 2009 the Sputnik authors
+ 2011-2017 the V8 project authors
+ 2011-2012 Norbert Lindenberg
+ 2011-2012 Google, Inc.
+ 2012-2017 Mozilla Corporation.
+ 2012-2013 Ecma International
+ 2013-2015 Microsoft Corporation
+ 2014-2017 André Bargull
+ 2014 Ryan Lewis
+ 2014 Thomas Dahlstrom
+ 2014-2015 Cubane Canada, Inc.
+ 2015-2018 Mike Pennisi
+ 2015-2017 Caitlin Potter
+ 2015-2016 Jordan Harband
+ 2015 Zirak
+ 2016-2018 Michael Ficarra
+ 2016-2017 Rick Waldron
+ 2016 Apple Inc.
+ 2016-2017 Leonardo Balter
+ 2016 Microsoft, Inc.
+ 2016 Kevin Gibbons
+ 2016 Tim Disney
+ 2016 Jeff Morrison
+ 2017-2018 Igalia, S.L.
+ 2017 Daniel Ehrenberg
+ 2017 Valerie Young
+ 2017 Josh Wolfe
+ 2017 Aleksey Shvayka
+ 2017 Mathias Bynens
+ 2017 Claude Pache
+ 2017 Michael "Z" Goddard
+ 2017 K. Adam White
+ 2017 Robin Templeton
+ 2017 Corey Frang
+ 2017 Lucas Azzola
+ 2017 Caio Lima
+ 2017 Mathias Bynens
+ 2017 Lyza Danger Gardner
+ 2018 Shilpi Jain
 License: BSD-3-clause-ECMA
 
-Files: js/src/tests/test262/ch10/10.4/10.4.3/S10.4.3_A1.js
-       js/src/tests/function-arguments-caller-changes.diff
-       js/src/tests/test262/ch08/8.6/8.6.2/S8.6.2_A8.js
-       js/src/tests/test262/ch10/10.4/10.4.2/S10.4.2.1_A1.js
-       js/src/tests/test262/ch10/10.4/10.4.3/S10.4.3_A1.js
-       js/src/tests/test262/ch11/11.4/11.4.1/S11.4.1_A5.js
-       js/src/tests/test262/ch13/13.2/S13.2.3_A1.js
-       js/src/tests/test262/ch13/13.2/S13.2_A6_T1.js
-       js/src/tests/test262/ch13/13.2/S13.2_A6_T2.js
-       js/src/tests/test262/ch13/13.2/S13.2_A7_T1.js
-       js/src/tests/test262/ch13/13.2/S13.2_A7_T2.js
-       js/src/tests/test262/ch13/13.2/S13.2_A8_T1.js
-       js/src/tests/test262/ch13/13.2/S13.2_A8_T2.js
-       js/src/tests/test262/intl402/ch10/10.2/10.2.2_a.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.1.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3_a.js
-       js/src/tests/test262/intl402/ch11/11.2/11.2.2_a.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.1.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_1_a_ii.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_FN_1.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_FN_2.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_FN_3_b.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_FN_3_e.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3_a.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.2_a.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.1.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3_a.js
-Copyright: 2011 Google, Inc.
-License: BSD-3-clause-ECMA
-
-Files: js/src/tests/test262/testBuiltInObject.js
-       js/src/tests/test262/intl402/ch06/6.2/6.2.2_a.js
-       js/src/tests/test262/intl402/ch06/6.2/6.2.2_b.js
-       js/src/tests/test262/intl402/ch06/6.2/6.2.2_c.js
-       js/src/tests/test262/intl402/ch06/6.2/6.2.4.js
-       js/src/tests/test262/intl402/ch06/6.3/6.3.1_a.js
-       js/src/tests/test262/intl402/ch06/6.3/6.3.1_b.js
-       js/src/tests/test262/intl402/ch06/6.4/6.4_a.js
-       js/src/tests/test262/intl402/ch06/6.4/6.4_b.js
-       js/src/tests/test262/intl402/ch06/6.4/6.4_c.js
-       js/src/tests/test262/intl402/ch08/8.0/8.0.js
-       js/src/tests/test262/intl402/ch08/8.0/8.0_L15.js
-       js/src/tests/test262/intl402/ch09/9.1/9.1_a.js
-       js/src/tests/test262/intl402/ch09/9.1/9.1_b.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_1.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_2.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_3.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_4.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_8_c_ii.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.1_8_c_vi.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.2.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.3_5.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.5_6.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.6_2.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.6_4.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.6_4_b.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.6_4_c.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.8_1_c.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.8_4.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_1.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_10.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_11.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_13.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_19_b.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_19_c.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_20.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_23.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_6.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.1_a.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.2.1_4.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.3.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1_L15.js
-       js/src/tests/test262/intl402/ch10/10.2/10.2.1.js
-       js/src/tests/test262/intl402/ch10/10.2/10.2.2_L15.js
-       js/src/tests/test262/intl402/ch10/10.2/10.2.2_b.js
-       js/src/tests/test262/intl402/ch10/10.2/10.2.3_b.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_1_a_L15.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_1_c.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_CS_b_NN.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_L15.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.3.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.3_L15.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3_L15.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3_b.js
-       js/src/tests/test262/intl402/ch10/10.4/10.4_a.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_1.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_15.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_17.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_19.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_21.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_32.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_34.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_6.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_7.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_a.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.2.1_4.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.3.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1_L15.js
-       js/src/tests/test262/intl402/ch11/11.2/11.2.1.js
-       js/src/tests/test262/intl402/ch11/11.2/11.2.2_L15.js
-       js/src/tests/test262/intl402/ch11/11.2/11.2.2_b.js
-       js/src/tests/test262/intl402/ch11/11.2/11.2.3_b.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_1_a_L15.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_1_c.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_L15.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.3.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.3_L15.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3_L15.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3_b.js
-       js/src/tests/test262/intl402/ch11/11.4/11.4_a.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_1.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_18.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_22.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_23.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_25.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_5.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_6.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_TDTO.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.1_a.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.2.1_4.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.3.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1_L15.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.1.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.2_L15.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.2_b.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.3_b.js
-       js/src/tests/test262/intl402/ch12/12.2/12.2.3_c.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_1_a_L15.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_1_c.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_FDT_1.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_FDT_7_a_iv.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_L15.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.2_TLT_2.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.3.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3.3_L15.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3_L15.js
-       js/src/tests/test262/intl402/ch12/12.3/12.3_b.js
-       js/src/tests/test262/intl402/ch12/12.4/12.4_a.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_1.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_2.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_3_1.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_3_2.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_6_1.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_6_2.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_7.js
-       js/src/tests/test262/intl402/ch13/13.1/13.1.1_L15.js
-       js/src/tests/test262/intl402/ch13/13.2/13.2.1_1.js
-       js/src/tests/test262/intl402/ch13/13.2/13.2.1_4_1.js
-       js/src/tests/test262/intl402/ch13/13.2/13.2.1_4_2.js
-       js/src/tests/test262/intl402/ch13/13.2/13.2.1_5.js
-       js/src/tests/test262/intl402/ch13/13.2/13.2.1_L15.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.0_1.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.0_2.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.0_6_1.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.0_6_2.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.0_7.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.1_L15.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.2_L15.js
-       js/src/tests/test262/intl402/ch13/13.3/13.3.3_L15.js
-Copyright: 2012-2013 Mozilla Corporation.
-License: BSD-3-clause-ECMA
-
-Files: js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/duplicate-keys.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/exception-not-object-coercible.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/function-length.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/function-name.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/function-property-descriptor.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/inherited-properties-omitted.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/normal-object.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/observable-operations.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/primitive-booleans.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/primitive-numbers.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/primitive-strings.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/primitive-symbols.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/proxy-undefined-descriptor.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/symbols-included.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/tamper-with-global-object.js
-       js/src/tests/test262/built-ins/Object/getOwnPropertyDescriptors/tamper-with-object-keys.js
-Copyright: 2016, Jordan Harband
-License: BSD-3-clause-ECMA
-
-Files: js/src/tests/test262/intl402/ch06/6.2/6.2.3.js
-       js/src/tests/test262/intl402/ch09/9.2/9.2.5_11_g_ii_2.js
-       js/src/tests/test262/intl402/ch10/10.1/10.1.2_a.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_CS_a.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_CS_c_NN.js
-       js/src/tests/test262/intl402/ch10/10.3/10.3.2_CS_d_NN.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.1_20_c.js
-       js/src/tests/test262/intl402/ch11/11.1/11.1.2.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_TRF.js
-       js/src/tests/test262/intl402/ch11/11.3/11.3.2_TRP.js
-       js/src/tests/test262/intl402/ch12/12.1/12.1.2.js
-Copyright: 2011-2012, Norbert Lindenberg
-           2012, Mozilla Corporation
-License: BSD-3-clause-ECMA
- 
-Files: js/src/tests/ecma_5/String/split-xregexp.js
+Files: js/src/tests/non262/String/split-xregexp.js
 Copyright: 2007 Steven Levithan <stevenlevithan.com>
 License: Expat
 
-Files: js/src/tests/test262/intl402/browser.js
-       js/src/tests/Intl/NumberFormat/format.js
-       js/src/tests/js1_5/Regress/regress-111557.js
-       js/src/tests/supporting/testIntl.js
-Copyright: 2011-2012, Norbert Lindenberg.
-           2012-2013, Mozilla Corporation.
-License: MPL-2.0
-
-Files: js/src/vm/make_unicode.py
+Files: js/src/util/make_unicode.py
 Copyright: 2011, Tom Schuster
 License: GPL-3+
 
@@ -1279,16 +1033,6 @@ License: MIT-Lucent
  REPRESENTATION OR WARRANTY OF ANY KIND CONCERNING THE MERCHANTABILITY
  OF THIS SOFTWARE OR ITS FITNESS FOR ANY PARTICULAR PURPOSE.
 
-Files: python/altgraph/*
-Copyright: 2004 Istvan Albert
-           Bob Ippolito
-           2010-2014 Ronald Oussoren
-License: Expat
-
-Files: python/bitstring/*
-Copyright: 2014 Scott Griffiths
-License: Expat
-
 Files: third_party/python/blessings/*
 Copyright: 2014 Erik Rose
 License: Expat
@@ -1305,10 +1049,6 @@ Files: third_party/python/dlmanager/*
 Copyright: Julien Pagès
 License: GPL-unknown
  license="GPL/LGPL"
-
-Files: python/eme/*
-Copyright: 2014 Adobe Systems Incorporated
-License: MPL-2.0
 
 Files: third_party/python/futures/*
 Copyright: 2009 Brian Quinlan
@@ -1330,8 +1070,8 @@ Files: third_party/python/psutil/*
 Copyright: 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola'
 License: BSD-3-clause-psutil
 
-Files: python/py/*
-       python/pytest/*
+Files: third_party/python/py/*
+       third_party/python/pytest/*
 Copyright: 2004-2016 Holger Krekel
 License: Expat
 
@@ -1340,7 +1080,7 @@ Files: third_party/python/pyasn1/*
 Copyright: 2005-2013, Ilya Etingof <ilya@glas.net>
 License: BSD-2-clause
 
-Files: thurd_party/python/pylru/*
+Files: third_party/python/pylru/*
 Copyright: 2006, 2009, 2010, 2011 Jay Hutchinson
 License: GPL-2+
 
@@ -1387,7 +1127,7 @@ Copyright: 2007, 2009 Ian Bicking
            2011-2016 The virtualenv developers
 License: Expat
 
-Files: python/voluptuous/*
+Files: third_party/python/voluptuous/*
 Copyright: 2010 Alec Thomas
 License: BSD-3-clause-SwapOff
 
