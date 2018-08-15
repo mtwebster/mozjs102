@@ -36,6 +36,7 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
     - Add alpha: expected to fail due to #905825
     - Add sparc64: expected to fail due to #905825 and #905829
     - Update bug reference for m68k to #905830
+  * Standards-Version: 4.2.0
 
  -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
 
