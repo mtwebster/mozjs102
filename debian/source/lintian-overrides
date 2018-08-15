@@ -1,0 +1,3 @@
+# Many of these tests are written with very long lines, bu they do not
+# appear to be generated files
+mozjs60 source: source-is-missing js/src/tests/test262/*
