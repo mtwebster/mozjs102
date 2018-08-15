@@ -2,9 +2,9 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: SpiderMonkey
 Source: http://ftp.mozilla.org/pub/mozilla.org/js/
 Files-Excluded:
- build/pgo/blueprint/valid.png
- js/src/jit-test/tests/sunspider/check-string-unpack-code.js
- js/src/ctypes/libffi/doc/libffi.info
+ build/pgo
+ js/src/octane
+ third_party/python/mock-1.0.0/html/_static
 Comment: This file is derived from Firefox's debian/copyright
 
 Files: *
