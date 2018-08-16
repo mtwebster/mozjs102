@@ -1,5 +1,6 @@
-mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
+mozjs60 (60.1.0-1) unstable; urgency=medium
 
+  * Team upload
   * New upstream release branch, required by gjs 1.53.90+
     (Closes: #904991)
     - Adapt mozjs52 packaging for major version 60
@@ -40,7 +41,7 @@ mozjs60 (60.1.0-1) UNRELEASED; urgency=medium
   * d/source/lintian-overrides: Override warnings about long lines in
     some test files
 
- -- Simon McVittie <smcv@debian.org>  Wed, 01 Aug 2018 10:48:27 +0100
+ -- Simon McVittie <smcv@debian.org>  Thu, 16 Aug 2018 08:00:48 +0100
 
 mozjs52 (52.9.1-1) unstable; urgency=medium
 
