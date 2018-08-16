@@ -405,9 +405,15 @@ Copyright: 2009 The Mozilla Foundation
 License: Expat
 
 Files: js/src/aclocal.m4
-  nsprpub/config/nspr.m4
 Copyright: Public Domain
-License: public-domain
+License: aclocal-public-domain
+ The contents of this file are under the Public Domain.
+
+Files: nsprpub/config/nspr.m4
+Copyright: Public Domain
+License: nspr-public-domain
+ Public domain - Chris Seawood <cls@seawood.org> 2001-04-05
+ Based upon gtk.m4 (also PD) by Owen Taylor
 
 Files: memory/build/mozjemalloc.*
 Copyright:
