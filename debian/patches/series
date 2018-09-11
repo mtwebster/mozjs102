@@ -1,4 +1,6 @@
 Always-use-the-equivalent-year-to-determine-the-time-zone.patch
+Bug-1444303-MIPS-Fix-build-failures-after-Bug-1425580-par.patch
+Bug-1444834-MIPS-Stubout-MacroAssembler-speculationBarrie.patch
 fix-soname.patch
 hurd-support.patch
 copy-headers.patch
@@ -11,3 +13,6 @@ tests-increase-timeout.patch
 tests-snans-be.patch
 ia64-support.patch
 Add-disable-layoutex-when-running-ICU-configure.patch
+tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch
+tests-Expect-some-floating-point-tests-to-fail-on-i386.patch
+tests-Expect-a-test-to-fail-on-armel.patch

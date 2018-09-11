@@ -1,3 +1,22 @@
+mozjs60 (60.1.0-2) UNRELEASED; urgency=medium
+
+  * d/p/tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch:
+    Add patch to allow tests to be skipped or marked as random (flaky) or
+    fails (expected failure) according to dpkg-architecture variables
+  * d/p/tests-Expect-some-floating-point-tests-to-fail-on-i386.patch:
+    Mark some floating point tests as expected to fail on any-i386 due to
+    our use of the legacy i387 FPU, which has different rounding
+    behaviour (Closes: #907363)
+  * d/p/tests-Expect-a-test-to-fail-on-armel.patch:
+    Expect a test involving floating-point NaN to fail on ARM softfloat
+    (Closes: #908481)
+  * d/p/Bug-1444303-MIPS-Fix-build-failures-after-Bug-1425580-par.patch,
+    d/p/Bug-1444834-MIPS-Stubout-MacroAssembler-speculationBarrie.patch:
+    Add patches from upstream via firefox-esr which hopefully fix FTBFS
+    on mips64el (Closes: #908486)
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 11 Sep 2018 16:07:21 +0100
+
 mozjs60 (60.1.0-1) unstable; urgency=medium
 
   * Team upload

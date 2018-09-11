@@ -1,0 +1,30 @@
+From: Dragan Mladjenovic <dragan.mladjenovic>
+Date: Mon, 12 Mar 2018 10:31:24 +0100
+Subject: Bug 1444834 : [MIPS] Stubout MacroAssembler::speculationBarrier
+
+From upstream, via firefox-esr 60.2.0esr-1.
+
+Reviewed-by: jandem
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1444834
+Applied-upstream: 61, commit:https://hg.mozilla.org/mozilla-central/rev/739c536d2cd6
+---
+ js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp b/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
+index 6b3c19f..208cd21 100644
+--- a/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
++++ b/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
+@@ -2846,3 +2846,11 @@ MacroAssembler::atomicEffectOpJS(Scalar::Type arrayType, const Synchronization&
+     atomicEffectOp(arrayType, sync, op, value, mem, valueTemp, offsetTemp, maskTemp);
+ }
+ 
++// ========================================================================
++// Spectre Mitigations.
++
++void
++MacroAssembler::speculationBarrier()
++{
++    MOZ_CRASH();
++}
+\ No newline at end of file
