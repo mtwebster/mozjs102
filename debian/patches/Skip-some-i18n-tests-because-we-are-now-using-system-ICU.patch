@@ -1,23 +1,23 @@
 From: Simon McVittie <smcv@debian.org>
 Date: Wed, 12 Sep 2018 09:46:34 +0100
-Subject: Skip tz-environment-variable test because we are now using system
- ICU
+Subject: Skip some i18n tests because we are now using system ICU
 
 Forwarded: not-needed, Debian-specific
 ---
- js/src/tests/jstests.list | 3 +++
- 1 file changed, 3 insertions(+)
+ js/src/tests/jstests.list | 4 ++++
+ 1 file changed, 4 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 2ad2cc4..68435f8 100644
+index 2ad2cc4..817608e 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -463,6 +463,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
+@@ -463,6 +463,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
  # NaN corner cases are different on ARM softfloat
  fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
  
-+# Fails with system ICU due to different time zone data?
++# Fails with system ICU due to different data?
 +skip script non262/Intl/DateTimeFormat/tz-environment-variable.js
++skip script non262/Intl/NumberFormat/formatToParts.js
 +
  ###########################################################
  # Tests disabled due to issues in test262 importer script #

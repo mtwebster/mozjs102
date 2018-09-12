@@ -24,8 +24,8 @@ mozjs60 (60.2.1-1) UNRELEASED; urgency=medium
     - Leave the patches and workarounds in place, but gate them behind
       a WITH_SYSTEM_ICU Make variable, to facilitate backporting
       as mentioned on #878362
-    - d/p/Skip-tz-environment-variable-test-because-we-are-now-usin.patch:
-      Skip a test that fails with the system ICU library
+    - d/p/Skip-some-i18n-tests-because-we-are-now-using-system-ICU.patch:
+      Skip tests that fail with the system ICU library
 
  -- Simon McVittie <smcv@debian.org>  Wed, 12 Sep 2018 08:51:31 +0100
 
