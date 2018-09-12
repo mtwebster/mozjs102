@@ -13,7 +13,7 @@ Forwarded: not-needed, Debian-specific
  1 file changed, 4 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index b3df457..bb957e7 100644
+index b3df457..2ad2cc4 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
 @@ -459,6 +459,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script non262/Date
@@ -22,7 +22,7 @@ index b3df457..bb957e7 100644
  
 +# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=908481
 +# NaN corner cases are different on ARM softfloat
-+fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
++fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
 +
  ###########################################################
  # Tests disabled due to issues in test262 importer script #
