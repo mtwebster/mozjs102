@@ -28,6 +28,11 @@ mozjs60 (60.2.1-1) UNRELEASED; urgency=medium
       Skip tests that fail with the system ICU library
   * Don't ignore overall test results on any architecture. We can ignore
     individual failing tests instead.
+  * d/p/tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch:
+    Generalize the previous
+    d/p/tests-For-tests-that-are-skipped-on-64-bit-mips64-is-also.patch
+    to skip the affected tests on every 64-bit architecture, including
+    alpha and sparc64 (Closes: #905825)
 
  -- Simon McVittie <smcv@debian.org>  Wed, 12 Sep 2018 08:51:31 +0100
 
