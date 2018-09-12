@@ -14,32 +14,6 @@ fi
 if make -C "${BUILDDIR}" -k check-jstests; then
 	echo "check-jstests successful"
 else
-	echo "check-jstests failed, checking whether to continue anyway..."
-
-	case "${DEB_HOST_ARCH}" in
-		(kfreebsd-i386|kfreebsd-amd64)
-			echo "Ignoring test failure, https://bugs.debian.org/878331"
-			;;
-		(mips64el)
-			echo "Ignoring test failure, https://bugs.debian.org/877428"
-			;;
-		(s390x|ppc64)
-			echo "Ignoring test failure, https://bugs.debian.org/878286"
-			;;
-		(ia64)
-			echo "Ignoring test failure, https://bugs.debian.org/897117"
-			;;
-		(m68k)
-			echo "Ignoring test failure, https://bugs.debian.org/905830"
-			;;
-		(sparc64)
-			echo "Ignoring test failure, https://bugs.debian.org/905825 / https://bugs.debian.org/905829"
-			;;
-		(alpha)
-			echo "Ignoring test failure, https://bugs.debian.org/905825"
-			;;
-		(*)
-			echo "Test failure is considered serious, causing FTBFS"
-			exit 1
-	esac
+	echo "check-jstests failed"
+	exit 1
 fi

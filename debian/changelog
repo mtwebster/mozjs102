@@ -26,6 +26,8 @@ mozjs60 (60.2.1-1) UNRELEASED; urgency=medium
       as mentioned on #878362
     - d/p/Skip-some-i18n-tests-because-we-are-now-using-system-ICU.patch:
       Skip tests that fail with the system ICU library
+  * Don't ignore overall test results on any architecture. We can ignore
+    individual failing tests instead.
 
  -- Simon McVittie <smcv@debian.org>  Wed, 12 Sep 2018 08:51:31 +0100
 
