@@ -4,6 +4,10 @@
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
 
+# This can be disabled if the bundled icu overtakes the system version,
+# or for backporting
+WITH_SYSTEM_ICU = yes
+
 DEB_HOST_ARCH  ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
@@ -43,12 +47,17 @@ else
 CONFIGURE_FLAGS += --enable-pie
 endif
 
+ifeq ($(WITH_SYSTEM_ICU),yes)
+CONFIGURE_FLAGS += --with-system-icu
+else
+CONFIGURE_FLAGS += --without-system-icu
 ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
 ICU_DATA_FILE = icudt60l.dat
 else
 ICU_DATA_FILE = icudt60b.dat
 endif
 export ICU_DATA_FILE
+endif
 
 %:
 	dh $@ --sourcedirectory=$(SRCDIR) --builddirectory=$(BUILDDIR) --with gnome,pkgkde-symbolshelper
@@ -75,16 +84,17 @@ override_dh_autoreconf:
 # The bundled copy of icu prefers clang, which we need to override to
 # use gcc because clang doesn't support our DEB_CFLAGS_MAINT_APPEND
 override_dh_auto_configure:
+ifneq ($(WITH_SYSTEM_ICU),yes)
 	CC=$${CC:-$(DEB_HOST_GNU_TYPE)-gcc} \
 	CXX=$${CXX:-$(DEB_HOST_GNU_TYPE)-g++} \
 	VERBOSE=1 python intl/icu_sources_data.py "$(CURDIR)"
+endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(SHELL) $(SRCDIR)/configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--target=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \
 		--libdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
-		--without-system-icu \
 		--enable-posix-nspr-emulation \
 		--with-system-zlib \
 		--disable-strip \

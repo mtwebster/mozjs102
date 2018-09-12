@@ -1,0 +1,24 @@
+From: Simon McVittie <smcv@debian.org>
+Date: Wed, 12 Sep 2018 09:46:34 +0100
+Subject: Skip tz-environment-variable test because we are now using system
+ ICU
+
+Forwarded: not-needed, Debian-specific
+---
+ js/src/tests/jstests.list | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
+index bb957e7..995d713 100644
+--- a/js/src/tests/jstests.list
++++ b/js/src/tests/jstests.list
+@@ -463,6 +463,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
+ # NaN corner cases are different on ARM softfloat
+ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
+ 
++# Fails with system ICU due to different time zone data?
++skip script non262/Intl/DateTimeFormat/tz-environment-variable.js
++
+ ###########################################################
+ # Tests disabled due to issues in test262 importer script #
+ ###########################################################
