@@ -36,6 +36,10 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
         DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns
         DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns
 endif
+ifneq (,$(findstring $(DEB_BUILD_ARCH),sh4))
+        DEB_CFLAGS_MAINT_APPEND += -mlra
+        DEB_CXXFLAGS_MAINT_APPEND += -mlra
+endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
 ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
