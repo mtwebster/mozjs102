@@ -76,7 +76,7 @@ override_dh_clean:
 	rm -fr $(CURDIR)/debian/build
 
 override_dh_autoreconf:
-	dh_autoreconf $(CURDIR)/debian/autogen.sh
+	WITH_SYSTEM_ICU=$(WITH_SYSTEM_ICU) dh_autoreconf $(CURDIR)/debian/autogen.sh
 
 # dh_auto_configure does not properly handle autoconf2.13 generated configure
 # scripts, so we call configure ourselves.
