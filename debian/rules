@@ -37,7 +37,7 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
 endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
-ifeq ($(DEB_HOST_ARCH),mips)
+ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
 CONFIGURE_FLAGS += --disable-ion
 endif
 
