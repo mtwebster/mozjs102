@@ -1,0 +1,138 @@
+From: Julien Cristau <jcristau@mozilla.com>
+Date: Thu, 20 Sep 2018 17:09:29 +0100
+Subject: Bug 1492897 - fix spidermonkey build on mips32 without ion
+
+AtomicOperations-mips-shared.h is included unconditionally when building for
+mips, but uses the JS_CODEGEN_MIPS32 macro for "am I on 32bit".  However that
+macro isn't defined when ion is disabled, so we run into static assert
+failures.
+
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1492897
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=908487
+Applied-upstream: 64, commit:https://hg.mozilla.org/mozilla-central/rev/73019d50638c
+Reviewed-by: dragan.mladjenovic
+---
+ .../jit/mips-shared/AtomicOperations-mips-shared.h | 26 +++++++++++-----------
+ 1 file changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/js/src/jit/mips-shared/AtomicOperations-mips-shared.h b/js/src/jit/mips-shared/AtomicOperations-mips-shared.h
+index 0e6dd13..3c6d305 100644
+--- a/js/src/jit/mips-shared/AtomicOperations-mips-shared.h
++++ b/js/src/jit/mips-shared/AtomicOperations-mips-shared.h
+@@ -32,7 +32,7 @@
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ struct AddressLock
+ {
+@@ -101,7 +101,7 @@ js::jit::AtomicOperations::loadSeqCst(T* addr)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -133,7 +133,7 @@ js::jit::AtomicOperations::storeSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline void
+@@ -166,7 +166,7 @@ js::jit::AtomicOperations::compareExchangeSeqCst(T* addr, T oldval, T newval)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -204,7 +204,7 @@ js::jit::AtomicOperations::fetchAddSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -240,7 +240,7 @@ js::jit::AtomicOperations::fetchSubSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -277,7 +277,7 @@ js::jit::AtomicOperations::fetchAndSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -313,7 +313,7 @@ js::jit::AtomicOperations::fetchOrSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -350,7 +350,7 @@ js::jit::AtomicOperations::fetchXorSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -388,7 +388,7 @@ js::jit::AtomicOperations::loadSafeWhenRacy(T* addr)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -441,7 +441,7 @@ js::jit::AtomicOperations::storeSafeWhenRacy(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline void
+@@ -508,7 +508,7 @@ js::jit::AtomicOperations::exchangeSeqCst(T* addr, T val)
+ 
+ namespace js { namespace jit {
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ template<>
+ inline int64_t
+@@ -534,7 +534,7 @@ js::jit::AtomicOperations::exchangeSeqCst(uint64_t* addr, uint64_t val)
+ 
+ } }
+ 
+-#if defined(JS_CODEGEN_MIPS32)
++#if !defined(JS_64BIT)
+ 
+ inline void
+ js::jit::AddressLock::acquire()
