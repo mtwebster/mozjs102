@@ -12,7 +12,7 @@ Forwarded: not-needed, Debian-specific
  1 file changed, 13 insertions(+), 2 deletions(-)
 
 diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
-index 4828736..9d6c57a 100644
+index 4828736..c21b654 100644
 --- a/js/src/tests/lib/manifest.py
 +++ b/js/src/tests/lib/manifest.py
 @@ -4,7 +4,7 @@
@@ -32,7 +32,7 @@ index 4828736..9d6c57a 100644
 +        debian = {}
 +
 +        for line in Popen(
-+            'dpkg-architecture',
++            ['dpkg-architecture', '-a' + os.environ['DEB_HOST_ARCH']],
 +            stdout=PIPE,
 +            universal_newlines=True,
 +        ).stdout:
