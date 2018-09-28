@@ -18,3 +18,4 @@ tests-Expect-some-floating-point-tests-to-fail-on-i386.patch
 tests-Expect-a-test-to-fail-on-armel.patch
 tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch
 Skip-some-i18n-tests-because-we-are-now-using-system-ICU.patch
+tests-Expect-a-test-to-fail-on-big-endian.patch
