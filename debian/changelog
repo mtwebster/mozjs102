@@ -13,6 +13,7 @@ mozjs60 (60.2.3-1) UNRELEASED; urgency=medium
     big-endian architectures. It makes assumptions about little-endian
     float/double representation that do not hold on big-endian, and
     fails in the same way on at least mips, powerpc, ppc64 and s390x.
+  * Standards-Version: 4.2.1 (no changes required)
 
  -- Simon McVittie <smcv@debian.org>  Fri, 05 Oct 2018 11:47:03 +0100
 
