@@ -1,4 +1,4 @@
-mozjs60 (60.2.1-3) UNRELEASED; urgency=medium
+mozjs60 (60.2.3-1) UNRELEASED; urgency=medium
 
   [ John Paul Adrian Glaubitz ]
   * Work around gcc register allocator issues on sh4 by selecting
@@ -10,8 +10,9 @@ mozjs60 (60.2.1-3) UNRELEASED; urgency=medium
     big-endian architectures. It makes assumptions about little-endian
     float/double representation that do not hold on big-endian, and
     fails in the same way on at least mips, powerpc, ppc64 and s390x.
+  * New upstream release
 
- -- Simon McVittie <smcv@debian.org>  Wed, 26 Sep 2018 22:39:00 +0100
+ -- Simon McVittie <smcv@debian.org>  Fri, 05 Oct 2018 11:47:03 +0100
 
 mozjs60 (60.2.1-2) unstable; urgency=medium
 
