@@ -7,7 +7,7 @@ Subject: Hurd support
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/wasm/WasmSignalHandlers.cpp b/js/src/wasm/WasmSignalHandlers.cpp
-index 7e12351..6c74ee0 100644
+index b354615..4fc8e5c 100644
 --- a/js/src/wasm/WasmSignalHandlers.cpp
 +++ b/js/src/wasm/WasmSignalHandlers.cpp
 @@ -128,7 +128,7 @@ struct AutoSignalHandler
