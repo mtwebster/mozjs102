@@ -1,6 +1,7 @@
 Always-use-the-equivalent-year-to-determine-the-time-zone.patch
 Bug-1444303-MIPS-Fix-build-failures-after-Bug-1425580-par.patch
 Bug-1444834-MIPS-Stubout-MacroAssembler-speculationBarrie.patch
+Update-to-ICU-61-Part-3-Update-tests.patch
 fix-soname.patch
 hurd-support.patch
 copy-headers.patch
