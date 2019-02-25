@@ -3,6 +3,7 @@ mozjs60 (60.2.3-3) UNRELEASED; urgency=medium
   * d/p/tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch:
     wait() our dpkg-architecture child so we don't confuse the test runner.
   * Import patch from bmo #1488552 to fix 64-bit BE
+  * Clean up better.
 
  -- Julien Cristau <jcristau@debian.org>  Fri, 22 Feb 2019 10:25:09 +0100
 

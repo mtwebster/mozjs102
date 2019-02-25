@@ -79,6 +79,7 @@ override_dh_clean:
 	# rm -f $(CURDIR)/js/src/configure
 	rm -fr $(CURDIR)/intl/icu/source/autom4te.cache
 	rm -fr $(CURDIR)/debian/build
+	rm -rf third_party/python/psutil/build/ third_party/python/psutil/psutil/_*.so third_party/python/psutil/tmp/
 
 override_dh_autoreconf:
 	WITH_SYSTEM_ICU=$(WITH_SYSTEM_ICU) dh_autoreconf $(CURDIR)/debian/autogen.sh
