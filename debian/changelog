@@ -1,3 +1,10 @@
+mozjs60 (60.2.3-3) UNRELEASED; urgency=medium
+
+  * d/p/tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch:
+    wait() our dpkg-architecture child so we don't confuse the test runner.
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 09 Apr 2019 00:07:05 +0200
+
 mozjs60 (60.2.3-2) unstable; urgency=medium
 
   * Team upload

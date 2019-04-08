@@ -11,10 +11,8 @@ Forwarded: not-needed, Debian-specific
  js/src/tests/lib/manifest.py | 15 +++++++++++++--
  1 file changed, 13 insertions(+), 2 deletions(-)
 
-diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
-index 4828736..c21b654 100644
---- a/js/src/tests/lib/manifest.py
-+++ b/js/src/tests/lib/manifest.py
+--- mozjs60.orig/js/src/tests/lib/manifest.py
++++ mozjs60/js/src/tests/lib/manifest.py
 @@ -4,7 +4,7 @@
  
  from __future__ import print_function
@@ -24,20 +22,22 @@ index 4828736..c21b654 100644
  from subprocess import Popen, PIPE
  
  from tests import RefTestCase
-@@ -31,12 +31,23 @@ class XULInfo:
+@@ -31,12 +31,25 @@ class XULInfo:
          """Return JS that when executed sets up variables so that JS expression
          predicates on XUL build info evaluate properly."""
  
 -        return ('var xulRuntime = {{ OS: "{}", XPCOMABI: "{}", shell: true }};'
 +        debian = {}
 +
-+        for line in Popen(
++        p = Popen(
 +            ['dpkg-architecture', '-a' + os.environ['DEB_HOST_ARCH']],
 +            stdout=PIPE,
 +            universal_newlines=True,
-+        ).stdout:
++        )
++        for line in p.stdout:
 +            k, v = line.rstrip('\n').split('=', 1)
 +            debian[k] = v
++        p.wait()
 +
 +        return ('var xulRuntime = {{ OS: "{}", XPCOMABI: "{}", debian: {}, shell: true }};'
                  'var release_or_beta = getBuildConfiguration().release_or_beta;'
