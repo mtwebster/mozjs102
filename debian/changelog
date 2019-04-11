@@ -1,13 +1,15 @@
-mozjs60 (60.2.3-3) UNRELEASED; urgency=medium
+mozjs60 (60.2.3-2.1) experimental; urgency=medium
 
+  * Non-maintainer upload.
   * d/p/tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch:
     wait() our dpkg-architecture child so we don't confuse the test runner.
   * Import patch from bmo #1488552 to fix 64-bit BE
   * Clean up better.
   * Fix TypedArray on 64-bit BE.
-  * Ignore non262/extensions/clone-errors.js test failure on s390x.
+  * Don't run non262/extensions/clone-errors.js on s390x, it crashes.
+  * This should let us pass tests on s390x, thus closes: #909536.
 
- -- Julien Cristau <jcristau@debian.org>  Fri, 22 Feb 2019 10:25:09 +0100
+ -- Julien Cristau <jcristau@debian.org>  Thu, 11 Apr 2019 14:19:55 +0200
 
 mozjs60 (60.2.3-2) unstable; urgency=medium
 
