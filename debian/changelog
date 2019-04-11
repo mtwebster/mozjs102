@@ -5,6 +5,7 @@ mozjs60 (60.2.3-3) UNRELEASED; urgency=medium
   * Import patch from bmo #1488552 to fix 64-bit BE
   * Clean up better.
   * Fix TypedArray on 64-bit BE.
+  * Ignore non262/extensions/clone-errors.js test failure on s390x.
 
  -- Julien Cristau <jcristau@debian.org>  Fri, 22 Feb 2019 10:25:09 +0100
 
