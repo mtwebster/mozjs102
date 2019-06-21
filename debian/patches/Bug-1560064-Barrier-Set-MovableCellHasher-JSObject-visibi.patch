@@ -1,0 +1,58 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Thu, 20 Jun 2019 19:15:39 +0200
+Subject: Bug 1560064 - Barrier: Set MovableCellHasher<JSObject*> visibility
+ before being used. r=sfink
+
+Under GCC, the type attributes can't be set more than once, and when this happens
+only the first definition they are ignored.
+
+Since MovableCellHasher<JSObject*> is used in various headers g++ implicitly set
+the symbol visibility to default (and thus hidden), making this symbol not to be
+exported as it should be.
+
+When using GCC move the template specialization with type attributes to Barrier.h, so
+that this may happen before any other definition, muting the warning and making the
+symbol to be really exported
+
+Fixes https://gcc.gnu.org/bugzilla/show_bug.cgi?id=39159
+
+Differential Revision: https://phabricator.services.mozilla.com/D35292
+
+Bug-Mozilla: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=39159
+Bug-GNOME: https://gitlab.gnome.org/GNOME/gjs/issues/217
+Origin: https://hg.mozilla.org/mozilla-central/rev/a94af4770d78
+---
+ js/src/gc/Barrier.cpp | 3 +++
+ js/src/gc/Barrier.h   | 4 ++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/js/src/gc/Barrier.cpp b/js/src/gc/Barrier.cpp
+index ce37847..f16d5a8 100644
+--- a/js/src/gc/Barrier.cpp
++++ b/js/src/gc/Barrier.cpp
+@@ -215,7 +215,10 @@ MovableCellHasher<T>::match(const Key& k, const Lookup& l)
+ #pragma GCC diagnostic ignored "-Wattributes"
+ #endif // JS_BROKEN_GCC_ATTRIBUTE_WARNING
+ 
++#if !MOZ_IS_GCC
+ template struct JS_PUBLIC_API(MovableCellHasher<JSObject*>);
++#endif
++
+ template struct JS_PUBLIC_API(MovableCellHasher<GlobalObject*>);
+ template struct JS_PUBLIC_API(MovableCellHasher<SavedFrame*>);
+ template struct JS_PUBLIC_API(MovableCellHasher<EnvironmentObject*>);
+diff --git a/js/src/gc/Barrier.h b/js/src/gc/Barrier.h
+index 0a6a4ab..fd3fe64 100644
+--- a/js/src/gc/Barrier.h
++++ b/js/src/gc/Barrier.h
+@@ -816,6 +816,10 @@ class ImmutableTenuredPtr
+     const T* address() { return &value; }
+ };
+ 
++#if MOZ_IS_GCC
++template struct JS_PUBLIC_API(MovableCellHasher<JSObject*>);
++#endif
++
+ template <typename T>
+ struct MovableCellHasher<PreBarriered<T>>
+ {
