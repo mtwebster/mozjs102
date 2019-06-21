@@ -1,3 +1,11 @@
+mozjs60 (60.2.3-4) UNRELEASED; urgency=medium
+
+  * d/p/Bug-1560064-Barrier-Set-MovableCellHasher-JSObject-visibi.patch:
+    - Make js::MovableCellHasher<JSObject*>::* symbols visible under GCC
+  * debian/patches: Refresh
+
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Fri, 21 Jun 2019 14:42:54 +0200
+
 mozjs60 (60.2.3-3) unstable; urgency=medium
 
   * Team upload
