@@ -1,10 +1,23 @@
 mozjs60 (60.2.3-4) UNRELEASED; urgency=medium
 
+  [ Marco Trevisan (Treviño) ]
   * d/p/Bug-1560064-Barrier-Set-MovableCellHasher-JSObject-visibi.patch:
     - Make js::MovableCellHasher<JSObject*>::* symbols visible under GCC
   * debian/patches: Refresh
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Fri, 21 Jun 2019 14:42:54 +0200
+  [ Iain Lane ]
+  * Generate shlibs with a lower bound. 60.2.3-4 is introducing a new symbol.
+    We need reverse-deps to have a dependency on this version if they have
+    been built with it. After 60.2.3, generate shlibs with -VUpstream-Version,
+    so that dependencies are generated in the form >= Upstream-Version. A
+    symbols file would be better.
+  * debian/control{,.in}: Add tzdata to Depends an B/uild-Depends. The tests
+    use ICU and require that this is installed. If it's not, they fail with
+    messages like "non262/Date/time-zones.js:41:5 Error: Assertion failed: got
+    "Fri Jul 19 2002 16:10:55 GMT+0000", expected "Fri Jul 19 2002 16:10:55"
+    GMT+0100" because they can't run in the specified timezones.
+
+ -- Iain Lane <laney@debian.org>  Mon, 24 Jun 2019 17:49:53 +0100
 
 mozjs60 (60.2.3-3) unstable; urgency=medium
 
