@@ -7,11 +7,10 @@ Subject: Add intl/icu_sources_data.py, from firefox-esr
  1 file changed, 172 insertions(+)
  create mode 100644 intl/icu_sources_data.py
 
-diff --git a/intl/icu_sources_data.py b/intl/icu_sources_data.py
-new file mode 100644
-index 0000000..98c0ccb
+Index: mozjs-60.8.0/intl/icu_sources_data.py
+===================================================================
 --- /dev/null
-+++ b/intl/icu_sources_data.py
++++ mozjs-60.8.0/intl/icu_sources_data.py
 @@ -0,0 +1,172 @@
 +#!/usr/bin/env python
 +#

@@ -11,20 +11,16 @@ Applied-upstream: 61, commit:https://hg.mozilla.org/mozilla-central/rev/739c536d
  js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp | 8 ++++++++
  1 file changed, 8 insertions(+)
 
-diff --git a/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp b/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
-index 6b3c19f..208cd21 100644
---- a/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
-+++ b/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
-@@ -2846,3 +2846,11 @@ MacroAssembler::atomicEffectOpJS(Scalar::Type arrayType, const Synchronization&
-     atomicEffectOp(arrayType, sync, op, value, mem, valueTemp, offsetTemp, maskTemp);
+Index: mozjs-60.8.0/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
+===================================================================
+--- mozjs-60.8.0.orig/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
++++ mozjs-60.8.0/js/src/jit/mips-shared/MacroAssembler-mips-shared.cpp
+@@ -2687,4 +2687,8 @@ void MacroAssembler::atomicEffectOpJS(Sc
+                  maskTemp);
  }
  
 +// ========================================================================
 +// Spectre Mitigations.
 +
-+void
-+MacroAssembler::speculationBarrier()
-+{
-+    MOZ_CRASH();
-+}
-\ No newline at end of file
++void MacroAssembler::speculationBarrier() { MOZ_CRASH(); }
+ //}}} check_macroassembler_style

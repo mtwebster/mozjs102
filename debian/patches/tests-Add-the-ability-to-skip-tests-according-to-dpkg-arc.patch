@@ -8,13 +8,13 @@ upstreamable patches, though.
 
 Forwarded: not-needed, Debian-specific
 ---
- js/src/tests/lib/manifest.py | 17 +++++++++++++++--
- 1 file changed, 15 insertions(+), 2 deletions(-)
+ js/src/tests/lib/manifest.py | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
 
-diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
-index 4828736..853ae92 100644
---- a/js/src/tests/lib/manifest.py
-+++ b/js/src/tests/lib/manifest.py
+Index: mozjs-60.8.0/js/src/tests/lib/manifest.py
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/lib/manifest.py
++++ mozjs-60.8.0/js/src/tests/lib/manifest.py
 @@ -4,7 +4,7 @@
  
  from __future__ import print_function

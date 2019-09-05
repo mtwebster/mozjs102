@@ -7,11 +7,11 @@ Forwarded: not-needed, Debian-specific
  js/src/tests/jstests.list | 4 ++++
  1 file changed, 4 insertions(+)
 
-diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 2ad2cc4..817608e 100644
---- a/js/src/tests/jstests.list
-+++ b/js/src/tests/jstests.list
-@@ -463,6 +463,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
+Index: mozjs-60.8.0/js/src/tests/jstests.list
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/jstests.list
++++ mozjs-60.8.0/js/src/tests/jstests.list
+@@ -463,6 +463,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH
  # NaN corner cases are different on ARM softfloat
  fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
  

@@ -8,11 +8,11 @@ Forwarded: no
  js/src/tests/jstests.list | 3 +++
  1 file changed, 3 insertions(+)
 
-diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 817608e..d72f89d 100644
---- a/js/src/tests/jstests.list
-+++ b/js/src/tests/jstests.list
-@@ -467,6 +467,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-
+Index: mozjs-60.8.0/js/src/tests/jstests.list
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/jstests.list
++++ mozjs-60.8.0/js/src/tests/jstests.list
+@@ -467,6 +467,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH
  skip script non262/Intl/DateTimeFormat/tz-environment-variable.js
  skip script non262/Intl/NumberFormat/formatToParts.js
  

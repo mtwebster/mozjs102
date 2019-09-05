@@ -9,10 +9,10 @@ the build. Just log the usual way instead.
  intl/icu_sources_data.py | 7 ++-----
  1 file changed, 2 insertions(+), 5 deletions(-)
 
-diff --git a/intl/icu_sources_data.py b/intl/icu_sources_data.py
-index 8cf9290..7d2d983 100644
---- a/intl/icu_sources_data.py
-+++ b/intl/icu_sources_data.py
+Index: mozjs-60.8.0/intl/icu_sources_data.py
+===================================================================
+--- mozjs-60.8.0.orig/intl/icu_sources_data.py
++++ mozjs-60.8.0/intl/icu_sources_data.py
 @@ -84,16 +84,13 @@ def update_sources(topsrcdir):
  
  def try_run(name, command, cwd=None, **kwargs):

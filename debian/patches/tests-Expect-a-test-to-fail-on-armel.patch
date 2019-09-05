@@ -12,11 +12,11 @@ Forwarded: not-needed, Debian-specific
  js/src/tests/jstests.list | 4 ++++
  1 file changed, 4 insertions(+)
 
-diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index b3df457..2ad2cc4 100644
---- a/js/src/tests/jstests.list
-+++ b/js/src/tests/jstests.list
-@@ -459,6 +459,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script non262/Date
+Index: mozjs-60.8.0/js/src/tests/jstests.list
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/jstests.list
++++ mozjs-60.8.0/js/src/tests/jstests.list
+@@ -459,6 +459,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH
  fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/language/types/number/S8.5_A2.1.js
  fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/language/types/number/S8.5_A2.2.js
  

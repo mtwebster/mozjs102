@@ -9,10 +9,10 @@ Applied-upstream: 61, commit:https://hg.mozilla.org/mozilla-central/rev/3214fb35
  .../non262/Intl/NumberFormat/formatToParts.js      |  1 -
  2 files changed, 23 insertions(+), 4 deletions(-)
 
-diff --git a/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js b/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
-index ab72e21..70aaa7b 100644
---- a/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
-+++ b/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
+Index: mozjs-60.8.0/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
++++ mozjs-60.8.0/js/src/tests/non262/Intl/NumberFormat/StringBuffer.js
 @@ -10,8 +10,28 @@
  
  var format = new Intl.NumberFormat("it-IT", {minimumFractionDigits: 1});
@@ -45,10 +45,10 @@ index ab72e21..70aaa7b 100644
 +assertEq(formatToFixed(123123123123123123123123.1), "123.123.123.123.123.120.000.000,0");
  
  reportCompare(0, 0, "ok");
-diff --git a/js/src/tests/non262/Intl/NumberFormat/formatToParts.js b/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
-index 09f3b4c..9f17b3f 100644
---- a/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
-+++ b/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
+Index: mozjs-60.8.0/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
+===================================================================
+--- mozjs-60.8.0.orig/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
++++ mozjs-60.8.0/js/src/tests/non262/Intl/NumberFormat/formatToParts.js
 @@ -215,7 +215,6 @@ assertParts(arPercentFormatter, -135.32,
               Integer("٥٣٢"),
               Decimal("٫"),

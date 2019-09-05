@@ -9,10 +9,10 @@ so there's nothing to normalize. Avoid needing to import all of it.
  intl/icu_sources_data.py | 4 +++-
  1 file changed, 3 insertions(+), 1 deletion(-)
 
-diff --git a/intl/icu_sources_data.py b/intl/icu_sources_data.py
-index 98c0ccb..8cf9290 100644
---- a/intl/icu_sources_data.py
-+++ b/intl/icu_sources_data.py
+Index: mozjs-60.8.0/intl/icu_sources_data.py
+===================================================================
+--- mozjs-60.8.0.orig/intl/icu_sources_data.py
++++ mozjs-60.8.0/intl/icu_sources_data.py
 @@ -19,7 +19,9 @@ import subprocess
  import sys
  import tempfile
