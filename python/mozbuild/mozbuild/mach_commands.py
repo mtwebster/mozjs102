@@ -1257,8 +1257,6 @@ class PackageFrontend(MachCommandBase):
         import requests
         import shutil
 
-        from taskgraph.config import load_graph_config
-        from taskgraph.generator import Kind
         from taskgraph.util.taskcluster import (
             get_artifact_url,
         )
@@ -1317,20 +1315,10 @@ class PackageFrontend(MachCommandBase):
         class ArtifactRecord(DownloadRecord):
             def __init__(self, task_id, artifact_name):
                 cot = cache._download_manager.session.get(
-                    get_artifact_url(task_id, 'public/chainOfTrust.json.asc'))
+                    get_artifact_url(task_id, 'public/chain-of-trust.json'))
                 cot.raise_for_status()
                 digest = algorithm = None
-                data = {}
-                # The file is GPG-signed, but we don't care about validating
-                # that. Instead of parsing the PGP signature, we just take
-                # the one line we're interested in, which starts with a `{`.
-                for l in cot.content.splitlines():
-                    if l.startswith('{'):
-                        try:
-                            data = json.loads(l)
-                            break
-                        except Exception:
-                            pass
+                data = json.loads(cot.content)
                 for algorithm, digest in (data.get('artifacts', {})
                                               .get(artifact_name, {}).items()):
                     pass
@@ -1364,21 +1352,14 @@ class PackageFrontend(MachCommandBase):
                 return 1
             from taskgraph.optimize import IndexSearch
             from taskgraph.parameters import Parameters
+            from taskgraph.generator import load_tasks_for_kind
             params = Parameters(
                 level=os.environ.get('MOZ_SCM_LEVEL', '3'),
-                strict=False)
+                strict=False,
+            )
 
-            # TODO: move to the taskcluster package
-            def tasks(kind_name):
-                root_path = mozpath.join(self.topsrcdir, 'taskcluster', 'ci')
-                graph_config = load_graph_config(root_path)
-                tasks = Kind.load(root_path, graph_config, kind_name).load_tasks(params, {})
-                return {
-                    task.task['metadata']['name']: task
-                    for task in tasks
-                }
-
-            toolchains = tasks('toolchain')
+            root_dir = mozpath.join(self.topsrcdir, 'taskcluster/ci')
+            toolchains = load_tasks_for_kind(params, 'toolchain', root_dir=root_dir)
 
             aliases = {}
             for t in toolchains.values():
@@ -1593,7 +1574,7 @@ class StaticAnalysis(MachCommandBase):
     """Utilities for running C++ static analysis checks and format."""
 
     # List of file extension to consider (should start with dot)
-    _format_include_extensions = ('.cpp', '.c', '.h')
+    _format_include_extensions = ('.cpp', '.c', '.cc', '.h')
     # File contaning all paths to exclude from formatting
     _format_ignore_file = '.clang-format-ignore'
 

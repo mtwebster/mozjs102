@@ -11,8 +11,12 @@ import shutil
 import unittest
 import tempfile
 
-from taskgraph import decision
+from mock import patch
 from mozunit import main, MockedOpen
+from taskgraph import decision
+
+
+FAKE_GRAPH_CONFIG = {'product-dir': 'browser'}
 
 
 class TestDecision(unittest.TestCase):
@@ -59,43 +63,70 @@ class TestGetDecisionParameters(unittest.TestCase):
             'pushlog_id': 143,
             'pushdate': 1503691511,
             'owner': 'nobody@mozilla.com',
+            'tasks_for': 'hg-push',
             'level': 3,
         }
 
-    def test_simple_options(self):
+    @patch('taskgraph.decision.get_hg_revision_branch')
+    def test_simple_options(self, mock_get_hg_revision_branch):
+        mock_get_hg_revision_branch.return_value = 'default'
         with MockedOpen({self.ttc_file: None}):
-            params = decision.get_decision_parameters(self.options)
+            params = decision.get_decision_parameters(FAKE_GRAPH_CONFIG, self.options)
         self.assertEqual(params['pushlog_id'], 143)
         self.assertEqual(params['build_date'], 1503691511)
+        self.assertEqual(params['hg_branch'], 'default')
         self.assertEqual(params['moz_build_date'], '20170825200511')
         self.assertEqual(params['try_mode'], None)
         self.assertEqual(params['try_options'], None)
         self.assertEqual(params['try_task_config'], None)
 
-    def test_no_email_owner(self):
+    @patch('taskgraph.decision.get_hg_revision_branch')
+    def test_no_email_owner(self, _):
         self.options['owner'] = 'ffxbld'
         with MockedOpen({self.ttc_file: None}):
-            params = decision.get_decision_parameters(self.options)
+            params = decision.get_decision_parameters(FAKE_GRAPH_CONFIG, self.options)
         self.assertEqual(params['owner'], 'ffxbld@noreply.mozilla.org')
 
-    def test_try_options(self):
-        self.options['message'] = 'try: -b do -t all'
+    @patch('taskgraph.decision.get_hg_revision_branch')
+    @patch('taskgraph.decision.get_hg_commit_message')
+    def test_try_options(self, mock_get_hg_commit_message, _):
+        mock_get_hg_commit_message.return_value = 'try: -b do -t all'
         self.options['project'] = 'try'
         with MockedOpen({self.ttc_file: None}):
-            params = decision.get_decision_parameters(self.options)
+            params = decision.get_decision_parameters(FAKE_GRAPH_CONFIG, self.options)
         self.assertEqual(params['try_mode'], 'try_option_syntax')
         self.assertEqual(params['try_options']['build_types'], 'do')
         self.assertEqual(params['try_options']['unittests'], 'all')
         self.assertEqual(params['try_task_config'], None)
 
-    def test_try_task_config(self):
+    @patch('taskgraph.decision.get_hg_revision_branch')
+    def test_try_task_config(self, _):
         ttc = {'tasks': ['a', 'b'], 'templates': {}}
         self.options['project'] = 'try'
         with MockedOpen({self.ttc_file: json.dumps(ttc)}):
-            params = decision.get_decision_parameters(self.options)
+            params = decision.get_decision_parameters(FAKE_GRAPH_CONFIG, self.options)
             self.assertEqual(params['try_mode'], 'try_task_config')
             self.assertEqual(params['try_options'], None)
             self.assertEqual(params['try_task_config'], ttc)
+
+    def test_try_syntax_from_message_empty(self):
+        self.assertEqual(decision.try_syntax_from_message(''), '')
+
+    def test_try_syntax_from_message_no_try_syntax(self):
+        self.assertEqual(decision.try_syntax_from_message('abc | def'), '')
+
+    def test_try_syntax_from_message_initial_try_syntax(self):
+        self.assertEqual(decision.try_syntax_from_message('try: -f -o -o'), 'try: -f -o -o')
+
+    def test_try_syntax_from_message_initial_try_syntax_multiline(self):
+        self.assertEqual(
+            decision.try_syntax_from_message('try: -f -o -o\nabc\ndef'),
+            'try: -f -o -o')
+
+    def test_try_syntax_from_message_embedded_try_syntax_multiline(self):
+        self.assertEqual(
+            decision.try_syntax_from_message('some stuff\ntry: -f -o -o\nabc\ndef'),
+            'try: -f -o -o')
 
 
 if __name__ == '__main__':
