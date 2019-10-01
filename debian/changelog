@@ -1,3 +1,9 @@
+mozjs60 (60.8.0-2) unstable; urgency=medium
+
+  * Release to unstable
+
+ -- Jeremy Bicha <jbicha@debian.org>  Tue, 01 Oct 2019 07:07:32 -0400
+
 mozjs60 (60.8.0-1) experimental; urgency=medium
 
   [ Iain Lane ]
