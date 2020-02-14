@@ -13,13 +13,13 @@ Forwarded: not-needed, Debian-specific
  js/src/tests/jstests.list | 11 +++++++++++
  1 file changed, 11 insertions(+)
 
-Index: mozjs-60.8.0/js/src/tests/jstests.list
-===================================================================
---- mozjs-60.8.0.orig/js/src/tests/jstests.list
-+++ mozjs-60.8.0/js/src/tests/jstests.list
-@@ -447,6 +447,17 @@ skip script test262/language/expressions
- # https://bugzilla.mozilla.org/show_bug.cgi?id=1321616
- skip script test262/annexB/built-ins/Function/createdynfn-html-close-comment-params.js
+diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
+index 8f5c0df..dffacef 100644
+--- a/js/src/tests/jstests.list
++++ b/js/src/tests/jstests.list
+@@ -493,6 +493,17 @@ skip script test262/language/expressions/class/elements/derived-cls-direct-eval-
+ skip script test262/language/statements/class/elements/derived-cls-direct-eval-err-contains-superproperty-1.js
+ skip script test262/language/statements/class/elements/derived-cls-direct-eval-err-contains-superproperty-2.js
  
 +############################
 +# Tests disabled by Debian #

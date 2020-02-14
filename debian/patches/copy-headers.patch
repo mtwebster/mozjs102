@@ -8,11 +8,11 @@ Patch ported forward to mozjs52 by Philip Chimento
  python/mozbuild/mozbuild/backend/recursivemake.py | 6 +++---
  1 file changed, 3 insertions(+), 3 deletions(-)
 
-Index: mozjs-60.8.0/python/mozbuild/mozbuild/backend/recursivemake.py
-===================================================================
---- mozjs-60.8.0.orig/python/mozbuild/mozbuild/backend/recursivemake.py
-+++ mozjs-60.8.0/python/mozbuild/mozbuild/backend/recursivemake.py
-@@ -1427,11 +1427,11 @@ class RecursiveMakeBackend(CommonBackend
+diff --git a/python/mozbuild/mozbuild/backend/recursivemake.py b/python/mozbuild/mozbuild/backend/recursivemake.py
+index d550cd8..3ee39c2 100644
+--- a/python/mozbuild/mozbuild/backend/recursivemake.py
++++ b/python/mozbuild/mozbuild/backend/recursivemake.py
+@@ -1522,11 +1522,11 @@ class RecursiveMakeBackend(CommonBackend):
                                  raise Exception("Wildcards are only supported in the filename part of "
                                                  "srcdir-relative or absolute paths.")
  

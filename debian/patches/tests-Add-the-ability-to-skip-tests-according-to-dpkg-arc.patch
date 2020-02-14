@@ -8,23 +8,22 @@ upstreamable patches, though.
 
 Forwarded: not-needed, Debian-specific
 ---
- js/src/tests/lib/manifest.py | 15 +++++++++++++--
- 1 file changed, 13 insertions(+), 2 deletions(-)
+ js/src/tests/lib/manifest.py | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
 
-Index: mozjs-60.8.0/js/src/tests/lib/manifest.py
-===================================================================
---- mozjs-60.8.0.orig/js/src/tests/lib/manifest.py
-+++ mozjs-60.8.0/js/src/tests/lib/manifest.py
-@@ -4,7 +4,7 @@
+diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
+index 617f0f1..5a7ff2d 100644
+--- a/js/src/tests/lib/manifest.py
++++ b/js/src/tests/lib/manifest.py
+@@ -4,6 +4,7 @@
  
  from __future__ import print_function
  
--import os, re, sys
-+import json, os, re, sys
- from subprocess import Popen, PIPE
- 
- from tests import RefTestCase
-@@ -31,12 +31,25 @@ class XULInfo:
++import json
+ import os
+ import re
+ import sys
+@@ -34,12 +35,25 @@ class XULInfo:
          """Return JS that when executed sets up variables so that JS expression
          predicates on XUL build info evaluate properly."""
  

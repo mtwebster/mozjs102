@@ -1,8 +1,18 @@
-Index: mozjs-60.8.0/js/src/tests/jstests.list
+From: Debian GNOME Maintainers
+ <pkg-gnome-maintainers@lists.alioth.debian.org>
+Date: Fri, 14 Feb 2020 19:08:48 +0100
+Subject: tests-Skip-a-test-on-s390x
+
 ===================================================================
---- mozjs-60.8.0.orig/js/src/tests/jstests.list
-+++ mozjs-60.8.0/js/src/tests/jstests.list
-@@ -470,6 +470,9 @@ skip script non262/Intl/NumberFormat/for
+---
+ js/src/tests/jstests.list | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
+index 53dc898..94abe48 100644
+--- a/js/src/tests/jstests.list
++++ b/js/src/tests/jstests.list
+@@ -516,6 +516,9 @@ skip script non262/Intl/NumberFormat/formatToParts.js
  # Assumes little-endian IEEE representation of floating point numbers
  fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins/TypedArray/prototype/set/typedarray-arg-set-values-same-buffer-other-type.js
  
