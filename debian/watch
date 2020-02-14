@@ -1,8 +1,9 @@
-version=4
-# As of September 2018, there is not an official release of SpiderMonkey 60
-# This tarball was downloaded from
-# https://treeherder.mozilla.org/#/jobs?repo=mozilla-esr60&filter-searchStr=sm
+# As of February 2020, there is not an official release of SpiderMonkey 68
+# The tarball is built using firefox sources, excluding the unneeded files
+# as per filtering done in debian/gbp.conf
 # Also try
 # http://ftp.gnome.org/pub/gnome/teams/releng/tarballs-needing-help/mozjs/
-https://archive.mozilla.org/pub/spidermonkey/releases/(60\.[\d.]+)/ \
-	mozjs-@ANY_VERSION@@ARCHIVE_EXT@
+version=4
+opts=pgpsigurlmangle=s/$/.asc/ https://ftp.mozilla.org/pub/firefox/releases/\
+	(68\.[\d.]+)esr/source/\
+	firefox-@ANY_VERSION@\.source\.tar\.xz
