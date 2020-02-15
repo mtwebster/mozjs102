@@ -14,7 +14,7 @@ export DEB_HOST_ARCH
 # mozjs' build process does not seem to be compatible with other shells
 # like zsh
 export SHELL = /bin/sh
-export PYTHON = python
+export PYTHON = python2.7
 
 SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
@@ -90,7 +90,7 @@ override_dh_auto_configure:
 ifneq ($(WITH_SYSTEM_ICU),yes)
 	CC=$${CC:-$(DEB_HOST_GNU_TYPE)-gcc} \
 	CXX=$${CXX:-$(DEB_HOST_GNU_TYPE)-g++} \
-	VERBOSE=1 python intl/icu_sources_data.py "$(CURDIR)"
+	VERBOSE=1 $(PYTHON) intl/icu_sources_data.py "$(CURDIR)"
 endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && $(SHELL) $(SRCDIR)/configure \
