@@ -54,9 +54,9 @@ CONFIGURE_FLAGS += --with-system-icu
 else
 CONFIGURE_FLAGS += --without-system-icu
 ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
-ICU_DATA_FILE = icudt60l.dat
+ICU_DATA_FILE = icudt68l.dat
 else
-ICU_DATA_FILE = icudt60b.dat
+ICU_DATA_FILE = icudt68b.dat
 endif
 export ICU_DATA_FILE
 endif
@@ -70,7 +70,7 @@ override_dh_clean:
 	find $(CURDIR)/js/src/ -type l -exec rm {} \;
 	rm -f $(CURDIR)/js/src/config/nsinstall
 	rm -f $(CURDIR)/js/src/dist/bin/.purgecaches
-	rm -f  $(CURDIR)/js/src/js60-config $(CURDIR)/js/src/mozjs-60.pc \
+	rm -f  $(CURDIR)/js/src/js68-config $(CURDIR)/js/src/mozjs-68.pc \
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
 	# rm -f $(CURDIR)/js/src/configure
@@ -110,11 +110,11 @@ endif
 override_dh_install:
 	# move library and create additional symlinks to standardize the file layout
 	cd $(CURDIR)/debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/ && \
-		mv libjs_static.ajs libmozjs-60.a && \
-		mv libmozjs-60.so libmozjs-60.so.0.0.0 && \
-		ln -s libmozjs-60.so.0.0.0 libmozjs-60.so.0 && \
-		ln -s libmozjs-60.so.0 libmozjs-60.so
-	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/libmozjs-60.a
+		mv libjs_static.ajs libmozjs-68.a && \
+		mv libmozjs-68.so libmozjs-68.so.0.0.0 && \
+		ln -s libmozjs-68.so.0.0.0 libmozjs-68.so.0 && \
+		ln -s libmozjs-68.so.0 libmozjs-68.so
+	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/libmozjs-68.a
 	dh_install
 
 override_dh_missing:
@@ -122,17 +122,13 @@ override_dh_missing:
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod a-x $(CURDIR)/debian/libmozjs-60-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-60.pc
+	chmod a-x $(CURDIR)/debian/libmozjs-68-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-68.pc
 
 override_dh_gnome:
 	dh_gnome --no-gnome-versions
 
 override_dh_makeshlibs:
-ifeq (yes, $(shell dpkg --compare-versions $(DEB_VERSION_UPSTREAM) gt 60.2.3 && echo yes))
 	dh_makeshlibs -VUpstream-Version
-else
-	dh_makeshlibs -V"libmozjs-60-0 (>= 60.2.3-4~)"
-endif
 
 override_dh_auto_test:
 	@:

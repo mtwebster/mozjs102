@@ -1,6 +1,6 @@
 # False positive: there are long lines but this is not a generated file
-mozjs60 source: source-is-missing js/src/devtools/rootAnalysis/annotations.js
+mozjs68 source: source-is-missing js/src/devtools/rootAnalysis/annotations.js
 
 # Many of these tests are written with very long lines, bu they do not
 # appear to be generated files
-mozjs60 source: source-is-missing js/src/tests/test262/*
+mozjs68 source: source-is-missing js/src/tests/test262/*
