@@ -18,7 +18,7 @@ Build-Depends: debhelper (>= 10.3),
                zlib1g-dev (>= 1:1.2.3),
                pkg-config,
                pkg-kde-tools,
-               python-dev,
+               python2-dev,
                rustc,
                tzdata,
                zip
