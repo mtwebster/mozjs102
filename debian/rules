@@ -84,14 +84,20 @@ override_dh_autoreconf:
 # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=570375
 # The bundled copy of icu prefers clang, which we need to override to
 # use gcc because clang doesn't support our DEB_CFLAGS_MAINT_APPEND
+ifeq ($(origin CC),default)
+CC := $(DEB_HOST_GNU_TYPE)-gcc
+endif
+ifeq ($(origin CXX),default)
+CXX := $(DEB_HOST_GNU_TYPE)-g++
+endif
+
 override_dh_auto_configure:
 ifneq ($(WITH_SYSTEM_ICU),yes)
-	CC=$${CC:-$(DEB_HOST_GNU_TYPE)-gcc} \
-	CXX=$${CXX:-$(DEB_HOST_GNU_TYPE)-g++} \
 	VERBOSE=1 $(PYTHON) intl/icu_sources_data.py "$(CURDIR)"
 endif
 	mkdir -p $(BUILDDIR)
-	cd $(BUILDDIR) && $(SHELL) $(SRCDIR)/configure \
+	cd $(BUILDDIR) && CC=$(CC) CXX=$(CXX) $(SHELL) \
+	$(SRCDIR)/configure \
 		--host=$(DEB_HOST_GNU_TYPE) \
 		--target=$(DEB_BUILD_GNU_TYPE) \
 		--prefix=/usr \
