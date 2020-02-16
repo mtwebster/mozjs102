@@ -44,9 +44,7 @@ CONFIGURE_FLAGS += --disable-ion
 endif
 
 ifeq ($(DEB_HOST_ARCH),sh4)
-CONFIGURE_FLAGS += --disable-pie
-else
-CONFIGURE_FLAGS += --enable-pie
+        DEB_LDFLAGS_MAINT_APPEND += -no-pie
 endif
 
 ifeq ($(WITH_SYSTEM_ICU),yes)
