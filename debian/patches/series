@@ -11,3 +11,4 @@ tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch
 Skip-some-i18n-tests-because-we-are-now-using-system-ICU.patch
 tests-Expect-a-test-to-fail-on-big-endian.patch
 tests-Skip-a-test-on-s390x.patch
+sdk-mozjs68-import-a-patch-to-workaround-arm-compilation-.patch
