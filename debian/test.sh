@@ -11,6 +11,8 @@ else
 	exit 1
 fi
 
+export HOME="$(mktemp -d -t mozjs-tests-home-XXXXXXXXXX)"
+
 if make -C "${BUILDDIR}" -k check-jstests; then
 	echo "check-jstests successful"
 else
