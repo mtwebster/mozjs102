@@ -8,7 +8,7 @@ Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@debian.org>, Tim Lunn <tim@feathertop.org>
 Build-Depends: debhelper-compat (= 12),
-               cargo,
+               cargo (>= 0.40),
                clang,
                gnome-pkg-tools,
                autoconf,
@@ -23,7 +23,7 @@ Build-Depends: debhelper-compat (= 12),
                pkg-config,
                pkg-kde-tools,
                python2-dev,
-               rustc,
+               rustc (>= 1.39),
                tzdata,
                zip
 Rules-Requires-Root: no
