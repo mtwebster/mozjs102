@@ -33,9 +33,6 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),ia64))
 	DEB_CXXFLAGS_MAINT_APPEND += -G0
 endif
 
-DEB_CFLAGS_MAINT_APPEND += -fno-lifetime-dse -fno-delete-null-pointer-checks
-DEB_CXXFLAGS_MAINT_APPEND += -fno-lifetime-dse -fno-delete-null-pointer-checks
-
 ifneq (,$(findstring $(DEB_BUILD_ARCH),sh4))
         DEB_CFLAGS_MAINT_APPEND += -mlra
         DEB_CXXFLAGS_MAINT_APPEND += -mlra
