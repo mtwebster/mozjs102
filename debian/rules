@@ -28,18 +28,14 @@ DEB_UPSTREAM_PATCH = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f3)
 LIBNAME = libmozjs-$(DEB_UPSTREAM_MAJOR)
 
 # ia64 currently has toolchain issues, so relax the link optimization
-# -fno-schedule-insns2 breaks gcc on ia64, so leave it enabled
 ifneq (,$(findstring $(DEB_BUILD_ARCH),ia64))
-	DEB_CFLAGS_MAINT_APPEND += -G0 -fno-lifetime-dse -fno-delete-null-pointer-checks
-	DEB_CXXFLAGS_MAINT_APPEND += -G0 -fno-lifetime-dse -fno-delete-null-pointer-checks
-else
-	DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
-	DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns2 -fno-lifetime-dse -fno-delete-null-pointer-checks
+	DEB_CFLAGS_MAINT_APPEND += -G0
+	DEB_CXXFLAGS_MAINT_APPEND += -G0
 endif
-ifneq (,$(findstring $(DEB_BUILD_ARCH),armel armhf))
-        DEB_CFLAGS_MAINT_APPEND += -fno-schedule-insns
-        DEB_CXXFLAGS_MAINT_APPEND += -fno-schedule-insns
-endif
+
+DEB_CFLAGS_MAINT_APPEND += -fno-lifetime-dse -fno-delete-null-pointer-checks
+DEB_CXXFLAGS_MAINT_APPEND += -fno-lifetime-dse -fno-delete-null-pointer-checks
+
 ifneq (,$(findstring $(DEB_BUILD_ARCH),sh4))
         DEB_CFLAGS_MAINT_APPEND += -mlra
         DEB_CXXFLAGS_MAINT_APPEND += -mlra
