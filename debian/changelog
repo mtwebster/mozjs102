@@ -1,8 +1,8 @@
-mozjs68 (60.8.0-2) UNRELEASED; urgency=medium
+mozjs68 (68.5.0-1) UNRELEASED; urgency=medium
 
-  * 
+  * New upstream release
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Fri, 14 Feb 2020 23:50:47 +0100
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 24 Feb 2020 13:41:54 +0100
 
 mozjs60 (60.8.0-2) unstable; urgency=medium
 
