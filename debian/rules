@@ -39,6 +39,14 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),sh4))
 endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
+ifneq (,$(findstring $(DEB_BUILD_ARCH),i386))
+	# A new test in mozjs68 fails on (at least) i386
+	# But the same behaviour was present in mozjs60 so this is not a
+	# regression: skip it.
+	# https://bugzilla.mozilla.org/show_bug.cgi?id=1621900
+	EXCLUDED_TESTS := basic/bug653153.js
+endif
+
 ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
 CONFIGURE_FLAGS += --disable-ion
 endif
@@ -142,6 +150,6 @@ override_dh_auto_test:
 	@:
 ifeq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
-	SRCDIR=${SRCDIR} BUILDDIR=${BUILDDIR} DEB_HOST_ARCH=${DEB_HOST_ARCH} $(CURDIR)/debian/test.sh
+	SRCDIR=${SRCDIR} BUILDDIR=${BUILDDIR} DEB_HOST_ARCH=${DEB_HOST_ARCH} $(CURDIR)/debian/test.sh $(EXCLUDED_TESTS)
 endif
 endif

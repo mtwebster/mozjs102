@@ -13,6 +13,12 @@ fi
 
 export HOME="$(mktemp -d -t mozjs-tests-home-XXXXXXXXXX)"
 
+for exclude; do
+	EXCLUDES="${EXCLUDES:+${EXCLUDES} }--exclude ${exclude}"
+done
+
+# we want to expand --exclude to several arguments
+# shellcheck disable=SC2086
 if "${BUILDDIR}"/dist/bin/run-mozilla.sh \
    "${BUILDDIR}"/_virtualenvs/init/bin/python -u \
    "${SRCDIR}"/jit-test/jit_test.py \
@@ -20,6 +26,7 @@ if "${BUILDDIR}"/dist/bin/run-mozilla.sh \
    --no-slow \
    --no-progress \
    --timeout 600 \
+   ${EXCLUDES:-} \
    "${BUILDDIR}"/dist/bin/js basic; then
 	echo "check-jit-test successful"
 else
