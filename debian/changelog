@@ -1,3 +1,14 @@
+mozjs68 (68.5.0-2) UNRELEASED; urgency=medium
+
+  * rules, test.sh: Allow tests to be excluded by name and exclude
+    basic/bug653153.js.  Without more extensive patching, this test can't be
+    skipped conditionally based on dpkg architecture. It fails on i386 because
+    of a new test that was added in mozjs68 - the behaviour is the same as it
+    was previously. This has been reported upstream:
+    https://bugzilla.mozilla.org/show_bug.cgi?id=1621900
+
+ -- Iain Lane <laney@debian.org>  Thu, 12 Mar 2020 11:33:56 +0000
+
 mozjs68 (68.5.0-1) experimental; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
