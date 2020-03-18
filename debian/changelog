@@ -1,5 +1,10 @@
-mozjs68 (68.5.0-3) UNRELEASED; urgency=medium
+mozjs68 (68.6.0-3) UNRELEASED; urgency=medium
 
+  [ Marco Trevisan (Treviño) ]
+  * New upstream release with security fixes:
+    - https://www.mozilla.org/en-US/firefox/68.6.0/releasenotes/
+
+  [ Simon McVittie ]
   * d/rules: Swap --host and --target.
     The Mozilla build system's terminology is not the same as Autoconf's,
     and previous versions of the mozjs Debian packages got the translation
