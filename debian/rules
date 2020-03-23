@@ -2,6 +2,7 @@
 # -*- makefile -*-
 
 include /usr/share/dpkg/default.mk
+include /usr/share/rustc/architecture.mk
 
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
@@ -108,8 +109,12 @@ ifneq ($(WITH_SYSTEM_ICU),yes)
 endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR); \
-	if env CC=$(CC) CXX=$(CXX) $(SHELL) \
-	$(SRCDIR)/configure \
+	if env \
+		CC=$(CC) \
+		CXX=$(CXX) \
+		RUST_HOST=$(DEB_BUILD_RUST_TYPE) \
+		RUST_TARGET=$(DEB_HOST_RUST_TYPE) \
+	$(SHELL) $(SRCDIR)/configure \
 		--host=$(DEB_BUILD_GNU_TYPE) \
 		--target=$(DEB_HOST_GNU_TYPE) \
 		--prefix=/usr \
