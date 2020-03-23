@@ -1,3 +1,16 @@
+mozjs68 (68.5.0-3) UNRELEASED; urgency=medium
+
+  * d/rules: Swap --host and --target.
+    The Mozilla build system's terminology is not the same as Autoconf's,
+    and previous versions of the mozjs Debian packages got the translation
+    wrong.
+  * d/rules: Ask moz.configure to give us more information
+  * d/rules: Print complete config.log if configure fails
+  * d/rules: Forcibly set appropriate values for the Rust targets,
+    fixing FTBFS on armel (Closes: #954774)
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 23 Mar 2020 19:01:15 +0000
+
 mozjs68 (68.5.0-2) experimental; urgency=medium
 
   * rules, test.sh: Allow tests to be excluded by name and exclude
