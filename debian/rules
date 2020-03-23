@@ -107,8 +107,8 @@ endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR) && CC=$(CC) CXX=$(CXX) $(SHELL) \
 	$(SRCDIR)/configure \
-		--host=$(DEB_HOST_GNU_TYPE) \
-		--target=$(DEB_BUILD_GNU_TYPE) \
+		--host=$(DEB_BUILD_GNU_TYPE) \
+		--target=$(DEB_HOST_GNU_TYPE) \
 		--prefix=/usr \
 		--libdir=/usr/lib/${DEB_HOST_MULTIARCH}/ \
 		--enable-posix-nspr-emulation \
