@@ -107,7 +107,8 @@ ifneq ($(WITH_SYSTEM_ICU),yes)
 	VERBOSE=1 $(PYTHON) intl/icu_sources_data.py "$(CURDIR)"
 endif
 	mkdir -p $(BUILDDIR)
-	cd $(BUILDDIR) && CC=$(CC) CXX=$(CXX) $(SHELL) \
+	cd $(BUILDDIR); \
+	if env CC=$(CC) CXX=$(CXX) $(SHELL) \
 	$(SRCDIR)/configure \
 		--host=$(DEB_BUILD_GNU_TYPE) \
 		--target=$(DEB_HOST_GNU_TYPE) \
@@ -121,7 +122,14 @@ endif
 		--enable-readline \
 		--disable-optimize \
 		--disable-jemalloc \
-		$(CONFIGURE_FLAGS)
+		$(CONFIGURE_FLAGS) \
+	; then \
+		echo Configure successful; \
+	else \
+		echo Configure failed with status $$?; \
+		tail -v -n +0 config.log; \
+		exit 1; \
+	fi
 
 override_dh_install:
 	# move library and create additional symlinks to standardize the file layout
