@@ -15,6 +15,8 @@ export DEB_HOST_ARCH
 # like zsh
 export SHELL = /bin/sh
 export PYTHON = python2.7
+# Please tell us what you're thinking...
+export MOZ_CONFIGURE_TRACE = yes
 
 SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
