@@ -1,4 +1,4 @@
-mozjs68 (68.6.0-1) UNRELEASED; urgency=medium
+mozjs68 (68.6.0-1) experimental; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
   * New upstream release with security fixes:
@@ -14,7 +14,7 @@ mozjs68 (68.6.0-1) UNRELEASED; urgency=medium
   * d/rules: Forcibly set appropriate values for the Rust targets,
     fixing FTBFS on armel (Closes: #954774)
 
- -- Simon McVittie <smcv@debian.org>  Mon, 23 Mar 2020 19:01:15 +0000
+ -- Iain Lane <laney@debian.org>  Thu, 26 Mar 2020 17:52:32 +0000
 
 mozjs68 (68.5.0-2) experimental; urgency=medium
 
