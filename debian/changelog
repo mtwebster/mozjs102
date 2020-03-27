@@ -1,3 +1,11 @@
+mozjs68 (68.6.0-2) UNRELEASED; urgency=medium
+
+  * control: Use clang and LLVM 10. The default clang is not installable
+    currently due to bug #954826 - work around this by explicitly picking a
+    different version.
+
+ -- Iain Lane <laney@debian.org>  Fri, 27 Mar 2020 10:14:55 +0000
+
 mozjs68 (68.6.0-1) experimental; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
