@@ -5,15 +5,18 @@ Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.
 Uploaders: @GNOME_TEAM@
 Build-Depends: debhelper-compat (= 12),
                cargo (>= 0.40),
-               clang,
+# revert once clang-10 is default or #954826 is fixed
+               clang-10,
                gnome-pkg-tools,
                autoconf,
                autoconf2.13,
                automake,
-               libclang-dev,
+# revert once clang-10 is default or #954826 is fixed
+               libclang-10-dev,
                libicu-dev (>= 61.1),
                libreadline-dev,
-               llvm-dev,
+# revert once llvm-10 is default or #954826 is fixed
+               llvm-10-dev,
                zlib1g-dev (>= 1:1.2.3),
                pkg-config,
                pkg-kde-tools,
