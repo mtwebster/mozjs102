@@ -1,3 +1,9 @@
+mozjs68 (68.7.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Mon, 06 Apr 2020 14:40:59 +0200
+
 mozjs68 (68.6.0-2) unstable; urgency=medium
 
   * control: Use clang and LLVM 10. The default clang is not installable
