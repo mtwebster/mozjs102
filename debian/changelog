@@ -1,4 +1,4 @@
-mozjs68 (68.7.0-1) UNRELEASED; urgency=medium
+mozjs68 (68.7.0-1) unstable; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
   * New upstream release
@@ -6,7 +6,7 @@ mozjs68 (68.7.0-1) UNRELEASED; urgency=medium
   [ William Grant ]
   * Add riscv64 support (Closes: #932893)
 
- -- Jeremy Bicha <jbicha@debian.org>  Mon, 27 Apr 2020 21:12:05 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Tue, 28 Apr 2020 21:12:05 -0400
 
 mozjs68 (68.6.0-2) unstable; urgency=medium
 
