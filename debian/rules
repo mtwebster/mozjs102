@@ -42,12 +42,15 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),sh4))
 endif
 export DEB_CFLAGS_MAINT_APPEND DEB_CXXFLAGS_MAINT_APPEND
 
+EXCLUDED_TESTS :=
+
+# Upstream assumes everything uses SSE mathematics, but SSE isn't in
+# Debian's baseline for i386, so we are stuck with i387 and its weird
+# 80-bit floating point registers. We can't even work around this with
+# -fexcess-precision=standard, because mozjs is C++.
+# https://bugzilla.mozilla.org/show_bug.cgi?id=1621900
 ifneq (,$(findstring $(DEB_BUILD_ARCH),i386))
-	# A new test in mozjs68 fails on (at least) i386
-	# But the same behaviour was present in mozjs60 so this is not a
-	# regression: skip it.
-	# https://bugzilla.mozilla.org/show_bug.cgi?id=1621900
-	EXCLUDED_TESTS := basic/bug653153.js
+	EXCLUDED_TESTS += basic/bug653153.js
 endif
 
 ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
