@@ -28,6 +28,7 @@ DEB_UPSTREAM_MINOR = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f2)
 DEB_UPSTREAM_PATCH = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f3)
 
 LIBNAME = libmozjs-$(DEB_UPSTREAM_MAJOR)
+SONAME = $(LIBNAME).so.0
 
 # ia64 currently has toolchain issues, so relax the link optimization
 ifneq (,$(findstring $(DEB_BUILD_ARCH),ia64))
@@ -140,8 +141,8 @@ override_dh_install:
 		mv $(LIBNAME).so \
 		$(LIBNAME).so.$(DEB_UPSTREAM_MAJOR).$(DEB_UPSTREAM_MINOR).$(DEB_UPSTREAM_PATCH) && \
 		ln -s $(LIBNAME).so.$(DEB_UPSTREAM_MAJOR).$(DEB_UPSTREAM_MINOR).$(DEB_UPSTREAM_PATCH) \
-		$(LIBNAME).so.$(DEB_UPSTREAM_MAJOR) && \
-		ln -s $(LIBNAME).so.$(DEB_UPSTREAM_MAJOR) $(LIBNAME).so
+		$(SONAME) && \
+		ln -s $(SONAME) $(LIBNAME).so
 	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/$(LIBNAME).a
 	dh_install
 
