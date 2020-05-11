@@ -22,7 +22,7 @@ SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
 CONFIGURE_FLAGS =
 
-DEB_UPSTREAM_VERSION = $(shell dpkg-parsechangelog | sed -rne 's/^Version: ([0-9.]+)[-+].*$$/\1/p')
+DEB_UPSTREAM_VERSION = $(echo $(DEB_VERSION_UPSTREAM) | sed -e 's/[-+~].*//')
 DEB_UPSTREAM_MAJOR = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f1)
 DEB_UPSTREAM_MINOR = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f2)
 DEB_UPSTREAM_PATCH = $(shell echo $(DEB_UPSTREAM_VERSION) | cut -d. -f3)
