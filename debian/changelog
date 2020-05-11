@@ -1,8 +1,28 @@
 mozjs68 (68.8.0-1) UNRELEASED; urgency=medium
 
+  [ Marco Trevisan (Treviño) ]
   * New upstream release
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Thu, 07 May 2020 18:13:49 +0200
+  [ Simon McVittie ]
+  * Remove rust and LLVM dependencies for better portability.
+    Thanks to John Paul Adrian Glaubitz (Closes: #959144)
+  * Refresh patch series with gbp-pq-style metadata
+  * Install as libmozjs-68.so.0, not libmozjs-68.so.68.
+    The SONAME is libmozjs-68.so.0, so we need to install the
+    libmozjs-68.so.0 symbolic link. In native installations, ldconfig
+    would create libmozjs-68.so.0 for us, but when using mozjs68 to
+    cross-compile other packages, that won't happen. (Closes: #959792)
+  * d/rules: Justify why we skip basic/bug653153.js on i386.
+    That test seems to be failing on i386 due to extended precision in the
+    i387 FPU. Upstream always builds with -mfpmath=sse and does not support
+    use of i387, but that isn't currently allowed in Debian due to our i386
+    baseline being 20 years old (in particular no SSE and no SSE2).
+  * d/rules: Avoid parsing d/changelog
+  * d/rules: Make variable names less confusing.
+    Avoid the DEB_ prefix in our own variables, to avoid mixing up
+    our DEB_UPSTREAM_VERSION with dpkg's DEB_VERSION_UPSTREAM.
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 11 May 2020 13:51:36 +0100
 
 mozjs68 (68.7.0-1) unstable; urgency=medium
 
