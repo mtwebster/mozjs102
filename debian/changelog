@@ -1,4 +1,4 @@
-mozjs68 (68.8.0-1) UNRELEASED; urgency=medium
+mozjs68 (68.9.0-1) UNRELEASED; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
   * New upstream release
@@ -22,7 +22,7 @@ mozjs68 (68.8.0-1) UNRELEASED; urgency=medium
     Avoid the DEB_ prefix in our own variables, to avoid mixing up
     our DEB_UPSTREAM_VERSION with dpkg's DEB_VERSION_UPSTREAM.
 
- -- Simon McVittie <smcv@debian.org>  Mon, 11 May 2020 13:51:36 +0100
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Wed, 03 Jun 2020 17:26:14 +0200
 
 mozjs68 (68.7.0-1) unstable; urgency=medium
 
