@@ -22,7 +22,12 @@ mozjs68 (68.9.0-1) UNRELEASED; urgency=medium
     Avoid the DEB_ prefix in our own variables, to avoid mixing up
     our DEB_UPSTREAM_VERSION with dpkg's DEB_VERSION_UPSTREAM.
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Wed, 03 Jun 2020 17:26:14 +0200
+  [ Marco Trevisan (Treviño) ]
+  * debian/rules: Properly parse DEB_VERSION_UPSTREAM using shell
+  * d/p/Bug-1545437-Add-options-to-specify-Rust-target-name.patch:
+    - Dropped, included upstream
+
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Wed, 03 Jun 2020 22:12:25 +0200
 
 mozjs68 (68.7.0-1) unstable; urgency=medium
 
