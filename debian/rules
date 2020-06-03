@@ -22,7 +22,7 @@ SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
 CONFIGURE_FLAGS =
 
-UPSTREAM_VERSION = $(echo $(DEB_VERSION_UPSTREAM) | sed -e 's/[-+~].*//')
+UPSTREAM_VERSION = $(shell echo $(DEB_VERSION_UPSTREAM) | sed -e 's/[-+~].*//')
 UPSTREAM_MAJOR = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f1)
 UPSTREAM_MINOR = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f2)
 UPSTREAM_PATCH = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f3)
