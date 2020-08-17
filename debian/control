@@ -9,15 +9,19 @@ Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.
 Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@debian.org>
 Build-Depends: debhelper-compat (= 12),
                gnome-pkg-tools,
+               cargo,
+               clang,
                autoconf,
                autoconf2.13,
                automake,
                libicu-dev (>= 63.1),
                libreadline-dev,
+               llvm,
                zlib1g-dev (>= 1:1.2.3),
                pkg-config,
                pkg-kde-tools,
                python3-dev,
+               rustc (>= 1.41),
                tzdata,
                zip
 Rules-Requires-Root: no
