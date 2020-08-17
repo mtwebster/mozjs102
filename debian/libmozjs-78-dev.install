@@ -1,0 +1,5 @@
+usr/bin/js78
+usr/bin/js78-config
+usr/include/mozjs-78
+usr/lib/*/libmozjs-78.so
+usr/lib/*/pkgconfig/mozjs-78.pc
