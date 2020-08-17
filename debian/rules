@@ -65,12 +65,6 @@ ifeq ($(WITH_SYSTEM_ICU),yes)
 CONFIGURE_FLAGS += --with-system-icu
 else
 CONFIGURE_FLAGS += --without-system-icu
-ifeq ($(DEB_HOST_ARCH_ENDIAN),little)
-ICU_DATA_FILE = icudt$(UPSTREAM_MAJOR)l.dat
-else
-ICU_DATA_FILE = icudt$(UPSTREAM_MAJOR)b.dat
-endif
-export ICU_DATA_FILE
 endif
 
 %:
