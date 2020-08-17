@@ -14,7 +14,7 @@ export DEB_HOST_ARCH
 # mozjs' build process does not seem to be compatible with other shells
 # like zsh
 export SHELL = /bin/sh
-export PYTHON = python2.7
+export PYTHON3 = python3
 # Please tell us what you're thinking...
 export MOZ_CONFIGURE_TRACE = yes
 
@@ -102,7 +102,7 @@ endif
 
 override_dh_auto_configure:
 ifneq ($(WITH_SYSTEM_ICU),yes)
-	VERBOSE=1 $(PYTHON) intl/icu_sources_data.py "$(CURDIR)"
+	VERBOSE=1 $(PYTHON3) intl/icu_sources_data.py "$(CURDIR)"
 endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR); \

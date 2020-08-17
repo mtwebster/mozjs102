@@ -20,7 +20,7 @@ done
 # we want to expand --exclude to several arguments
 # shellcheck disable=SC2086
 if "${BUILDDIR}"/dist/bin/run-mozilla.sh \
-   "${BUILDDIR}"/_virtualenvs/init/bin/python -u \
+   "${BUILDDIR}"/_virtualenvs/init_py3/bin/python -u \
    "${SRCDIR}"/jit-test/jit_test.py \
    --format=automation \
    --no-slow \

@@ -13,7 +13,7 @@ Build-Depends: debhelper-compat (= 12),
                zlib1g-dev (>= 1:1.2.3),
                pkg-config,
                pkg-kde-tools,
-               python2-dev,
+               python3-dev,
                tzdata,
                zip
 Rules-Requires-Root: no
