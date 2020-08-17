@@ -14,12 +14,12 @@ Forwarded: not-needed, Debian-specific
  1 file changed, 11 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 8f5c0df..dffacef 100644
+index 4085ce3..4c73952 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -493,6 +493,17 @@ skip script test262/language/expressions/class/elements/derived-cls-direct-eval-
- skip script test262/language/statements/class/elements/derived-cls-direct-eval-err-contains-superproperty-1.js
- skip script test262/language/statements/class/elements/derived-cls-direct-eval-err-contains-superproperty-2.js
+@@ -654,6 +654,17 @@ fails-if(!xulRuntime.shell) script test262/built-ins/TypedArray/prototype/set/ty
+ skip script test262/intl402/DisplayNames/proto-from-ctor-realm.js
+ skip script test262/intl402/DisplayNames/prototype/resolvedOptions/return-object.js
  
 +############################
 +# Tests disabled by Debian #

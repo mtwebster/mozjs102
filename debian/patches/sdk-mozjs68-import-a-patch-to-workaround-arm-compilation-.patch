@@ -13,10 +13,10 @@ Origin: https://gitlab.gnome.org/GNOME/gnome-build-meta/blob/master/files/mozjs6
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/wasm/WasmSignalHandlers.cpp b/js/src/wasm/WasmSignalHandlers.cpp
-index cfb2970..750d5d2 100644
+index a6610f3..78941bf 100644
 --- a/js/src/wasm/WasmSignalHandlers.cpp
 +++ b/js/src/wasm/WasmSignalHandlers.cpp
-@@ -243,7 +243,7 @@ using mozilla::DebugOnly;
+@@ -244,7 +244,7 @@ using mozilla::DebugOnly;
  // If you run into compile problems on a tier-3 platform, you can disable the
  // emulation here.
  

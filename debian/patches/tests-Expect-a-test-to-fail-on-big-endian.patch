@@ -9,10 +9,10 @@ Forwarded: no
  1 file changed, 3 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index fb45069..a557c81 100644
+index 7af825c..92ac3f1 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -509,6 +509,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
+@@ -670,6 +670,9 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/lan
  # NaN corner cases are different on ARM softfloat
  fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
  

@@ -12,18 +12,18 @@ Forwarded: not-needed, Debian-specific
  1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
-index 617f0f1..5a7ff2d 100644
+index b252b13..6037188 100644
 --- a/js/src/tests/lib/manifest.py
 +++ b/js/src/tests/lib/manifest.py
-@@ -4,6 +4,7 @@
- 
+@@ -5,6 +5,7 @@
  from __future__ import print_function
  
+ import io
 +import json
  import os
+ import posixpath
  import re
- import sys
-@@ -34,12 +35,25 @@ class XULInfo:
+@@ -38,12 +39,25 @@ class XULInfo:
          """Return JS that when executed sets up variables so that JS expression
          predicates on XUL build info evaluate properly."""
  

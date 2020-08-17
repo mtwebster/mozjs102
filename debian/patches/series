@@ -1,7 +1,6 @@
 fix-soname.patch
 hurd-support.patch
 copy-headers.patch
-Allow-to-override-ICU_DATA_FILE-from-the-environment.patch
 tests-increase-timeout.patch
 ia64-support.patch
 tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch

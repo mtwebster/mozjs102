@@ -15,35 +15,33 @@ Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=959144
 Forwarded: no
 Last-Update: 2020-04-30
 ---
- js/moz.configure |  5 -----
- moz.configure    | 30 ------------------------------
- 2 files changed, 35 deletions(-)
+ js/moz.configure |  4 ----
+ moz.configure    | 29 -----------------------------
+ 2 files changed, 33 deletions(-)
 
 diff --git a/js/moz.configure b/js/moz.configure
-index 5f06499..a3ec427 100644
+index b1c9685..16d33da 100644
 --- a/js/moz.configure
 +++ b/js/moz.configure
-@@ -18,11 +18,6 @@ def building_js(build_project):
- option(env='JS_STANDALONE', default=building_js,
-        help='Reserved for internal use')
+@@ -35,10 +35,6 @@ set_define('JS_ENABLE_SMOOSH', enable_smoosh)
  
+ include('../build/moz.configure/nspr.configure',
+         when='--enable-compile-environment')
 -include('../build/moz.configure/rust.configure',
 -        when='--enable-compile-environment')
 -include('../build/moz.configure/bindgen.configure',
 -        when='--enable-compile-environment')
--
+ 
  @depends('JS_STANDALONE')
  def js_standalone(value):
-     if value:
 diff --git a/moz.configure b/moz.configure
-index 2484ad5..3ec8c90 100755
+index e86018b..03b4f7e 100755
 --- a/moz.configure
 +++ b/moz.configure
-@@ -598,36 +598,6 @@ set_config('MAKENSISU_FLAGS', nsis_flags)
+@@ -626,35 +626,6 @@ check_prog('7Z', ('7z', '7za'), allow_missing=True, when=target_is_windows)
+ check_prog('UPX', ('upx',), allow_missing=True, when=target_is_windows)
  
- check_prog('7Z', ('7z', '7za'), allow_missing=True, when=target_is_windows)
  
--
 -@depends(host_c_compiler, c_compiler, bindgen_config_paths)
 -def llvm_objdump(host_c_compiler, c_compiler, bindgen_config_paths):
 -    clang = None
@@ -73,6 +71,6 @@ index 2484ad5..3ec8c90 100755
 -add_old_configure_assignment('LLVM_OBJDUMP', llvm_objdump)
 -
 -
- # Please do not add configure checks from here on.
+ js_option('--enable-dtrace', help='Build with dtrace support')
  
- # Fallthrough to autoconf-based configure
+ dtrace = check_header('sys/sdt.h', when='--enable-dtrace',
