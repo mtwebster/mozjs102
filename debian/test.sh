@@ -12,10 +12,18 @@ else
 fi
 
 export HOME="$(mktemp -d -t mozjs-tests-home-XXXXXXXXXX)"
+export DEB_HOST_ARCH
 
 for exclude; do
 	EXCLUDES="${EXCLUDES:+${EXCLUDES} }--exclude ${exclude}"
 done
+
+if make -C ${BUILDDIR} -k check-jstests; then
+	echo "check-jstests successful"
+else
+	echo "check-jstests failed"
+	exit 1
+fi
 
 # we want to expand --exclude to several arguments
 # shellcheck disable=SC2086
