@@ -12,14 +12,14 @@ Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=932893
  5 files changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/build/moz.configure/init.configure b/build/moz.configure/init.configure
-index 5e07418..b790c93 100644
+index 5e07418..0c81996 100644
 --- a/build/moz.configure/init.configure
 +++ b/build/moz.configure/init.configure
 @@ -744,6 +744,9 @@ def split_triplet(triplet, allow_msvc=False):
      elif cpu == 'sh4':
          canonical_cpu = 'sh4'
          endianness = 'little'
-+    elif cpu == 'riscv64':
++    elif cpu.startswith('riscv64'):
 +        canonical_cpu = 'riscv64'
 +        endianness = 'little'
      else:
