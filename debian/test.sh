@@ -11,7 +11,6 @@ else
 	exit 1
 fi
 
-export HOME="$(mktemp -d -t mozjs-tests-home-XXXXXXXXXX)"
 export DEB_HOST_ARCH
 
 for exclude; do
