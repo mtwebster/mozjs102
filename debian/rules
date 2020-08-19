@@ -28,8 +28,12 @@ UPSTREAM_MAJOR = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f1)
 UPSTREAM_MINOR = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f2)
 UPSTREAM_PATCH = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f3)
 
-LIBNAME = libmozjs-$(UPSTREAM_MAJOR)
+export MOZJS_VERSION = $(UPSTREAM_MAJOR)
+LIBNAME = libmozjs-$(MOZJS_VERSION)
 SONAME = $(LIBNAME).so.0
+
+VERSIONED_LIBNAME = \
+	$(LIBNAME).so.$(UPSTREAM_MAJOR).$(UPSTREAM_MINOR).$(UPSTREAM_PATCH)
 
 # ia64 currently has toolchain issues, so relax the link optimization
 ifneq (,$(findstring $(DEB_BUILD_ARCH),ia64))
@@ -86,8 +90,8 @@ override_dh_clean:
 	find $(CURDIR)/js/src/ -type l -exec rm {} \;
 	rm -f $(CURDIR)/js/src/config/nsinstall
 	rm -f $(CURDIR)/js/src/dist/bin/.purgecaches
-	rm -f  $(CURDIR)/js/src/js$(UPSTREAM_MAJOR)-config \
-		$(CURDIR)/js/src/mozjs-$(UPSTREAM_MAJOR).pc \
+	rm -f  $(CURDIR)/js/src/js$(MOZJS_VERSION)-config \
+		$(CURDIR)/js/src/mozjs-$(MOZJS_VERSION).pc \
 		$(CURDIR)/js/src/symverscript
 	rm -f $(CURDIR)/js/src/config.log
 	# rm -f $(CURDIR)/js/src/configure
@@ -142,10 +146,8 @@ override_dh_install:
 	# move library and create additional symlinks to standardize the file layout
 	cd $(CURDIR)/debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/ && \
 		mv libjs_static.ajs $(LIBNAME).a && \
-		mv $(LIBNAME).so \
-		$(LIBNAME).so.$(UPSTREAM_MAJOR).$(UPSTREAM_MINOR).$(UPSTREAM_PATCH) && \
-		ln -s $(LIBNAME).so.$(UPSTREAM_MAJOR).$(UPSTREAM_MINOR).$(UPSTREAM_PATCH) \
-		$(SONAME) && \
+		mv $(LIBNAME).so $(VERSIONED_LIBNAME) && \
+		ln -s $(VERSIONED_LIBNAME) $(SONAME) && \
 		ln -s $(SONAME) $(LIBNAME).so
 	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/$(LIBNAME).a
 	dh_install
@@ -155,7 +157,7 @@ override_dh_missing:
 
 override_dh_fixperms:
 	dh_fixperms
-	chmod a-x $(CURDIR)/debian/$(LIBNAME)-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-$(UPSTREAM_MAJOR).pc
+	chmod a-x $(CURDIR)/debian/$(LIBNAME)-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-$(MOZJS_VERSION).pc
 
 override_dh_gnome:
 	dh_gnome --no-gnome-versions
