@@ -21,6 +21,7 @@ export MOZ_CONFIGURE_TRACE = yes
 SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
 CONFIGURE_FLAGS =
+RUSTFLAGS =
 
 UPSTREAM_VERSION = $(shell echo $(DEB_VERSION_UPSTREAM) | sed -e 's/[-+~].*//')
 UPSTREAM_MAJOR = $(shell echo $(UPSTREAM_VERSION) | cut -d. -f1)
@@ -66,6 +67,15 @@ CONFIGURE_FLAGS += --with-system-icu
 else
 CONFIGURE_FLAGS += --without-system-icu
 endif
+
+# riscv64 doesn't seem to handle LTO properly, causing dwz to fail
+# see https://github.com/rust-lang/rust/issues/66118#issuecomment-551446657
+# In such case, using thin LTO, fixes the problem
+ifneq (,$(findstring $(DEB_BUILD_ARCH),riscv64))
+RUSTFLAGS += -Clto=thin
+endif
+
+export RUSTFLAGS
 
 %:
 	dh $@ --sourcedirectory=$(SRCDIR) --builddirectory=$(BUILDDIR) --with gnome,pkgkde-symbolshelper
