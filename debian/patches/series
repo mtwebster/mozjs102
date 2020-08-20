@@ -1,5 +1,7 @@
 Bug-1654465-Set-Cembed-bitcode-yes-instead-of-CARGO_PROFI.patch
 Bug-1654696-Implement-code-coverage-JSAPI.-r-nbp-ptomato-.patch
+icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
+icu_sources_data-Write-command-output-to-our-stderr.patch
 fix-soname.patch
 hurd-support.patch
 copy-headers.patch
