@@ -21,6 +21,7 @@ export MOZ_CONFIGURE_TRACE = yes
 
 SRCDIR = $(CURDIR)/js/src
 BUILDDIR = $(CURDIR)/debian/build
+CARGO_HOME = $(BUILDDIR)/cargo-home
 CONFIGURE_FLAGS =
 RUSTFLAGS =
 
@@ -81,6 +82,7 @@ RUSTFLAGS += -Clto=thin
 endif
 
 export RUSTFLAGS
+export CARGO_HOME
 
 %:
 	dh $@ --sourcedirectory=$(SRCDIR) --builddirectory=$(BUILDDIR) --with gnome,pkgkde-symbolshelper
