@@ -1,6 +1,6 @@
-mozjs78 (78.1.0-1) UNRELEASED; urgency=medium
+mozjs78 (78.2.0-1) UNRELEASED; urgency=medium
 
-  * New upstream version 78.1.0 (Closes: #968341)
+  * New upstream version 78.2.0 (Closes: #968341)
     - Rename source to mozjs78
     - debian/gbp.conf: Set debian and upstream branches to match version
     - debian/watch: Update main version regex
@@ -58,7 +58,7 @@ mozjs78 (78.1.0-1) UNRELEASED; urgency=medium
       they aren't currently used, they might be useful if internal ICU is
       wanted for backport reasons.
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 25 Aug 2020 14:43:03 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 25 Aug 2020 17:15:21 +0200
 
 mozjs68 (68.9.0-1) unstable; urgency=medium
 
