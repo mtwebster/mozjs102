@@ -10,7 +10,6 @@ This patch is relevant only when mozjs is built without system ICU.
 
 Applied-Upstream: No
 Forwarded: Not-needed
-
 ---
  intl/icu_sources_data.py | 4 +++-
  1 file changed, 3 insertions(+), 1 deletion(-)
