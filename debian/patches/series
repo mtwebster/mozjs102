@@ -1,3 +1,4 @@
+Bug-1545437-Add-options-to-specify-Rust-target-name.patch
 Bug-1661094-Always-define-PKGCONF_REQUIRES_PRIVATE.patch
 icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
 icu_sources_data-Write-command-output-to-our-stderr.patch
