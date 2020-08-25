@@ -39,6 +39,7 @@
 #include "gc/FreeOp.h"
 #include "gc/Policy.h"
 #include "jit/AtomicOperations.h"
+#include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject, JS::NewArrayObject
 #include "js/ArrayBuffer.h"  // JS::{IsArrayBufferObject,GetArrayBufferData,GetArrayBuffer{ByteLength,Data}}
 #include "js/CharacterEncoding.h"
 #include "js/PropertySpec.h"
@@ -47,6 +48,7 @@
 #include "js/UniquePtr.h"
 #include "js/Utility.h"
 #include "js/Vector.h"
+#include "util/Text.h"
 #include "util/Unicode.h"
 #include "util/Windows.h"
 #include "vm/JSContext.h"
@@ -54,7 +56,7 @@
 
 #include "vm/JSObject-inl.h"
 
-using namespace std;
+using std::numeric_limits;
 
 using mozilla::IsAsciiAlpha;
 using mozilla::IsAsciiDigit;
@@ -62,21 +64,20 @@ using mozilla::IsAsciiDigit;
 using JS::AutoCheckCannotGC;
 using JS::AutoStableStringChars;
 
-namespace js {
-namespace ctypes {
+namespace js::ctypes {
 
 static bool HasUnpairedSurrogate(const char16_t* chars, size_t nchars,
                                  char16_t* unpaired) {
   for (const char16_t* end = chars + nchars; chars != end; chars++) {
     char16_t c = *chars;
-    if (unicode::LeadSurrogateMin <= c && c <= unicode::TrailSurrogateMax) {
+    if (unicode::IsSurrogate(c)) {
       chars++;
-      if (c >= unicode::TrailSurrogateMin || chars == end) {
+      if (unicode::IsTrailSurrogate(c) || chars == end) {
         *unpaired = c;
         return true;
       }
       char16_t c2 = *chars;
-      if (c2 < unicode::TrailSurrogateMin || c2 > unicode::TrailSurrogateMax) {
+      if (!unicode::IsTrailSurrogate(c2)) {
         *unpaired = c;
         return true;
       }
@@ -444,8 +445,18 @@ static const JSClass sCABIClass = {"CABI",
 // This exists to give said prototypes a class of "CType", and to provide
 // reserved slots for stashing various other prototype objects.
 static const JSClassOps sCTypeProtoClassOps = {
-    nullptr, nullptr, nullptr,           nullptr, nullptr,
-    nullptr, nullptr, ConstructAbstract, nullptr, ConstructAbstract};
+    nullptr,            // addProperty
+    nullptr,            // delProperty
+    nullptr,            // enumerate
+    nullptr,            // newEnumerate
+    nullptr,            // resolve
+    nullptr,            // mayResolve
+    nullptr,            // finalize
+    ConstructAbstract,  // call
+    nullptr,            // hasInstance
+    ConstructAbstract,  // construct
+    nullptr,            // trace
+};
 static const JSClass sCTypeProtoClass = {
     "CType", JSCLASS_HAS_RESERVED_SLOTS(CTYPEPROTO_SLOTS),
     &sCTypeProtoClassOps};
@@ -454,42 +465,55 @@ static const JSClass sCTypeProtoClass = {
 // of CTypes. This exists to give said prototypes a class of "CData".
 static const JSClass sCDataProtoClass = {"CData", 0};
 
-static const JSClassOps sCTypeClassOps = {nullptr,
-                                          nullptr,
-                                          nullptr,
-                                          nullptr,
-                                          nullptr,
-                                          nullptr,
-                                          CType::Finalize,
-                                          CType::ConstructData,
-                                          CType::HasInstance,
-                                          CType::ConstructData,
-                                          CType::Trace};
+static const JSClassOps sCTypeClassOps = {
+    nullptr,               // addProperty
+    nullptr,               // delProperty
+    nullptr,               // enumerate
+    nullptr,               // newEnumerate
+    nullptr,               // resolve
+    nullptr,               // mayResolve
+    CType::Finalize,       // finalize
+    CType::ConstructData,  // call
+    CType::HasInstance,    // hasInstance
+    CType::ConstructData,  // construct
+    CType::Trace,          // trace
+};
 static const JSClass sCTypeClass = {
     "CType",
     JSCLASS_HAS_RESERVED_SLOTS(CTYPE_SLOTS) | JSCLASS_FOREGROUND_FINALIZE,
     &sCTypeClassOps};
 
 static const JSClassOps sCDataClassOps = {
-    nullptr, nullptr,           nullptr,         nullptr,
-    nullptr, nullptr,           CData::Finalize, FunctionType::Call,
-    nullptr, FunctionType::Call};
+    nullptr,             // addProperty
+    nullptr,             // delProperty
+    nullptr,             // enumerate
+    nullptr,             // newEnumerate
+    nullptr,             // resolve
+    nullptr,             // mayResolve
+    CData::Finalize,     // finalize
+    FunctionType::Call,  // call
+    nullptr,             // hasInstance
+    FunctionType::Call,  // construct
+    nullptr,             // trace
+};
 static const JSClass sCDataClass = {
     "CData",
     JSCLASS_HAS_RESERVED_SLOTS(CDATA_SLOTS) | JSCLASS_FOREGROUND_FINALIZE,
     &sCDataClassOps};
 
-static const JSClassOps sCClosureClassOps = {nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             CClosure::Finalize,
-                                             nullptr,
-                                             nullptr,
-                                             nullptr,
-                                             CClosure::Trace};
+static const JSClassOps sCClosureClassOps = {
+    nullptr,             // addProperty
+    nullptr,             // delProperty
+    nullptr,             // enumerate
+    nullptr,             // newEnumerate
+    nullptr,             // resolve
+    nullptr,             // mayResolve
+    CClosure::Finalize,  // finalize
+    nullptr,             // call
+    nullptr,             // hasInstance
+    nullptr,             // construct
+    CClosure::Trace,     // trace
+};
 static const JSClass sCClosureClass = {
     "CClosure",
     JSCLASS_HAS_RESERVED_SLOTS(CCLOSURE_SLOTS) | JSCLASS_FOREGROUND_FINALIZE,
@@ -506,13 +530,19 @@ static const JSClass sCDataFinalizerProtoClass = {"CDataFinalizer", 0};
  * Instances of CDataFinalizer have both private data (with type
  * |CDataFinalizer::Private|) and slots (see |CDataFinalizerSlots|).
  */
-static const JSClassOps sCDataFinalizerClassOps = {nullptr,
-                                                   nullptr,
-                                                   nullptr,
-                                                   nullptr,
-                                                   nullptr,
-                                                   nullptr,
-                                                   CDataFinalizer::Finalize};
+static const JSClassOps sCDataFinalizerClassOps = {
+    nullptr,                   // addProperty
+    nullptr,                   // delProperty
+    nullptr,                   // enumerate
+    nullptr,                   // newEnumerate
+    nullptr,                   // resolve
+    nullptr,                   // mayResolve
+    CDataFinalizer::Finalize,  // finalize
+    nullptr,                   // call
+    nullptr,                   // hasInstance
+    nullptr,                   // construct
+    nullptr,                   // trace
+};
 static const JSClass sCDataFinalizerClass = {
     "CDataFinalizer",
     JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(CDATAFINALIZER_SLOTS) |
@@ -674,7 +704,18 @@ static const JSClass sInt64ProtoClass = {"Int64", 0};
 static const JSClass sUInt64ProtoClass = {"UInt64", 0};
 
 static const JSClassOps sInt64ClassOps = {
-    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, Int64Base::Finalize};
+    nullptr,              // addProperty
+    nullptr,              // delProperty
+    nullptr,              // enumerate
+    nullptr,              // newEnumerate
+    nullptr,              // resolve
+    nullptr,              // mayResolve
+    Int64Base::Finalize,  // finalize
+    nullptr,              // call
+    nullptr,              // hasInstance
+    nullptr,              // construct
+    nullptr,              // trace
+};
 
 static const JSClass sInt64Class = {
     "Int64",
@@ -994,7 +1035,8 @@ static void BuildConversionPosition(JSContext* cx, ConversionType convType,
   }
 }
 
-static JSFlatString* GetFieldName(HandleObject structObj, unsigned fieldIndex) {
+static JSLinearString* GetFieldName(HandleObject structObj,
+                                    unsigned fieldIndex) {
   const FieldInfoHash* fields = StructType::GetFieldInfo(structObj);
   for (FieldInfoHash::Range r = fields->all(); !r.empty(); r.popFront()) {
     if (r.front().value().mIndex == fieldIndex) {
@@ -1274,7 +1316,7 @@ static bool CannotConstructError(JSContext* cx, const char* type) {
   return false;
 }
 
-static bool DuplicateFieldError(JSContext* cx, Handle<JSFlatString*> name) {
+static bool DuplicateFieldError(JSContext* cx, Handle<JSLinearString*> name) {
   JS::UniqueChars nameStr = JS_EncodeStringToUTF8(cx, name);
   if (!nameStr) {
     return false;
@@ -1423,7 +1465,7 @@ static bool FieldDescriptorTypeError(JSContext* cx, HandleValue poroVal,
 }
 
 static bool FieldMissingError(JSContext* cx, JSObject* typeObj,
-                              JSFlatString* name_) {
+                              JSLinearString* name_) {
   JS::UniqueChars typeBytes;
   RootedString name(cx, name_);
   RootedValue typeVal(cx, ObjectValue(*typeObj));
@@ -1794,6 +1836,19 @@ MOZ_MUST_USE JSObject* GetThisObject(JSContext* cx, const CallArgs& args,
   return &args.thisv().toObject();
 }
 
+static bool DefineToStringTag(JSContext* cx, HandleObject obj,
+                              const char* toStringTag) {
+  RootedString toStringTagStr(cx, JS_NewStringCopyZ(cx, toStringTag));
+  if (!toStringTagStr) {
+    return false;
+  }
+
+  RootedId toStringTagId(cx, SYMBOL_TO_JSID(JS::GetWellKnownSymbol(
+                                 cx, JS::SymbolCode::toStringTag)));
+  return JS_DefinePropertyById(cx, obj, toStringTagId, toStringTagStr,
+                               JSPROP_READONLY);
+}
+
 static JSObject* InitCTypeClass(JSContext* cx, HandleObject ctypesObj) {
   JSFunction* fun = JS_DefineFunction(cx, ctypesObj, "CType", ConstructAbstract,
                                       0, CTYPESCTOR_FLAGS);
@@ -1829,6 +1884,10 @@ static JSObject* InitCTypeClass(JSContext* cx, HandleObject ctypesObj) {
       !JS_DefineFunctions(cx, prototype, sCTypeFunctions))
     return nullptr;
 
+  if (!DefineToStringTag(cx, prototype, "CType")) {
+    return nullptr;
+  }
+
   if (!JS_FreezeObject(cx, ctor) || !JS_FreezeObject(cx, prototype)) {
     return nullptr;
   }
@@ -1844,6 +1903,10 @@ static JSObject* InitABIClass(JSContext* cx) {
   }
 
   if (!JS_DefineFunctions(cx, obj, sCABIFunctions)) {
+    return nullptr;
+  }
+
+  if (!DefineToStringTag(cx, obj, "CABI")) {
     return nullptr;
   }
 
@@ -1886,6 +1949,10 @@ static JSObject* InitCDataClass(JSContext* cx, HandleObject parent,
   if (!JS_DefineProperties(cx, prototype, sCDataProps) ||
       !JS_DefineFunctions(cx, prototype, sCDataFunctions))
     return nullptr;
+
+  if (!DefineToStringTag(cx, prototype, "CData")) {
+    return nullptr;
+  }
 
   if (  // !JS_FreezeObject(cx, prototype) || // XXX fixme - see bug 541212!
       !JS_FreezeObject(cx, ctor))
@@ -2001,6 +2068,17 @@ static JSObject* InitInt64Class(JSContext* cx, HandleObject parent,
     return nullptr;
   }
 
+  if (clasp == &sInt64ProtoClass) {
+    if (!DefineToStringTag(cx, prototype, "Int64")) {
+      return nullptr;
+    }
+  } else {
+    MOZ_ASSERT(clasp == &sUInt64ProtoClass);
+    if (!DefineToStringTag(cx, prototype, "UInt64")) {
+      return nullptr;
+    }
+  }
+
   RootedObject ctor(cx, JS_GetConstructor(cx, prototype));
   if (!ctor) {
     return nullptr;
@@ -2008,7 +2086,6 @@ static JSObject* InitInt64Class(JSContext* cx, HandleObject parent,
 
   // Define the 'join' function as an extended native and stash
   // ctypes.{Int64,UInt64}.prototype in a reserved slot of the new function.
-  MOZ_ASSERT(clasp == &sInt64ProtoClass || clasp == &sUInt64ProtoClass);
   JSNative native = (clasp == &sInt64ProtoClass) ? Int64::Join : UInt64::Join;
   JSFunction* fun = js::DefineFunctionWithReserved(cx, ctor, "join", native, 2,
                                                    CTYPESFN_FLAGS);
@@ -2276,8 +2353,7 @@ static bool GetObjectProperty(JSContext* cx, HandleObject obj,
   return true;
 }
 
-} /* namespace ctypes */
-} /* namespace js */
+}  // namespace js::ctypes
 
 using namespace js;
 using namespace js::ctypes;
@@ -2303,6 +2379,10 @@ JS_PUBLIC_API bool JS_InitCTypesClass(JSContext* cx, HandleObject global) {
       !JS_DefineProperties(cx, ctypes, sModuleProps))
     return false;
 
+  if (!DefineToStringTag(cx, ctypes, "ctypes")) {
+    return false;
+  }
+
   // Set up ctypes.CDataFinalizer.prototype.
   RootedObject ctor(cx);
   if (!GetObjectProperty(cx, ctypes, "CDataFinalizer", &ctor)) {
@@ -2315,6 +2395,10 @@ JS_PUBLIC_API bool JS_InitCTypesClass(JSContext* cx, HandleObject global) {
   }
 
   if (!JS_DefineFunctions(cx, prototype, sCDataFinalizerFunctions)) {
+    return false;
+  }
+
+  if (!DefineToStringTag(cx, prototype, "CDataFinalizer")) {
     return false;
   }
 
@@ -2375,20 +2459,20 @@ namespace ctypes {
 // autoconverts to a primitive JS number; to support ILP64 architectures, it
 // would need to autoconvert to an Int64 object instead. Therefore we enforce
 // this invariant here.)
-JS_STATIC_ASSERT(sizeof(bool) == 1 || sizeof(bool) == 4);
-JS_STATIC_ASSERT(sizeof(char) == 1);
-JS_STATIC_ASSERT(sizeof(short) == 2);
-JS_STATIC_ASSERT(sizeof(int) == 4);
-JS_STATIC_ASSERT(sizeof(unsigned) == 4);
-JS_STATIC_ASSERT(sizeof(long) == 4 || sizeof(long) == 8);
-JS_STATIC_ASSERT(sizeof(long long) == 8);
-JS_STATIC_ASSERT(sizeof(size_t) == sizeof(uintptr_t));
-JS_STATIC_ASSERT(sizeof(float) == 4);
-JS_STATIC_ASSERT(sizeof(PRFuncPtr) == sizeof(void*));
-JS_STATIC_ASSERT(numeric_limits<double>::is_signed);
+static_assert(sizeof(bool) == 1 || sizeof(bool) == 4);
+static_assert(sizeof(char) == 1);
+static_assert(sizeof(short) == 2);
+static_assert(sizeof(int) == 4);
+static_assert(sizeof(unsigned) == 4);
+static_assert(sizeof(long) == 4 || sizeof(long) == 8);
+static_assert(sizeof(long long) == 8);
+static_assert(sizeof(size_t) == sizeof(uintptr_t));
+static_assert(sizeof(float) == 4);
+static_assert(sizeof(PRFuncPtr) == sizeof(void*));
+static_assert(numeric_limits<double>::is_signed);
 
 template <typename TargetType, typename FromType,
-          bool FromIsIntegral = std::is_integral<FromType>::value>
+          bool FromIsIntegral = std::is_integral_v<FromType>>
 struct ConvertImpl;
 
 template <typename TargetType, typename FromType>
@@ -2400,10 +2484,8 @@ struct ConvertImpl<TargetType, FromType, false> {
 
 template <typename TargetType>
 struct ConvertUnsignedTargetTo {
-  static TargetType convert(
-      typename std::make_unsigned<TargetType>::type input) {
-    return std::is_signed<TargetType>::value ? mozilla::WrapToSigned(input)
-                                             : input;
+  static TargetType convert(std::make_unsigned_t<TargetType> input) {
+    return std::is_signed_v<TargetType> ? mozilla::WrapToSigned(input) : input;
   }
 };
 
@@ -2418,7 +2500,7 @@ struct ConvertUnsignedTargetTo<char16_t> {
 template <typename TargetType, typename FromType>
 struct ConvertImpl<TargetType, FromType, true> {
   static MOZ_ALWAYS_INLINE TargetType Convert(FromType input) {
-    using UnsignedTargetType = typename std::make_unsigned<TargetType>::type;
+    using UnsignedTargetType = std::make_unsigned_t<TargetType>;
     auto resultUnsigned = static_cast<UnsignedTargetType>(input);
 
     return ConvertUnsignedTargetTo<TargetType>::convert(resultUnsigned);
@@ -2427,9 +2509,9 @@ struct ConvertImpl<TargetType, FromType, true> {
 
 template <class TargetType, class FromType>
 static MOZ_ALWAYS_INLINE TargetType Convert(FromType d) {
-  static_assert(std::is_integral<FromType>::value !=
-                    std::is_floating_point<FromType>::value,
-                "should only be converting from floating/integral type");
+  static_assert(
+      std::is_integral_v<FromType> != std::is_floating_point_v<FromType>,
+      "should only be converting from floating/integral type");
 
   return ConvertImpl<TargetType, FromType>::Convert(d);
 }
@@ -2465,7 +2547,7 @@ static MOZ_ALWAYS_INLINE bool IsAlwaysExact() {
 template <class TargetType, class FromType, bool TargetSigned, bool FromSigned>
 struct IsExactImpl {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
+    static_assert(numeric_limits<TargetType>::is_exact);
     return FromType(j) == i;
   }
 };
@@ -2474,7 +2556,7 @@ struct IsExactImpl {
 template <class TargetType, class FromType>
 struct IsExactImpl<TargetType, FromType, false, true> {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
+    static_assert(numeric_limits<TargetType>::is_exact);
     return i >= 0 && FromType(j) == i;
   }
 };
@@ -2483,7 +2565,7 @@ struct IsExactImpl<TargetType, FromType, false, true> {
 template <class TargetType, class FromType>
 struct IsExactImpl<TargetType, FromType, true, false> {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
+    static_assert(numeric_limits<TargetType>::is_exact);
     return TargetType(i) >= 0 && FromType(j) == i;
   }
 };
@@ -2555,7 +2637,7 @@ static bool jsvalToBool(JSContext* cx, HandleValue val, bool* result) {
 template <class IntegerType>
 static bool jsvalToInteger(JSContext* cx, HandleValue val,
                            IntegerType* result) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   if (val.isInt32()) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -2642,7 +2724,7 @@ static bool jsvalToInteger(JSContext* cx, HandleValue val,
 // representable by FloatType.
 template <class FloatType>
 static bool jsvalToFloat(JSContext* cx, HandleValue val, FloatType* result) {
-  JS_STATIC_ASSERT(!numeric_limits<FloatType>::is_exact);
+  static_assert(!numeric_limits<FloatType>::is_exact);
 
   // The following casts may silently throw away some bits, but there's
   // no good way around it. Sternly requiring that the 64-bit double
@@ -2697,7 +2779,7 @@ static bool jsvalToFloat(JSContext* cx, HandleValue val, FloatType* result) {
 template <class IntegerType, class CharT>
 static bool StringToInteger(JSContext* cx, CharT* cp, size_t length,
                             IntegerType* result, bool* overflow) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   const CharT* end = cp + length;
   if (cp == end) {
@@ -2773,7 +2855,7 @@ static bool StringToInteger(JSContext* cx, JSString* string,
 template <class IntegerType>
 static bool jsvalToBigInteger(JSContext* cx, HandleValue val, bool allowString,
                               IntegerType* result, bool* overflow) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   if (val.isInt32()) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -2841,7 +2923,7 @@ static bool jsvalToSize(JSContext* cx, HandleValue val, bool allowString,
 template <class IntegerType>
 static bool jsidToBigInteger(JSContext* cx, jsid val, bool allowString,
                              IntegerType* result) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   if (JSID_IS_INT(val)) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -2886,7 +2968,7 @@ static bool SizeTojsval(JSContext* cx, size_t size, MutableHandleValue result) {
 // Forcefully convert val to IntegerType when explicitly requested.
 template <class IntegerType>
 static bool jsvalToIntegerExplicit(HandleValue val, IntegerType* result) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   if (val.isDouble()) {
     // Convert using ToInt32-style semantics: non-finite numbers become 0, and
@@ -2969,7 +3051,7 @@ static bool jsvalToPtrExplicit(JSContext* cx, HandleValue val,
 template <class IntegerType, class CharType, size_t N>
 void IntegerToString(IntegerType i, int radix,
                      StringBuilder<CharType, N>& result) {
-  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
+  static_assert(numeric_limits<IntegerType>::is_exact);
 
   // The buffer must be big enough for all the bits of IntegerType to fit,
   // in base-2, including '-'.
@@ -2996,17 +3078,6 @@ void IntegerToString(IntegerType i, int radix,
   if (!result.append(cp, end)) {
     return;
   }
-}
-
-template <class CharType>
-static size_t strnlen(const CharType* begin, size_t max) {
-  for (size_t i = 0; i < max; i++) {
-    if (begin[i] == '\0') {
-      return i;
-    }
-  }
-
-  return max;
 }
 
 // Convert C binary value 'data' of CType 'typeObj' to a JS primitive, where
@@ -3327,8 +3398,9 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
         // also.
         JSString* sourceString = val.toString();
         size_t sourceLength = sourceString->length();
-        Rooted<JSFlatString*> sourceFlat(cx, sourceString->ensureFlat(cx));
-        if (!sourceFlat) {
+        Rooted<JSLinearString*> sourceLinear(cx,
+                                             sourceString->ensureLinear(cx));
+        if (!sourceLinear) {
           return false;
         }
 
@@ -3337,12 +3409,12 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
           case TYPE_signed_char:
           case TYPE_unsigned_char: {
             // Reject if unpaired surrogate characters are present.
-            if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceFlat)) {
+            if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceLinear)) {
               return false;
             }
 
             // Convert from UTF-16 to UTF-8.
-            size_t nbytes = JS::GetDeflatedUTF8StringLength(sourceFlat);
+            size_t nbytes = JS::GetDeflatedUTF8StringLength(sourceLinear);
 
             char** charBuffer = static_cast<char**>(buffer);
             *charBuffer = cx->pod_malloc<char>(nbytes + 1);
@@ -3350,10 +3422,9 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
               return false;
             }
 
-            JS::DeflateStringToUTF8Buffer(
-                sourceFlat, mozilla::RangedPtr<char>(*charBuffer, nbytes),
-                &nbytes);
-            (*charBuffer)[nbytes] = 0;
+            nbytes = JS::DeflateStringToUTF8Buffer(
+                sourceLinear, mozilla::MakeSpan(*charBuffer, nbytes));
+            (*charBuffer)[nbytes] = '\0';
             *freePointer = true;
             break;
           }
@@ -3368,16 +3439,9 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
             }
 
             *freePointer = true;
-            if (sourceFlat->hasLatin1Chars()) {
-              AutoCheckCannotGC nogc;
-              CopyAndInflateChars(*char16Buffer, sourceFlat->latin1Chars(nogc),
-                                  sourceLength);
-            } else {
-              AutoCheckCannotGC nogc;
-              mozilla::PodCopy(*char16Buffer, sourceFlat->twoByteChars(nogc),
-                               sourceLength);
-            }
-            (*char16Buffer)[sourceLength] = 0;
+
+            CopyChars(*char16Buffer, *sourceLinear);
+            (*char16Buffer)[sourceLength] = '\0';
             break;
           }
           default:
@@ -3455,8 +3519,9 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
       if (val.isString()) {
         JSString* sourceString = val.toString();
         size_t sourceLength = sourceString->length();
-        Rooted<JSFlatString*> sourceFlat(cx, sourceString->ensureFlat(cx));
-        if (!sourceFlat) {
+        Rooted<JSLinearString*> sourceLinear(cx,
+                                             sourceString->ensureLinear(cx));
+        if (!sourceLinear) {
           return false;
         }
 
@@ -3465,12 +3530,12 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
           case TYPE_signed_char:
           case TYPE_unsigned_char: {
             // Reject if unpaired surrogate characters are present.
-            if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceFlat)) {
+            if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceLinear)) {
               return false;
             }
 
             // Convert from UTF-16 or Latin1 to UTF-8.
-            size_t nbytes = JS::GetDeflatedUTF8StringLength(sourceFlat);
+            size_t nbytes = JS::GetDeflatedUTF8StringLength(sourceLinear);
 
             if (targetLength < nbytes) {
               MOZ_ASSERT(!funObj);
@@ -3479,12 +3544,11 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
             }
 
             char* charBuffer = static_cast<char*>(buffer);
-            JS::DeflateStringToUTF8Buffer(
-                sourceFlat, mozilla::RangedPtr<char>(charBuffer, nbytes),
-                &nbytes);
+            nbytes = JS::DeflateStringToUTF8Buffer(
+                sourceLinear, mozilla::MakeSpan(charBuffer, nbytes));
 
             if (targetLength > nbytes) {
-              charBuffer[nbytes] = 0;
+              charBuffer[nbytes] = '\0';
             }
 
             break;
@@ -3499,18 +3563,10 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
             }
 
             char16_t* dest = static_cast<char16_t*>(buffer);
-            if (sourceFlat->hasLatin1Chars()) {
-              AutoCheckCannotGC nogc;
-              CopyAndInflateChars(dest, sourceFlat->latin1Chars(nogc),
-                                  sourceLength);
-            } else {
-              AutoCheckCannotGC nogc;
-              mozilla::PodCopy(dest, sourceFlat->twoByteChars(nogc),
-                               sourceLength);
-            }
+            CopyChars(dest, *sourceLinear);
 
             if (targetLength > sourceLength) {
-              dest[sourceLength] = 0;
+              dest[sourceLength] = '\0';
             }
 
             break;
@@ -3528,7 +3584,7 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
         if (cls == ESClass::Array) {
           // Convert each element of the array by calling ImplicitConvert.
           uint32_t sourceLength;
-          if (!JS_GetArrayLength(cx, valObj, &sourceLength) ||
+          if (!JS::GetArrayLength(cx, valObj, &sourceLength) ||
               targetLength != size_t(sourceLength)) {
             MOZ_ASSERT(!funObj);
             return ArrayLengthMismatch(cx, targetLength, targetType,
@@ -3648,7 +3704,7 @@ static bool ImplicitConvert(JSContext* cx, HandleValue val,
                                           argIndex);
           }
 
-          JSFlatString* name = JSID_TO_FLAT_STRING(id);
+          JSLinearString* name = JSID_TO_LINEAR_STRING(id);
           const FieldInfo* field =
               StructType::LookupField(cx, targetType, name);
           if (!field) {
@@ -4293,6 +4349,9 @@ JSObject* CType::Create(JSContext* cx, HandleObject typeProto,
   JS_SetReservedSlot(typeObj, SLOT_TYPECODE, Int32Value(type));
   if (ffiType) {
     JS_SetReservedSlot(typeObj, SLOT_FFITYPE, PrivateValue(ffiType));
+    if (type == TYPE_struct || type == TYPE_array) {
+      AddCellMemory(typeObj, sizeof(ffi_type), MemoryUse::CTypeFFIType);
+    }
   }
   if (name) {
     JS_SetReservedSlot(typeObj, SLOT_NAME, StringValue(name));
@@ -4358,6 +4417,14 @@ JSObject* CType::DefineBuiltin(JSContext* cx, HandleObject ctypesObj,
   return typeObj;
 }
 
+static void FinalizeFFIType(JSFreeOp* fop, JSObject* obj, const Value& slot,
+                            size_t elementCount) {
+  ffi_type* ffiType = static_cast<ffi_type*>(slot.toPrivate());
+  size_t size = elementCount * sizeof(ffi_type*);
+  fop->free_(obj, ffiType->elements, size, MemoryUse::CTypeFFITypeElements);
+  fop->delete_(obj, ffiType, MemoryUse::CTypeFFIType);
+}
+
 void CType::Finalize(JSFreeOp* fop, JSObject* obj) {
   // Make sure our TypeCode slot is legit. If it's not, bail.
   Value slot = JS_GetReservedSlot(obj, SLOT_TYPECODE);
@@ -4371,33 +4438,44 @@ void CType::Finalize(JSFreeOp* fop, JSObject* obj) {
       // Free the FunctionInfo.
       slot = JS_GetReservedSlot(obj, SLOT_FNINFO);
       if (!slot.isUndefined()) {
-        FreeOp::get(fop)->delete_(static_cast<FunctionInfo*>(slot.toPrivate()));
+        auto fninfo = static_cast<FunctionInfo*>(slot.toPrivate());
+        fop->delete_(obj, fninfo, MemoryUse::CTypeFunctionInfo);
       }
       break;
     }
 
     case TYPE_struct: {
+      size_t fieldCount = 0;
+
       // Free the FieldInfoHash table.
       slot = JS_GetReservedSlot(obj, SLOT_FIELDINFO);
       if (!slot.isUndefined()) {
-        void* info = slot.toPrivate();
-        FreeOp::get(fop)->delete_(static_cast<FieldInfoHash*>(info));
+        auto info = static_cast<FieldInfoHash*>(slot.toPrivate());
+        fieldCount = info->count();
+        fop->delete_(obj, info, MemoryUse::CTypeFieldInfo);
       }
-    }
 
-      MOZ_FALLTHROUGH;
+      // Free the ffi_type info.
+      Value slot = JS_GetReservedSlot(obj, SLOT_FFITYPE);
+      if (!slot.isUndefined()) {
+        size_t elementCount = fieldCount != 0 ? fieldCount + 1 : 2;
+        FinalizeFFIType(fop, obj, slot, elementCount);
+      }
+
+      // Free the ffi_type info.
+      break;
+    }
 
     case TYPE_array: {
       // Free the ffi_type info.
-      slot = JS_GetReservedSlot(obj, SLOT_FFITYPE);
+      Value slot = JS_GetReservedSlot(obj, SLOT_FFITYPE);
       if (!slot.isUndefined()) {
-        ffi_type* ffiType = static_cast<ffi_type*>(slot.toPrivate());
-        FreeOp::get(fop)->free_(ffiType->elements);
-        FreeOp::get(fop)->delete_(ffiType);
+        size_t elementCount = ArrayType::GetLength(obj);
+        FinalizeFFIType(fop, obj, slot, elementCount);
       }
-
       break;
     }
+
     default:
       // Nothing to do here.
       break;
@@ -4615,7 +4693,8 @@ ffi_type* CType::GetFFIType(JSContext* cx, JSObject* obj) {
   if (!result) {
     return nullptr;
   }
-  JS_SetReservedSlot(obj, SLOT_FFITYPE, PrivateValue(result.get()));
+  JS_InitReservedSlot(obj, SLOT_FFITYPE, result.get(),
+                      JS::MemoryUse::CTypeFFIType);
   return result.release();
 }
 
@@ -5135,7 +5214,7 @@ bool PointerType::OffsetBy(JSContext* cx, const CallArgs& args, int offset,
 
   size_t elementSize = CType::GetSize(baseType);
   char* data = static_cast<char*>(*static_cast<void**>(CData::GetData(obj)));
-  void* address = data + offset * elementSize;
+  void* address = data + offset * ptrdiff_t(elementSize);
 
   // Create a PointerType CData object containing the new address.
   JSObject* result = CData::Create(cx, typeObj, nullptr, &address, true);
@@ -5338,8 +5417,8 @@ bool ArrayType::ConstructData(JSContext* cx, HandleObject obj_,
       // including space for the terminator.
       JSString* sourceString = args[0].toString();
       size_t sourceLength = sourceString->length();
-      Rooted<JSFlatString*> sourceFlat(cx, sourceString->ensureFlat(cx));
-      if (!sourceFlat) {
+      Rooted<JSLinearString*> sourceLinear(cx, sourceString->ensureLinear(cx));
+      if (!sourceLinear) {
         return false;
       }
 
@@ -5348,12 +5427,12 @@ bool ArrayType::ConstructData(JSContext* cx, HandleObject obj_,
         case TYPE_signed_char:
         case TYPE_unsigned_char: {
           // Reject if unpaired surrogate characters are present.
-          if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceFlat)) {
+          if (!ReportErrorIfUnpairedSurrogatePresent(cx, sourceLinear)) {
             return false;
           }
 
           // Determine the UTF-8 length.
-          length = JS::GetDeflatedUTF8StringLength(sourceFlat);
+          length = JS::GetDeflatedUTF8StringLength(sourceLinear);
 
           ++length;
           break;
@@ -5684,8 +5763,8 @@ bool ArrayType::AddressOfElement(JSContext* cx, unsigned argc, Value* vp) {
 
 // For a struct field descriptor 'val' of the form { name : type }, extract
 // 'name' and 'type'.
-static JSFlatString* ExtractStructField(JSContext* cx, HandleValue val,
-                                        MutableHandleObject typeObj) {
+static JSLinearString* ExtractStructField(JSContext* cx, HandleValue val,
+                                          MutableHandleObject typeObj) {
   if (val.isPrimitive()) {
     FieldDescriptorNameTypeError(cx, val);
     return nullptr;
@@ -5729,15 +5808,15 @@ static JSFlatString* ExtractStructField(JSContext* cx, HandleValue val,
     return nullptr;
   }
 
-  return JSID_TO_FLAT_STRING(nameid);
+  return JSID_TO_LINEAR_STRING(nameid);
 }
 
 // For a struct field with 'name' and 'type', add an element of the form
 // { name : type }.
 static bool AddFieldToArray(JSContext* cx, MutableHandleValue element,
-                            JSFlatString* name_, JSObject* typeObj_) {
+                            JSLinearString* name_, JSObject* typeObj_) {
   RootedObject typeObj(cx, typeObj_);
-  Rooted<JSFlatString*> name(cx, name_);
+  Rooted<JSLinearString*> name(cx, name_);
   RootedObject fieldObj(cx, JS_NewPlainObject(cx));
   if (!fieldObj) {
     return false;
@@ -5792,7 +5871,7 @@ bool StructType::Create(JSContext* cx, unsigned argc, Value* vp) {
     if (!arr) {
       isArray = false;
     } else {
-      if (!JS_IsArrayObject(cx, arr, &isArray)) {
+      if (!JS::IsArrayObject(cx, arr, &isArray)) {
         return false;
       }
     }
@@ -5816,7 +5895,7 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
   RootedObject fieldsObj(cx, fieldsObj_);
 
   uint32_t len;
-  MOZ_ALWAYS_TRUE(JS_GetArrayLength(cx, fieldsObj, &len));
+  MOZ_ALWAYS_TRUE(JS::GetArrayLength(cx, fieldsObj, &len));
 
   // Get the common prototype for CData objects of this type from
   // ctypes.CType.prototype.
@@ -5840,7 +5919,7 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
     return false;
 
   // Create a FieldInfoHash to stash on the type object.
-  Rooted<FieldInfoHash> fields(cx, len);
+  Rooted<FieldInfoHash> fields(cx, FieldInfoHash(cx->zone(), len));
 
   // Process the field types.
   size_t structSize, structAlign;
@@ -5855,7 +5934,8 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
       }
 
       RootedObject fieldType(cx, nullptr);
-      Rooted<JSFlatString*> name(cx, ExtractStructField(cx, item, &fieldType));
+      Rooted<JSLinearString*> name(cx,
+                                   ExtractStructField(cx, item, &fieldType));
       if (!name) {
         return false;
       }
@@ -5879,7 +5959,7 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
         return false;
       }
       SetFunctionNativeReserved(getter, StructType::SLOT_FIELDNAME,
-                                StringValue(JS_FORGET_STRING_FLATNESS(name)));
+                                StringValue(JS_FORGET_STRING_LINEARNESS(name)));
       RootedObject getterObj(cx, JS_GetFunctionObject(getter));
 
       RootedFunction setter(
@@ -5889,7 +5969,7 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
         return false;
       }
       SetFunctionNativeReserved(setter, StructType::SLOT_FIELDNAME,
-                                StringValue(JS_FORGET_STRING_FLATNESS(name)));
+                                StringValue(JS_FORGET_STRING_LINEARNESS(name)));
       RootedObject setterObj(cx, JS_GetFunctionObject(setter));
 
       if (!JS_DefineUCProperty(cx, prototype, nameChars.twoByteChars(),
@@ -5956,8 +6036,8 @@ bool StructType::DefineInternal(JSContext* cx, JSObject* typeObj_,
     JS_ReportOutOfMemory(cx);
     return false;
   }
-  JS_SetReservedSlot(typeObj, SLOT_FIELDINFO, PrivateValue(heapHash));
-
+  JS_InitReservedSlot(typeObj, SLOT_FIELDINFO, heapHash,
+                      JS::MemoryUse::CTypeFieldInfo);
   JS_SetReservedSlot(typeObj, SLOT_SIZE, sizeVal);
   JS_SetReservedSlot(typeObj, SLOT_ALIGN, Int32Value(structAlign));
   // if (!JS_FreezeObject(cx, prototype)0 // XXX fixme - see bug 541212!
@@ -6009,6 +6089,8 @@ UniquePtrFFIType StructType::BuildFFIType(JSContext* cx, JSObject* obj) {
   }
 
   ffiType->elements = elements.release();
+  AddCellMemory(obj, count * sizeof(ffi_type*),
+                MemoryUse::CTypeFFITypeElements);
 
 #ifdef DEBUG
   // Perform a sanity check: the result of our struct size and alignment
@@ -6068,7 +6150,7 @@ bool StructType::Define(JSContext* cx, unsigned argc, Value* vp) {
   if (!arg.isObject()) {
     isArray = false;
   } else {
-    if (!JS_IsArrayObject(cx, arg, &isArray)) {
+    if (!JS::IsArrayObject(cx, arg, &isArray)) {
       return false;
     }
   }
@@ -6174,7 +6256,7 @@ const FieldInfoHash* StructType::GetFieldInfo(JSObject* obj) {
 }
 
 const FieldInfo* StructType::LookupField(JSContext* cx, JSObject* obj,
-                                         JSFlatString* name) {
+                                         JSLinearString* name) {
   MOZ_ASSERT(CType::IsCType(obj));
   MOZ_ASSERT(CType::GetTypeCode(obj) == TYPE_struct);
 
@@ -6209,7 +6291,7 @@ JSObject* StructType::BuildFieldsArray(JSContext* cx, JSObject* obj) {
       return nullptr;
   }
 
-  RootedObject fieldsProp(cx, JS_NewArrayObject(cx, fieldsVec));
+  RootedObject fieldsProp(cx, JS::NewArrayObject(cx, fieldsVec));
   if (!fieldsProp) {
     return nullptr;
   }
@@ -6278,7 +6360,8 @@ bool StructType::FieldGetter(JSContext* cx, unsigned argc, Value* vp) {
 
   RootedValue nameVal(
       cx, GetFunctionNativeReserved(&args.callee(), SLOT_FIELDNAME));
-  Rooted<JSFlatString*> name(cx, JS_FlattenString(cx, nameVal.toString()));
+  Rooted<JSLinearString*> name(cx,
+                               JS_EnsureLinearString(cx, nameVal.toString()));
   if (!name) {
     return false;
   }
@@ -6315,7 +6398,8 @@ bool StructType::FieldSetter(JSContext* cx, unsigned argc, Value* vp) {
 
   RootedValue nameVal(
       cx, GetFunctionNativeReserved(&args.callee(), SLOT_FIELDNAME));
-  Rooted<JSFlatString*> name(cx, JS_FlattenString(cx, nameVal.toString()));
+  Rooted<JSLinearString*> name(cx,
+                               JS_EnsureLinearString(cx, nameVal.toString()));
   if (!name) {
     return false;
   }
@@ -6362,7 +6446,7 @@ bool StructType::AddressOfField(JSContext* cx, unsigned argc, Value* vp) {
                                 "a string");
   }
 
-  JSFlatString* str = JS_FlattenString(cx, args[0].toString());
+  JSLinearString* str = JS_EnsureLinearString(cx, args[0].toString());
   if (!str) {
     return false;
   }
@@ -6628,13 +6712,14 @@ void FunctionType::BuildSymbolName(JSContext* cx, JSString* name,
 static bool CreateFunctionInfo(JSContext* cx, HandleObject typeObj,
                                HandleValue abiType, HandleObject returnType,
                                const HandleValueArray& args) {
-  FunctionInfo* fninfo(cx->new_<FunctionInfo>());
+  FunctionInfo* fninfo(cx->new_<FunctionInfo>(cx->zone()));
   if (!fninfo) {
     return false;
   }
 
   // Stash the FunctionInfo in a reserved slot.
-  JS_SetReservedSlot(typeObj, SLOT_FNINFO, PrivateValue(fninfo));
+  JS_InitReservedSlot(typeObj, SLOT_FNINFO, fninfo,
+                      JS::MemoryUse::CTypeFunctionInfo);
 
   ffi_abi abi;
   if (!GetABI(cx, abiType, &abi)) {
@@ -6724,7 +6809,7 @@ bool FunctionType::Create(JSContext* cx, unsigned argc, Value* vp) {
     if (!args[2].isObject()) {
       isArray = false;
     } else {
-      if (!JS_IsArrayObject(cx, args[2], &isArray)) {
+      if (!JS::IsArrayObject(cx, args[2], &isArray)) {
         return false;
       }
     }
@@ -6736,7 +6821,7 @@ bool FunctionType::Create(JSContext* cx, unsigned argc, Value* vp) {
     arrayObj = &args[2].toObject();
 
     uint32_t len;
-    MOZ_ALWAYS_TRUE(JS_GetArrayLength(cx, arrayObj, &len));
+    MOZ_ALWAYS_TRUE(JS::GetArrayLength(cx, arrayObj, &len));
 
     if (!argTypes.resize(len)) {
       JS_ReportOutOfMemory(cx);
@@ -7087,7 +7172,7 @@ bool FunctionType::ArgTypesGetter(JSContext* cx, const JS::CallArgs& args) {
       vec[i].setObject(*fninfo->mArgTypes[i]);
     }
 
-    argTypes = JS_NewArrayObject(cx, vec);
+    argTypes = JS::NewArrayObject(cx, vec);
     if (!argTypes) {
       return false;
     }
@@ -7193,7 +7278,8 @@ JSObject* CClosure::Create(JSContext* cx, HandleObject typeObj,
   cinfo->jsfnObj = fnObj;
 
   // Stash the ClosureInfo struct on our new object.
-  JS_SetReservedSlot(result, SLOT_CLOSUREINFO, PrivateValue(cinfo));
+  JS_InitReservedSlot(result, SLOT_CLOSUREINFO, cinfo,
+                      JS::MemoryUse::CClosureInfo);
 
   // Create an ffi_closure object and initialize it.
   void* code;
@@ -7240,7 +7326,7 @@ void CClosure::Finalize(JSFreeOp* fop, JSObject* obj) {
   }
 
   ClosureInfo* cinfo = static_cast<ClosureInfo*>(slot.toPrivate());
-  FreeOp::get(fop)->delete_(cinfo);
+  fop->delete_(obj, cinfo, MemoryUse::CClosureInfo);
 }
 
 void CClosure::ClosureStub(ffi_cif* cif, void* result, void** args,
@@ -7464,10 +7550,13 @@ JSObject* CData::Create(JSContext* cx, HandleObject typeObj,
     } else {
       memcpy(data, source, size);
     }
+
+    AddCellMemory(dataObj, size, MemoryUse::CDataBuffer);
   }
 
   *buffer.get() = data;
-  JS_SetReservedSlot(dataObj, SLOT_DATA, PrivateValue(buffer.release()));
+  JS_InitReservedSlot(dataObj, SLOT_DATA, buffer.release(),
+                      JS::MemoryUse::CDataBufferPtr);
 
   // If this is an array, wrap it in a proxy so we can intercept element
   // gets/sets.
@@ -7499,9 +7588,11 @@ void CData::Finalize(JSFreeOp* fop, JSObject* obj) {
   char** buffer = static_cast<char**>(slot.toPrivate());
 
   if (owns) {
-    FreeOp::get(fop)->free_(*buffer);
+    JSObject* typeObj = &JS_GetReservedSlot(obj, SLOT_CTYPE).toObject();
+    size_t size = CType::GetSize(typeObj);
+    fop->free_(obj, *buffer, size, MemoryUse::CDataBuffer);
   }
-  FreeOp::get(fop)->delete_(buffer);
+  fop->delete_(obj, buffer, MemoryUse::CDataBufferPtr);
 }
 
 JSObject* CData::GetCType(JSObject* dataObj) {
@@ -7666,8 +7757,8 @@ bool CData::GetRuntime(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-typedef JS::TwoByteCharsZ (*InflateUTF8Method)(JSContext*, const JS::UTF8Chars,
-                                               size_t*, arena_id_t);
+using InflateUTF8Method = JS::TwoByteCharsZ (*)(JSContext*, const JS::UTF8Chars,
+                                                size_t*, arena_id_t);
 
 static bool ReadStringCommon(JSContext* cx, InflateUTF8Method inflateUTF8,
                              unsigned argc, Value* vp, const char* funName,
@@ -7740,7 +7831,7 @@ static bool ReadStringCommon(JSContext* cx, InflateUTF8Method inflateUTF8,
     case TYPE_signed_char:
     case TYPE_unsigned_char: {
       char* bytes = static_cast<char*>(data);
-      size_t length = strnlen(bytes, maxLength);
+      size_t length = js_strnlen(bytes, maxLength);
 
       // Determine the length.
       UniqueTwoByteChars dst(
@@ -7763,7 +7854,7 @@ static bool ReadStringCommon(JSContext* cx, InflateUTF8Method inflateUTF8,
     case TYPE_unsigned_short:
     case TYPE_char16_t: {
       char16_t* chars = static_cast<char16_t*>(data);
-      size_t length = strnlen(chars, maxLength);
+      size_t length = js_strnlen(chars, maxLength);
       result = JS_NewUCStringCopyN(cx, chars, length);
       break;
     }
@@ -8414,7 +8505,7 @@ JSObject* Int64Base::Construct(JSContext* cx, HandleObject proto, uint64_t data,
     return nullptr;
   }
 
-  JS_SetReservedSlot(result, SLOT_INT64, PrivateValue(buffer));
+  JS_InitReservedSlot(result, SLOT_INT64, buffer, JS::MemoryUse::CTypesInt64);
 
   if (!JS_FreezeObject(cx, result)) {
     return nullptr;
@@ -8429,7 +8520,8 @@ void Int64Base::Finalize(JSFreeOp* fop, JSObject* obj) {
     return;
   }
 
-  FreeOp::get(fop)->delete_(static_cast<uint64_t*>(slot.toPrivate()));
+  uint64_t* buffer = static_cast<uint64_t*>(slot.toPrivate());
+  fop->delete_(obj, buffer, MemoryUse::CTypesInt64);
 }
 
 uint64_t Int64Base::GetInt(JSObject* obj) {
@@ -8672,7 +8764,7 @@ bool Int64::Join(JSContext* cx, unsigned argc, Value* vp) {
     return ArgumentConvError(cx, args[1], "Int64.join", 1);
   }
 
-  int64_t i = (int64_t(hi) << 32) + int64_t(lo);
+  int64_t i = mozilla::WrapToSigned((uint64_t(hi) << 32) + lo);
 
   // Get Int64.prototype from the function's reserved slot.
   JSObject* callee = &args.callee();
