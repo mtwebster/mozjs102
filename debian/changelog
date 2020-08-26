@@ -1,5 +1,6 @@
 mozjs78 (78.2.0-1) UNRELEASED; urgency=medium
 
+  [ Marco Trevisan (Treviño) ]
   * New upstream version 78.2.0 (Closes: #968341)
     - Rename source to mozjs78
     - debian/gbp.conf: Set debian and upstream branches to match version
@@ -62,6 +63,9 @@ mozjs78 (78.2.0-1) UNRELEASED; urgency=medium
     - Add back icu sources data patches, they were wrongly removed, even if
       they aren't currently used, they might be useful if internal ICU is
       wanted for backport reasons.
+
+  [ Dimitri John Ledkov ]
+  * Disable CET protection in mozjs, until after JIT is ported upstream.
 
  -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 25 Aug 2020 17:15:21 +0200
 
