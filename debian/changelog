@@ -1,4 +1,6 @@
-mozjs78 (78.2.0-1) UNRELEASED; urgency=medium
+mozjs78 (78.2.0-1) unstable; urgency=medium
+
+  * Team upload
 
   [ Marco Trevisan (Treviño) ]
   * New upstream version 78.2.0 (Closes: #968341)
@@ -67,7 +69,12 @@ mozjs78 (78.2.0-1) UNRELEASED; urgency=medium
   [ Dimitri John Ledkov ]
   * Disable CET protection in mozjs, until after JIT is ported upstream.
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 25 Aug 2020 17:15:21 +0200
+  [ Simon McVittie ]
+  * d/copyright: Update
+  * d/p/Skip-another-timezone-related-test-that-fails-with-system.patch:
+    Add a patch to skip another timezone-related test with system ICU
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 27 Aug 2020 21:59:39 +0100
 
 mozjs68 (68.9.0-1) unstable; urgency=medium
 
