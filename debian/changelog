@@ -1,3 +1,11 @@
+mozjs78 (78.3.0-2) unstable; urgency=medium
+
+  * Team upload
+  * d/p/Bug-1642332-Avoid-static-initializer-for-Number.NaN-r-jan.patch:
+    Add patch from upstream to fix Number.NaN being incorrect on mipsen
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 25 Sep 2020 19:45:45 +0100
+
 mozjs78 (78.3.0-1) unstable; urgency=medium
 
   * Team upload
