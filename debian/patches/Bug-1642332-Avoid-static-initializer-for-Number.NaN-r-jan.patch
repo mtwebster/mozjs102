@@ -1,0 +1,39 @@
+From: Ted Campbell <tcampbell@mozilla.com>
+Date: Thu, 4 Jun 2020 08:38:45 +0100
+Subject: Bug 1642332 - Avoid static initializer for Number.NaN r=jandem
+
+This also fixes correctness issue on MIPS platform.
+
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1642332
+Differential Revision: https://phabricator.services.mozilla.com/D77673
+---
+ js/src/jsnum.cpp | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/js/src/jsnum.cpp b/js/src/jsnum.cpp
+index 976f8e7..48f3e9c 100644
+--- a/js/src/jsnum.cpp
++++ b/js/src/jsnum.cpp
+@@ -1273,9 +1273,6 @@ static const JSFunctionSpec number_static_methods[] = {
+     JS_FS_END};
+ 
+ static const JSPropertySpec number_static_properties[] = {
+-    // Our NaN must be one particular canonical value, because we rely on NaN
+-    // encoding for our value representation.  See Value.h.
+-    JS_DOUBLE_PS("NaN", GenericNaN(), JSPROP_READONLY | JSPROP_PERMANENT),
+     JS_DOUBLE_PS("POSITIVE_INFINITY", mozilla::PositiveInfinity<double>(),
+                  JSPROP_READONLY | JSPROP_PERMANENT),
+     JS_DOUBLE_PS("NEGATIVE_INFINITY", mozilla::NegativeInfinity<double>(),
+@@ -1409,6 +1406,12 @@ static bool NumberClassFinish(JSContext* cx, HandleObject ctor,
+   RootedValue valueNaN(cx, JS::NaNValue());
+   RootedValue valueInfinity(cx, JS::InfinityValue());
+ 
++  if (!DefineDataProperty(
++          cx, ctor, cx->names().NaN, valueNaN,
++          JSPROP_PERMANENT | JSPROP_READONLY | JSPROP_RESOLVING)) {
++    return false;
++  }
++
+   // ES5 15.1.1.1, 15.1.1.2
+   if (!NativeDefineDataProperty(
+           cx, global, cx->names().NaN, valueNaN,
