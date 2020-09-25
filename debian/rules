@@ -68,7 +68,7 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),i386))
 endif
 
 ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
-CONFIGURE_FLAGS += --disable-ion
+CONFIGURE_FLAGS += --disable-jit
 endif
 
 ifeq ($(DEB_HOST_ARCH),sh4)
