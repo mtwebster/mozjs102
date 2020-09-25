@@ -34,6 +34,12 @@ Description: SpiderMonkey JavaScript library
  SpiderMonkey is the code-name for Mozilla Firefox's C++ implementation of
  JavaScript. It is intended to be embedded in other applications
  that provide host environments for JavaScript.
+ .
+ This library is intended for use in contexts where only trusted
+ JavaScript code will be run, such as GNOME's gjs, Cinnamon's cjs, and
+ polkit's rules parsing. It should not be used to run untrusted JavaScript
+ from web pages: use a security-supported implementation such as Firefox,
+ Chrome or WebKitGTK's JavaScriptCore instead.
 
 Package: libmozjs-78-dev
 Architecture: any
@@ -48,3 +54,9 @@ Description: SpiderMonkey JavaScript library - development headers
  .
  This package contains the header files which are
  needed for developing SpiderMonkey embedders.
+ .
+ This library is intended for use in contexts where only trusted
+ JavaScript code will be run, such as GNOME's gjs, Cinnamon's cjs, and
+ polkit's rules parsing. It should not be used to run untrusted JavaScript
+ from web pages: use a security-supported implementation such as Firefox,
+ Chrome or WebKitGTK's JavaScriptCore instead.
