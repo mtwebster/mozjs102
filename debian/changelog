@@ -1,9 +1,15 @@
 mozjs78 (78.2.0-2) UNRELEASED; urgency=medium
 
+  [ Julien Cristau ]
   * Update configure flag --disable-ion to --disable-jit on mipsen to
     fix FTBFS.
 
- -- Julien Cristau <jcristau@debian.org>  Fri, 25 Sep 2020 08:26:24 +0200
+  [ Simon McVittie ]
+  * d/p/tests-Expect-some-tests-to-fail-on-armel.patch:
+    Add more tests that are expected to fail on armel, due to softfloat
+    not having precisely the same behaviour as hardfloat
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 25 Sep 2020 09:22:38 +0100
 
 mozjs78 (78.2.0-1) unstable; urgency=medium
 
