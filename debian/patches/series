@@ -9,7 +9,7 @@ tests-increase-timeout.patch
 ia64-support.patch
 tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch
 tests-Expect-some-floating-point-tests-to-fail-on-i386.patch
-tests-Expect-a-test-to-fail-on-armel.patch
+tests-Expect-some-tests-to-fail-on-armel.patch
 tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch
 tests-Expect-a-test-to-fail-on-big-endian.patch
 sdk-mozjs68-import-a-patch-to-workaround-arm-compilation-.patch
