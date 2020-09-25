@@ -1,4 +1,6 @@
-mozjs78 (78.3.0-1) UNRELEASED; urgency=medium
+mozjs78 (78.3.0-1) unstable; urgency=medium
+
+  * Team upload
 
   [ Julien Cristau ]
   * Update configure flag --disable-ion to --disable-jit on mipsen to
@@ -9,8 +11,13 @@ mozjs78 (78.3.0-1) UNRELEASED; urgency=medium
     Add more tests that are expected to fail on armel, due to softfloat
     not having precisely the same behaviour as hardfloat
   * New upstream release
+    - d/p/Bug-1661094-Always-define-PKGCONF_REQUIRES_PRIVATE.patch:
+      Drop patch, applied upstream
+  * d/p/Bug-1666646-Set-CodeAlignment-to-16-for-the-none-backend..patch:
+    Add patch from upstream to fix static assertion failure on mipsel,
+    powerpc, and other 32-bit architectures with JIT disabled or missing
 
- -- Simon McVittie <smcv@debian.org>  Fri, 25 Sep 2020 10:40:42 +0100
+ -- Simon McVittie <smcv@debian.org>  Fri, 25 Sep 2020 12:48:00 +0100
 
 mozjs78 (78.2.0-1) unstable; urgency=medium
 
