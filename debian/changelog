@@ -1,8 +1,10 @@
-mozjs78 (78.4.0-1) UNRELEASED; urgency=medium
+mozjs78 (78.4.0-1) unstable; urgency=medium
 
+  * Team upload
   * New upstream release
+  * Drop patches that came from upstream
 
- -- Simon McVittie <smcv@debian.org>  Wed, 04 Nov 2020 10:59:59 +0000
+ -- Simon McVittie <smcv@debian.org>  Wed, 04 Nov 2020 11:01:47 +0000
 
 mozjs78 (78.3.0-2) unstable; urgency=medium
 
