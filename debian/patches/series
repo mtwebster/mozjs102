@@ -18,5 +18,3 @@ tests-Adapt-formatted-strings-results-to-system-ICU.patch
 Skip-time-zone-tests-that-fails-with-system-ICU.patch
 Skip-another-timezone-related-test-that-fails-with-system.patch
 Add-riscv64-support.patch
-Bug-1666646-Set-CodeAlignment-to-16-for-the-none-backend..patch
-Bug-1642332-Avoid-static-initializer-for-Number.NaN-r-jan.patch
