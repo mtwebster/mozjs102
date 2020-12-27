@@ -81,12 +81,8 @@ else
 CONFIGURE_FLAGS += --without-system-icu
 endif
 
-# riscv64 doesn't seem to handle LTO properly, causing dwz to fail
-# see https://github.com/rust-lang/rust/issues/66118#issuecomment-551446657
-# In such case, using thin LTO, fixes the problem
-ifneq (,$(findstring $(DEB_BUILD_ARCH),riscv64))
+# See https://github.com/rust-lang/rust/issues/66118
 RUSTFLAGS += -Clto=thin
-endif
 
 export RUSTFLAGS
 export CARGO_HOME
