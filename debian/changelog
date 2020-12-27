@@ -1,11 +1,12 @@
-mozjs78 (78.4.0-2) UNRELEASED; urgency=medium
+mozjs78 (78.4.0-2) unstable; urgency=medium
 
+  * Team upload
   * Use rustc -Clto=thin on all architectures.
     Previously dwz only failed to process the debug symbols without this
     flag on riscv64, but it seems the same problem now appears on amd64,
     and perhaps other architectures. (Closes: #978354)
 
- -- Simon McVittie <smcv@debian.org>  Sun, 27 Dec 2020 13:44:43 +0000
+ -- Simon McVittie <smcv@debian.org>  Sun, 27 Dec 2020 21:13:20 +0000
 
 mozjs78 (78.4.0-1) unstable; urgency=medium
 
