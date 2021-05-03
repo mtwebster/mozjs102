@@ -1,0 +1,47 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Mon, 3 May 2021 20:30:26 +0200
+Subject: Bug 1644600 - Move JSStructuredCloneData destructor into private
+ impl
+
+This is using js::SharedArrayRawBufferRefs that is a private API and not
+exported. Leaving it in the header makes linking not to work when using
+StructuredClone:
+
+  JSStructuredCloneData::~JSStructuredCloneData()':
+    /usr/include/mozjs-78/js/StructuredClone.h:459:
+    undefined reference to
+    `js::SharedArrayRawBufferRefs::~SharedArrayRawBufferRefs()
+
+Origin: https://phabricator.services.mozilla.com/D114128
+Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=1644600
+---
+ js/public/StructuredClone.h   | 2 +-
+ js/src/vm/StructuredClone.cpp | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/js/public/StructuredClone.h b/js/public/StructuredClone.h
+index 1b3bec9..cb3cd5b 100644
+--- a/js/public/StructuredClone.h
++++ b/js/public/StructuredClone.h
+@@ -456,7 +456,7 @@ class MOZ_NON_MEMMOVABLE JS_PUBLIC_API JSStructuredCloneData {
+                               JS::StructuredCloneScope::Unassigned) {}
+   JSStructuredCloneData(JSStructuredCloneData&& other) = default;
+   JSStructuredCloneData& operator=(JSStructuredCloneData&& other) = default;
+-  ~JSStructuredCloneData() { discardTransferables(); }
++  ~JSStructuredCloneData();
+ 
+   void setCallbacks(const JSStructuredCloneCallbacks* callbacks, void* closure,
+                     OwnTransferablePolicy policy) {
+diff --git a/js/src/vm/StructuredClone.cpp b/js/src/vm/StructuredClone.cpp
+index 36bf947..b9957de 100644
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -938,6 +938,8 @@ void SCOutput::discardTransferables() { buf.discardTransferables(); }
+ 
+ }  // namespace js
+ 
++JSStructuredCloneData::~JSStructuredCloneData() { discardTransferables(); }
++
+ // If the buffer contains Transferables, free them. Note that custom
+ // Transferables will use the JSStructuredCloneCallbacks::freeTransfer() to
+ // delete their transferables.
