@@ -26,6 +26,7 @@ EXTRA_FILES=(
 
 FILTERED_FILES=(
   '*.chm'
+  '*.dll'
   '*.exe'
   '*.pyd'
   '*.a'
