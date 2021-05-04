@@ -1,8 +1,25 @@
 mozjs78 (78.10.1-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * debian/control: Bump standards version (no change required)
+  * debian/upstream/signing-key.asc: Use minimal key only
+  * debian/gbp-repack-mozjs-source.sh: Also filter out *.dll files
+  * debian/source/lintian-overrides: Ignore more warnings on shipped js files
+  * debian/patches:
+    - Refresh
+    - Move JSStructuredCloneData destructor to private impl.
+      Without this linking against mozjs won't work when structured cloning is
+      used.
+  * d/p/tests-Adapt-formatted-strings-results-to-system-ICU.patch:
+    Ignore system tz name check. This may fail when not on GMT.
+  * d/p/time-zone-path-test-Update-for-what-our-system-ICU-return.patch:
+    Protect from false negative.
+    We did update all the tests to use the system zoneinfo path, but we did
+    not include the case were an error should be reported.
+    Without doing this we may not check the point of the test (two colons)
+    because the test was failing due to the wrong zoneinfo path
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 04 May 2021 18:43:46 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 04 May 2021 18:12:56 +0200
 
 mozjs78 (78.4.0-2) unstable; urgency=medium
 
