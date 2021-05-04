@@ -1,4 +1,4 @@
-mozjs78 (78.10.1-1) UNRELEASED; urgency=medium
+mozjs78 (78.10.1-1) experimental; urgency=medium
 
   * New upstream release
   * debian/control: Bump standards version (no change required)
@@ -19,7 +19,7 @@ mozjs78 (78.10.1-1) UNRELEASED; urgency=medium
     Without doing this we may not check the point of the test (two colons)
     because the test was failing due to the wrong zoneinfo path
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 04 May 2021 18:12:56 +0200
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 04 May 2021 19:41:03 +0200
 
 mozjs78 (78.4.0-2) unstable; urgency=medium
 
