@@ -21,7 +21,7 @@ Build-Depends: debhelper-compat (= 13),
                tzdata,
                zip
 Rules-Requires-Root: no
-Standards-Version: 4.5.0
+Standards-Version: 4.5.1
 Vcs-Browser: https://salsa.debian.org/gnome-team/mozjs/tree/debian/78/master
 Vcs-Git: https://salsa.debian.org/gnome-team/mozjs.git -b debian/78/master
 Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey
