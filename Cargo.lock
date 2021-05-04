@@ -898,9 +898,9 @@ dependencies = [
 
 [[package]]
 name = "cssparser"
-version = "0.27.2"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754b69d351cdc2d8ee09ae203db831e005560fc6030da058f86ad60c92a9cb0a"
+checksum = "809d22aba9ffd53e9028f2d37261f1826ef613d0e96b1a5ddeefa97cde82bcca"
 dependencies = [
  "cssparser-macros",
  "dtoa-short",
@@ -3200,7 +3200,7 @@ dependencies = [
 [[package]]
 name = "nix"
 version = "0.13.1"
-source = "git+https://github.com/shravanrn/nix/?branch=r0.13.1#4af6c367603869a30fddb5ffb0aba2b9477ba92e"
+source = "git+https://github.com/shravanrn/nix/?rev=4af6c367603869a30fddb5ffb0aba2b9477ba92e#4af6c367603869a30fddb5ffb0aba2b9477ba92e"
 dependencies = [
  "bitflags",
  "cc",
@@ -3717,9 +3717,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.5"
+version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90cf5f418035b98e655e9cdb225047638296b862b42411c4e45bb88d700f7fc0"
+checksum = "175c513d55719db99da20232b06cda8bab6b83ec2d04e3283edf0213c37c1a29"
 dependencies = [
  "unicode-xid",
 ]
@@ -4647,9 +4647,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.5"
+version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66850e97125af79138385e9b88339cbcd037e3f28ceab8c5ad98e64f0f1f80bf"
+checksum = "963f7d3cc59b59b9325165add223142bbf1df27655d07789f109896d353d8350"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4792,12 +4792,9 @@ checksum = "8eaa81235c7058867fa8c0e7314f33dcce9c215f535d1913822a2b3f5e289f3c"
 
 [[package]]
 name = "thin-vec"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73fdf4b84c65a85168477b7fb6c498e0716bc9487fba24623389ea7f51708044"
-dependencies = [
- "libc",
-]
+checksum = "3a93c9ade36a827a69257925808463db46ffcf193442fad01eb9bdc1d31aed81"
 
 [[package]]
 name = "thiserror"
