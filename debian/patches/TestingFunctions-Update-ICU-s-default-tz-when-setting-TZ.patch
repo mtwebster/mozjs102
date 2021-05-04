@@ -11,7 +11,7 @@ Forwarded: no (but should be)
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/js/src/builtin/TestingFunctions.cpp b/js/src/builtin/TestingFunctions.cpp
-index 8163885..d53033c 100644
+index 0e7629a..4b3ea06 100644
 --- a/js/src/builtin/TestingFunctions.cpp
 +++ b/js/src/builtin/TestingFunctions.cpp
 @@ -69,6 +69,7 @@

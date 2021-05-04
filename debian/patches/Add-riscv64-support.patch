@@ -15,10 +15,10 @@ Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=1661027
  7 files changed, 25 insertions(+), 7 deletions(-)
 
 diff --git a/build/moz.configure/init.configure b/build/moz.configure/init.configure
-index 5e07418..0c81996 100644
+index b887153..54615d8 100644
 --- a/build/moz.configure/init.configure
 +++ b/build/moz.configure/init.configure
-@@ -744,6 +744,9 @@ def split_triplet(triplet, allow_msvc=False):
+@@ -758,6 +758,9 @@ def split_triplet(triplet, allow_msvc=False):
      elif cpu == 'sh4':
          canonical_cpu = 'sh4'
          endianness = 'little'
