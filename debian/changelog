@@ -1,8 +1,11 @@
-mozjs78 (78.13.0-1) UNRELEASED; urgency=medium
+mozjs78 (78.13.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Drop Bug-1644600 patch: applied in new release
+  * debian/upstream/signing-key.asc: Update from 91.0esr
+  * Release to unstable
 
- -- Jeremy Bicha <jbicha@debian.org>  Sat, 28 Aug 2021 08:46:02 -0400
+ -- Jeremy Bicha <jbicha@debian.org>  Sat, 28 Aug 2021 08:46:19 -0400
 
 mozjs78 (78.10.1-1) experimental; urgency=medium
 
