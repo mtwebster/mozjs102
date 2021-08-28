@@ -50,7 +50,7 @@ tag = "v0.3.0"
 [source."https://github.com/hsivonen/packed_simd"]
 git = "https://github.com/hsivonen/packed_simd"
 replace-with = "vendored-sources"
-rev = "3541e3818fdc7c2a24f87e3459151a4ce955a67a"
+rev = "07d285ba65d9a4e3b9d76eacbf4c6489e125127d"
 
 [source."https://github.com/djg/cubeb-pulse-rs"]
 git = "https://github.com/djg/cubeb-pulse-rs"
