@@ -1,5 +1,4 @@
 Bug-1545437-Add-options-to-specify-Rust-target-name.patch
-Bug-1644600-Move-JSStructuredCloneData-destructor-into-pr.patch
 icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
 icu_sources_data-Write-command-output-to-our-stderr.patch
 fix-soname.patch
