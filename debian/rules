@@ -150,7 +150,7 @@ endif
 		exit 1; \
 	fi
 
-override_dh_install:
+execute_before_dh_install:
 	# move library and create additional symlinks to standardize the file layout
 	cd $(CURDIR)/debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/ && \
 		mv libjs_static.ajs $(LIBNAME).a && \
@@ -158,10 +158,8 @@ override_dh_install:
 		ln -s $(VERSIONED_LIBNAME) $(SONAME) && \
 		ln -s $(SONAME) $(LIBNAME).so
 	rm debian/tmp/usr/lib/${DEB_HOST_MULTIARCH}/$(LIBNAME).a
-	dh_install
 
-override_dh_fixperms:
-	dh_fixperms
+execute_after_dh_fixperms:
 	chmod a-x $(CURDIR)/debian/$(LIBNAME)-dev/usr/lib/${DEB_HOST_MULTIARCH}/pkgconfig/mozjs-$(MOZJS_VERSION).pc
 
 override_dh_gnome:
