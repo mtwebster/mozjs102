@@ -1,3 +1,12 @@
+mozjs78 (78.15.0-2) unstable; urgency=medium
+
+  * Team upload
+  * d/p/Fix-armhf-build-for-GCC-11-627.patch:
+    Add patch from cc-rs to fix FTBFS on armhf with gcc-11 build-time
+    configuration changes (Closes: #1001314)
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 08 Dec 2021 09:51:24 +0000
+
 mozjs78 (78.15.0-1) unstable; urgency=medium
 
   * New upstream release
