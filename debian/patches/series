@@ -10,8 +10,8 @@ tests-Expect-some-floating-point-tests-to-fail-on-i386.patch
 tests-Expect-some-tests-to-fail-on-armel.patch
 tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch
 tests-Expect-a-test-to-fail-on-big-endian.patch
-TestingFunctions-Update-ICU-s-default-tz-when-setting-TZ.patch
-time-zone-path-test-Update-for-what-our-system-ICU-return.patch
-tests-Adapt-formatted-strings-results-to-system-ICU.patch
-Skip-time-zone-tests-that-fails-with-system-ICU.patch
-Skip-another-timezone-related-test-that-fails-with-system.patch
+system-ICU/TestingFunctions-Update-ICU-s-default-tz-when-setting-TZ.patch
+system-ICU/time-zone-path-test-Update-for-what-our-system-ICU-return.patch
+system-ICU/tests-Adapt-formatted-strings-results-to-system-ICU.patch
+system-ICU/Skip-time-zone-tests-that-fails-with-system-ICU.patch
+system-ICU/Skip-another-timezone-related-test-that-fails-with-system.patch
