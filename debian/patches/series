@@ -20,3 +20,4 @@ system-ICU/tests-Ignore-POSIX-posix-mismatch-in-tests.patch
 system-ICU/tests-Use-debian-provided-locale-format-to-check-formatte.patch
 system-ICU/tests-Adapt-subtags-test-to-debian-ICU-computed-values.patch
 system-ICU/tests-Disable-failing-DateTimeFormat-tests-with-system-IC.patch
+system-ICU/DateTimeFormat-Use-normal-parenthesis-instead-of-ICU.patch
