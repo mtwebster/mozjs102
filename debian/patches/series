@@ -17,3 +17,4 @@ system-ICU/Skip-time-zone-tests-that-fails-with-system-ICU.patch
 system-ICU/Skip-another-timezone-related-test-that-fails-with-system.patch
 system-ICU/jstests-Skip-property-escapes-tests-unsupported-by-system.patch
 system-ICU/tests-Ignore-POSIX-posix-mismatch-in-tests.patch
+system-ICU/tests-Use-debian-provided-locale-format-to-check-formatte.patch
