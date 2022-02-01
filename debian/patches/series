@@ -15,3 +15,4 @@ system-ICU/time-zone-path-test-Update-for-what-our-system-ICU-return.patch
 system-ICU/tests-Adapt-formatted-strings-results-to-system-ICU.patch
 system-ICU/Skip-time-zone-tests-that-fails-with-system-ICU.patch
 system-ICU/Skip-another-timezone-related-test-that-fails-with-system.patch
+system-ICU/jstests-Skip-property-escapes-tests-unsupported-by-system.patch
