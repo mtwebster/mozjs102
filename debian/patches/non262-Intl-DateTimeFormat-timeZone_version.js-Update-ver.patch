@@ -1,0 +1,26 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Tue, 1 Feb 2022 20:19:32 +0100
+Subject: non262/Intl/DateTimeFormat/timeZone_version.js: Update version to
+ match source
+
+For some reason the version is not matching the one that is actually
+used.
+
+Ensuring that version matches ./intl/icu/source/data/misc/zoneinfo64.txt
+---
+ js/src/tests/non262/Intl/DateTimeFormat/timeZone_version.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/js/src/tests/non262/Intl/DateTimeFormat/timeZone_version.js b/js/src/tests/non262/Intl/DateTimeFormat/timeZone_version.js
+index 830c70d..2c921f0 100644
+--- a/js/src/tests/non262/Intl/DateTimeFormat/timeZone_version.js
++++ b/js/src/tests/non262/Intl/DateTimeFormat/timeZone_version.js
+@@ -5,7 +5,7 @@
+ 
+ // NOTE: Manually edited for the non-standard release "2021a3".
+ 
+-const tzdata = "2021a3";
++const tzdata = "2021a";
+ 
+ if (typeof getICUOptions === "undefined") {
+     var getICUOptions = SpecialPowers.Cu.getJSTestingFunctions().getICUOptions;
