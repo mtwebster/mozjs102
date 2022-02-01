@@ -46,7 +46,7 @@ for i in $(grep-dctrl -s Files-Excluded -n - 2> /dev/null < "$debpath/copyright"
 done
 
 srcpath="$GBP_SOURCES_DIR"
-"$srcpath"/js/src/make-source-package.sh
+"$srcpath"/js/src/make-source-package.py
 
 mozjspath="$(find "$STAGING" -mindepth 1 -maxdepth 1 -type d -name "$MOZJS_NAME"'-*')"
 set +x
