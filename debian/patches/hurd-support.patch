@@ -7,10 +7,10 @@ Subject: Hurd support
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/wasm/WasmSignalHandlers.cpp b/js/src/wasm/WasmSignalHandlers.cpp
-index 78d1544..a6610f3 100644
+index 4ab2a44..1229c30 100644
 --- a/js/src/wasm/WasmSignalHandlers.cpp
 +++ b/js/src/wasm/WasmSignalHandlers.cpp
-@@ -109,7 +109,7 @@ using mozilla::DebugOnly;
+@@ -108,7 +108,7 @@ using mozilla::DebugOnly;
  #    define R01_sig(p) ((p)->sc_frame.fixreg[1])
  #    define R32_sig(p) ((p)->sc_frame.srr0)
  #  endif

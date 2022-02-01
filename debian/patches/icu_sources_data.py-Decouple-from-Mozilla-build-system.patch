@@ -15,10 +15,10 @@ Forwarded: Not-needed
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/intl/icu_sources_data.py b/intl/icu_sources_data.py
-index 1037861..ea78131 100644
+index 2936df9..4db52af 100644
 --- a/intl/icu_sources_data.py
 +++ b/intl/icu_sources_data.py
-@@ -22,7 +22,9 @@ import subprocess
+@@ -21,7 +21,9 @@ import subprocess
  import sys
  import tempfile
  

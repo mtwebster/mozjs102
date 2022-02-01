@@ -11,28 +11,35 @@ This patch is relevant only when mozjs is built without system ICU.
 Applied-Upstream: No
 Forwarded: Not-needed
 ---
- intl/icu_sources_data.py | 11 ++++-------
- 1 file changed, 4 insertions(+), 7 deletions(-)
+ intl/icu_sources_data.py | 14 ++++++--------
+ 1 file changed, 6 insertions(+), 8 deletions(-)
 
 diff --git a/intl/icu_sources_data.py b/intl/icu_sources_data.py
-index ea78131..c178575 100644
+index 4db52af..04aa6cd 100644
 --- a/intl/icu_sources_data.py
 +++ b/intl/icu_sources_data.py
-@@ -190,16 +190,13 @@ def update_sources(topsrcdir):
+@@ -188,21 +188,19 @@ def update_sources(topsrcdir):
  
  def try_run(name, command, cwd=None, **kwargs):
      try:
 -        with tempfile.NamedTemporaryFile(prefix=name, delete=False) as f:
--            subprocess.check_call(command, cwd=cwd, stdout=f,
--                                  stderr=subprocess.STDOUT, **kwargs)
-+        subprocess.check_call(command, cwd=cwd, stdout=sys.stderr,
-+                                stderr=subprocess.STDOUT, **kwargs)
+-            subprocess.check_call(
+-                command, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, **kwargs
+-            )
++        subprocess.check_call(
++            command, cwd=cwd, stdout=sys.stderr, stderr=subprocess.STDOUT,
++            **kwargs
++        )
      except subprocess.CalledProcessError:
--        print('''Error running "{}" in directory {}
--    See output in {}'''.format(' '.join(command), cwd, f.name),
--              file=sys.stderr)
-+        print('''Error running "{}" in directory {}'''.format(' '.join(command), cwd),
-+            file=sys.stderr)
+         print(
+-            """Error running "{}" in directory {}
+-    See output in {}""".format(
+-                " ".join(command), cwd, f.name
++            """Error running "{}" in directory {}""".format(
++                " ".join(command), cwd,
+             ),
+             file=sys.stderr,
+         )
          return False
      else:
 -        os.unlink(f.name)

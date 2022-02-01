@@ -11,21 +11,21 @@ Forwarded: no (but should be)
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/js/src/builtin/TestingFunctions.cpp b/js/src/builtin/TestingFunctions.cpp
-index 0e7629a..4b3ea06 100644
+index 006824e..d59386f 100644
 --- a/js/src/builtin/TestingFunctions.cpp
 +++ b/js/src/builtin/TestingFunctions.cpp
-@@ -69,6 +69,7 @@
- #include "js/Vector.h"
+@@ -92,6 +92,7 @@
  #include "js/Wrapper.h"
  #include "threading/CpuCount.h"
-+#include "unicode/timezone.h"
- #include "util/StringBuffer.h"
- #include "util/Text.h"
- #include "vm/AsyncFunction.h"
-@@ -5460,7 +5461,12 @@ static bool SetTimeZone(JSContext* cx, unsigned argc, Value* vp) {
- #if defined(_WIN32)
+ #ifdef JS_HAS_INTL_API
++#  include "unicode/timezone.h"
+ #  include "unicode/ucal.h"
+ #  include "unicode/uchar.h"
+ #  include "unicode/uloc.h"
+@@ -6563,7 +6564,12 @@ static bool SetTimeZone(JSContext* cx, unsigned argc, Value* vp) {
+ #  if defined(_WIN32)
      return _putenv_s("TZ", value) == 0;
- #else
+ #  else
 -    return setenv("TZ", value, true) == 0;
 +    int r;
 +    r = setenv("TZ", value, true) == 0;
@@ -33,6 +33,6 @@ index 0e7629a..4b3ea06 100644
 +       icu::TimeZone::adoptDefault(defaultZone);
 +    }
 +    return r;
- #endif /* _WIN32 */
+ #  endif /* _WIN32 */
    };
  

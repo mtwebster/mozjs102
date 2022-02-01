@@ -28,10 +28,10 @@ Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=1346211
  1 file changed, 6 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 84fe75e..22f12da 100644
+index d224192..d89dc9d 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -676,6 +676,12 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/langua
+@@ -636,6 +636,12 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/langua
  # Assumes little-endian IEEE representation of floating point numbers
  fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins/TypedArray/prototype/set/typedarray-arg-set-values-same-buffer-other-type.js
  
