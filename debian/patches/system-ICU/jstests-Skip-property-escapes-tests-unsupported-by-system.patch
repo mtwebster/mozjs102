@@ -11,11 +11,11 @@ changes.
  1 file changed, 100 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 6d0f180..2c31bf9 100644
+index f70cf84..3dbde7c 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -643,6 +643,106 @@ skip script non262/Date/time-zones-historic.js
- skip script non262/Date/time-zones-imported.js
+@@ -646,6 +646,106 @@ skip script non262/Date/time-zones-historic.js
+ 
  skip script non262/Intl/DateTimeFormat/timeZone_backward_links.js
  
 +# These tests don't work with current (2022.02.01) System ICU.

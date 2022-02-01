@@ -9,11 +9,11 @@ Those are regression from mozjs78
  2 files changed, 9 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 2c31bf9..870ed7a 100644
+index 3dbde7c..7fea8f8 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -643,6 +643,13 @@ skip script non262/Date/time-zones-historic.js
- skip script non262/Date/time-zones-imported.js
+@@ -646,6 +646,13 @@ skip script non262/Date/time-zones-historic.js
+ 
  skip script non262/Intl/DateTimeFormat/timeZone_backward_links.js
  
 +# DateTimeFormat is lacking some features when using system ICU:

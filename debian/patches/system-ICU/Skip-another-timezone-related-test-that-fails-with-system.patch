@@ -8,18 +8,19 @@ match whatever updates Mozilla have made to the bundled copy.
 
 Forwarded: no
 ---
- js/src/tests/jstests.list | 1 +
- 1 file changed, 1 insertion(+)
+ js/src/tests/jstests.list | 2 ++
+ 1 file changed, 2 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index d89dc9d..6d0f180 100644
+index ddaafba..f70cf84 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -641,6 +641,7 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins
+@@ -644,6 +644,8 @@ skip script non262/Date/time-zones-imported.js
  # https://hg.mozilla.org/mozilla-central/rev/7b1a3a49547d
  skip script non262/Date/time-zones-historic.js
- skip script non262/Date/time-zones-imported.js
-+skip script non262/Intl/DateTimeFormat/timeZone_backward_links.js
  
++skip script non262/Intl/DateTimeFormat/timeZone_backward_links.js
++
  ###########################################################
  # Tests disabled due to issues in test262 importer script #
+ ###########################################################

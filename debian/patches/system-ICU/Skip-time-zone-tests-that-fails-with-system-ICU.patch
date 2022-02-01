@@ -24,22 +24,21 @@ Forwarded: no
 Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=487897
 Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=1346211
 ---
- js/src/tests/jstests.list | 6 ++++++
- 1 file changed, 6 insertions(+)
+ js/src/tests/jstests.list | 5 +++++
+ 1 file changed, 5 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index d224192..d89dc9d 100644
+index 4f3dd53..ddaafba 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -636,6 +636,12 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/langua
- # Assumes little-endian IEEE representation of floating point numbers
- fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins/TypedArray/prototype/set/typedarray-arg-set-values-same-buffer-other-type.js
+@@ -639,6 +639,11 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins
+ # This test fails with both System and embedded ICU version
+ skip script non262/Date/time-zones-imported.js
  
-+# These tests fails when using system ICU because the related bug has been fixed only when using local ICU
++# This test fails when using system ICU because the related bug has been fixed only when using local ICU
 +# See https://bugzilla.mozilla.org/show_bug.cgi?id=1346211#c7
 +# https://hg.mozilla.org/mozilla-central/rev/7b1a3a49547d
 +skip script non262/Date/time-zones-historic.js
-+skip script non262/Date/time-zones-imported.js
 +
  ###########################################################
  # Tests disabled due to issues in test262 importer script #
