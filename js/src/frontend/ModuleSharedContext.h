@@ -12,8 +12,10 @@
 
 #include "builtin/ModuleObject.h"    // js::ModuleObject
 #include "frontend/SharedContext.h"  // js::frontend::SharedContext
+#include "js/CompileOptions.h"       // JS::ReadOnlyCompileOptions
 #include "js/RootingAPI.h"           // JS::Handle, JS::Rooted
 #include "vm/Scope.h"                // js::{Module,}Scope
+#include "vm/StencilEnums.h"         // ImmutableScriptFlagsEnum
 
 namespace js {
 
@@ -21,20 +23,15 @@ class ModuleBuilder;
 
 namespace frontend {
 
-class MOZ_STACK_CLASS ModuleSharedContext : public SharedContext {
-  JS::Rooted<ModuleObject*> module_;
-  JS::Rooted<Scope*> enclosingScope_;
+struct CompilationStencil;
 
+class MOZ_STACK_CLASS ModuleSharedContext : public SuspendableContext {
  public:
-  JS::Rooted<ModuleScope::Data*> bindings;
+  ModuleScope::ParserData* bindings;
   ModuleBuilder& builder;
 
-  ModuleSharedContext(JSContext* cx, ModuleObject* module,
-                      CompilationInfo& compilationInfo, Scope* enclosingScope,
+  ModuleSharedContext(JSContext* cx, const JS::ReadOnlyCompileOptions& options,
                       ModuleBuilder& builder, SourceExtent extent);
-
-  JS::Handle<ModuleObject*> module() const { return module_; }
-  Scope* compilationEnclosingScope() const override { return enclosingScope_; }
 };
 
 inline ModuleSharedContext* SharedContext::asModuleContext() {

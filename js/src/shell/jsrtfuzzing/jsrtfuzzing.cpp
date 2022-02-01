@@ -6,7 +6,6 @@
 
 #include "shell/jsrtfuzzing/jsrtfuzzing.h"
 
-#include "mozilla/ArrayUtils.h"  // mozilla::ArrayLength
 #include "mozilla/Assertions.h"  // MOZ_CRASH
 #include "mozilla/Utf8.h"        // mozilla::Utf8Unit
 
@@ -20,10 +19,12 @@
 #include "js/CompileOptions.h"            // JS::CompileOptions
 #include "js/ErrorReport.h"               // JS::PrintError
 #include "js/Exception.h"                 // JS::StealPendingExceptionStack
-#include "js/RootingAPI.h"                // JS::Rooted
-#include "js/SourceText.h"                // JS::Source{Ownership,Text}
-#include "js/Value.h"                     // JS::Value
+#include "js/experimental/TypedData.h"  // JS_GetUint8ClampedArrayData, JS_NewUint8ClampedArray
+#include "js/RootingAPI.h"  // JS::Rooted
+#include "js/SourceText.h"  // JS::Source{Ownership,Text}
+#include "js/Value.h"       // JS::Value
 #include "shell/jsshell.h"  // js::shell::{reportWarnings,PrintStackTrace,sArg{c,v}}
+#include "util/Text.h"
 #include "vm/Interpreter.h"
 #include "vm/TypedArrayObject.h"
 
@@ -43,7 +44,7 @@ static void CrashOnPendingException() {
       fprintf(stderr, "out of memory initializing JS::ErrorReportBuilder\n");
       fflush(stderr);
     } else {
-      JS::PrintError(gCx, stderr, report, js::shell::reportWarnings);
+      JS::PrintError(stderr, report, js::shell::reportWarnings);
       if (!js::shell::PrintStackTrace(gCx, exnStack.stack())) {
         fputs("(Unable to print stack trace)\n", stderr);
       }
@@ -113,8 +114,7 @@ int js::shell::FuzzJSRuntimeFuzz(const uint8_t* buf, size_t size) {
   static const char data[] = "JSFuzzIterate();";
 
   JS::SourceText<mozilla::Utf8Unit> srcBuf;
-  if (!srcBuf.init(gCx, data, mozilla::ArrayLength(data) - 1,
-                   JS::SourceOwnership::Borrowed)) {
+  if (!srcBuf.init(gCx, data, js_strlen(data), JS::SourceOwnership::Borrowed)) {
     return 1;
   }
 

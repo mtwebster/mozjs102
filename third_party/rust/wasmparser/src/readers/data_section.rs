@@ -14,8 +14,8 @@
  */
 
 use super::{
-    BinaryReader, BinaryReaderError, InitExpr, Result, SectionIteratorLimited, SectionReader,
-    SectionWithLimitedItems,
+    BinaryReader, BinaryReaderError, InitExpr, Range, Result, SectionIteratorLimited,
+    SectionReader, SectionWithLimitedItems,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -33,16 +33,22 @@ pub enum DataKind<'a> {
     },
 }
 
+#[derive(Clone)]
 pub struct DataSectionReader<'a> {
     reader: BinaryReader<'a>,
     count: u32,
+    forbid_bulk_memory: bool,
 }
 
 impl<'a> DataSectionReader<'a> {
     pub fn new(data: &'a [u8], offset: usize) -> Result<DataSectionReader<'a>> {
         let mut reader = BinaryReader::new_with_offset(data, offset);
         let count = reader.read_var_u32()?;
-        Ok(DataSectionReader { reader, count })
+        Ok(DataSectionReader {
+            reader,
+            count,
+            forbid_bulk_memory: false,
+        })
     }
 
     pub fn original_position(&self) -> usize {
@@ -51,6 +57,10 @@ impl<'a> DataSectionReader<'a> {
 
     pub fn get_count(&self) -> u32 {
         self.count
+    }
+
+    pub fn forbid_bulk_memory(&mut self, forbid: bool) {
+        self.forbid_bulk_memory = forbid;
     }
 
     fn verify_data_end(&self, end: usize) -> Result<()> {
@@ -67,19 +77,10 @@ impl<'a> DataSectionReader<'a> {
     ///
     /// # Examples
     /// ```
-    /// # let data: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-    /// #     0x01, 0x4, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00,
-    /// #     0x05, 0x03, 0x01, 0x00, 0x02,
-    /// #     0x0a, 0x05, 0x01, 0x03, 0x00, 0x01, 0x0b,
-    /// #     0x0b, 0x0b, 0x01, 0x00, 0x41, 0x80, 0x08, 0x0b, 0x04, 0x00, 0x00, 0x00, 0x00];
-    /// use wasmparser::{ModuleReader, DataKind};
-    /// let mut reader = ModuleReader::new(data).expect("module reader");
-    /// let section = reader.read().expect("type section");
-    /// let section = reader.read().expect("function section");
-    /// let section = reader.read().expect("memory section");
-    /// let section = reader.read().expect("code section");
-    /// let section = reader.read().expect("data section");
-    /// let mut data_reader = section.get_data_section_reader().expect("data section reader");
+    /// use wasmparser::{DataSectionReader, DataKind};
+    /// # let data: &[u8] = &[
+    /// #     0x01, 0x00, 0x41, 0x80, 0x08, 0x0b, 0x04, 0x00, 0x00, 0x00, 0x00];
+    /// let mut data_reader = DataSectionReader::new(data, 0).unwrap();
     /// for _ in 0..data_reader.get_count() {
     ///     let data = data_reader.read().expect("data");
     ///     println!("Data: {:?}", data);
@@ -95,11 +96,12 @@ impl<'a> DataSectionReader<'a> {
         'a: 'b,
     {
         let flags = self.reader.read_var_u32()?;
-        let kind = if flags == 1 {
+        let kind = if !self.forbid_bulk_memory && flags == 1 {
             DataKind::Passive
         } else {
             let memory_index = match flags {
                 0 => 0,
+                _ if self.forbid_bulk_memory => flags,
                 2 => self.reader.read_var_u32()?,
                 _ => {
                     return Err(BinaryReaderError::new(
@@ -138,6 +140,9 @@ impl<'a> SectionReader for DataSectionReader<'a> {
     }
     fn original_position(&self) -> usize {
         DataSectionReader::original_position(self)
+    }
+    fn range(&self) -> Range {
+        self.reader.range()
     }
 }
 

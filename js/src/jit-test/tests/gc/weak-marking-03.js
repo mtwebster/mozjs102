@@ -28,6 +28,13 @@ function reportMarks(prefix = "") {
   return markstr;
 }
 
+function startGCMarking() {
+  startgc(100000);
+  while (gcstate() === "Prepare") {
+    gcslice(100000);
+  }
+}
+
 function purgeKey() {
   const m = new WeakMap();
   const vals = {};
@@ -47,7 +54,7 @@ function purgeKey() {
 
   vals.key = vals.val = null;
 
-  startgc(100000);
+  startGCMarking();
   // getMarks() returns map/key/value
   assertEq(getMarks().join("/"), "black/unmarked/unmarked",
            "marked the map black");
@@ -87,7 +94,7 @@ function removeKey() {
   enqueueMark(m);
   enqueueMark("yield");
 
-  startgc(100000);
+  startGCMarking();
   reportMarks("first: ");
   var marks = getMarks();
   assertEq(marks[0], "black", "map is black");
@@ -106,6 +113,9 @@ function removeKey() {
   m.set(vals.key, vals.val);
   vals.key = vals.val = null;
   startgc(10000);
+  while (gcstate() !== "Mark") {
+    gcslice(100000);
+  }
   marks = getMarks();
   assertEq(marks[0], "black", "map is black");
   assertEq(marks[1], "unmarked", "key not marked yet");
@@ -161,6 +171,9 @@ function nukeMarking() {
 
   // Okay, run through the GC now.
   startgc(1000000);
+  while (gcstate() !== "Mark") {
+    gcslice(100000);
+  }
   assertEq(gcstate(), "Mark", "expected to yield after marking map");
   // We should have marked the map and then yielded back here.
   nukeCCW(vals.key);
@@ -195,6 +208,9 @@ function transplantMarking() {
 
   // Okay, run through the GC now.
   startgc(1000000);
+  while (gcstate() !== "Mark") {
+    gcslice(100000);
+  }
   assertEq(gcstate(), "Mark", "expected to yield after marking map");
   // We should have marked the map and then yielded back here.
   transplant(g1);
@@ -248,7 +264,7 @@ function grayMarkingMapFirst() {
   };
 
   print("Starting incremental GC");
-  startgc(100000);
+  startGCMarking();
   // Checkpoint 1, after marking map
   showmarks();
   var marks = getMarks();
@@ -340,7 +356,7 @@ function grayMarkingMapLast() {
   };
 
   print("Starting incremental GC");
-  startgc(100000);
+  startGCMarking();
   // Checkpoint 1, after marking key
   showmarks();
   var marks = labeledMarks();
@@ -405,7 +421,7 @@ function grayMapKey() {
 
   vals.key = vals.val = null;
 
-  startgc(100000);
+  startGCMarking();
   assertEq(getMarks().join("/"), "gray/unmarked/unmarked",
            "marked the map gray");
 
@@ -457,7 +473,7 @@ function grayKeyMap() {
   // created additional zones.
   schedulezone(vals);
 
-  startgc(100000);
+  startGCMarking();
   // getMarks() returns map/key/value
   reportMarks("1: ");
   assertEq(getMarks().join("/"), "unmarked/black/unmarked",
@@ -492,10 +508,7 @@ if (this.enqueueMark)
 // it should be seen to be a CCW of a black delegate and so should itself be
 // marked black.
 //
-// Note that this is currently buggy -- the key will be marked because the
-// delegate is marked, but the color won't be taken into account. So the key
-// will be marked gray (or rather, it will see that it's already gray.) The bad
-// behavior this would cause is if:
+// The bad behavior being prevented is:
 //
 //  1. You wrap an object in a CCW and use it as a weakmap key to some
 //     information.
@@ -541,7 +554,7 @@ function blackDuringGray() {
   };
 
   print("Starting incremental GC");
-  startgc(100000);
+  startGCMarking();
   // Checkpoint 1, after marking delegate black
   showmarks();
   var marks = getMarks();
@@ -554,7 +567,7 @@ function blackDuringGray() {
   showmarks();
   marks = getMarks();
   assertEq(marks[0], "gray", "map is gray");
-  assertEq(marks[1], "gray", "delegate marks key but map is gray, so key gets gray");
+  assertEq(marks[1], "gray", "gray map + black delegate should mark key gray");
   assertEq(marks[2], "black", "delegate is still black");
   assertEq(marks[3], "gray", "gray map + gray key => gray value");
 
@@ -566,3 +579,65 @@ function blackDuringGray() {
 
 if (this.enqueueMark)
   runtest(blackDuringGray);
+
+// Same as above, except relying on the implicit edge from delegate -> key.
+function blackDuringGrayImplicit() {
+  const g = newGlobal({newCompartment: true});
+  const vals = {};
+  vals.map = new WeakMap();
+  vals.key = g.eval("Object.create(null)");
+  vals.val = Object.create(null);
+  vals.map.set(vals.key, vals.val);
+
+  g.delegate = vals.key;
+  addMarkObservers([vals.map, vals.key]);
+  g.addMarkObservers([vals.key]);
+  addMarkObservers([vals.val]);
+  // Mark observers: map, key, delegate, value
+
+  gc();
+
+  // Mark the map gray. This will scan through all entries, find our key, and
+  // add implicit edges from delegate -> key and delegate -> value.
+  enqueueMark("set-color-gray");
+  enqueueMark(vals.map); // Mark the map gray
+  enqueueMark("yield"); // checkpoint 1
+
+  enqueueMark("set-color-black");
+  g.enqueueMark(vals.key); // Mark the delegate black, propagating to key.
+
+  vals.map = null;
+  vals.val = null;
+  vals.key = null;
+  g.delegate = null;
+
+  const showmarks = () => {
+    print("[map,key,delegate,value] marked " + JSON.stringify(getMarks()));
+  };
+
+  print("Starting incremental GC");
+  startGCMarking();
+  // Checkpoint 1, after marking map gray
+  showmarks();
+  var marks = getMarks();
+  assertEq(marks[0], "gray", "map is gray");
+  assertEq(marks[1], "unmarked", "key is not marked yet");
+  assertEq(marks[2], "unmarked", "delegate is not marked yet");
+  assertEq(marks[3], "unmarked", "value is not marked yet");
+
+  finishgc();
+  showmarks();
+  marks = getMarks();
+  assertEq(marks[0], "gray", "map is gray");
+  assertEq(marks[1], "gray", "gray map + black delegate should mark key gray");
+  assertEq(marks[2], "black", "delegate is black");
+  assertEq(marks[3], "gray", "gray map + gray key => gray value via delegate -> value");
+
+  clearMarkQueue();
+  clearMarkObservers();
+  grayRoot().length = 0;
+  g.eval("grayRoot().length = 0");
+}
+
+if (this.enqueueMark)
+  runtest(blackDuringGrayImplicit);

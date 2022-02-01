@@ -5,8 +5,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 
 #include "gc/GCRuntime.h"
 #include "js/ArrayBuffer.h"  // JS::NewArrayBuffer
@@ -31,19 +31,6 @@ struct TestStruct {
   TestStruct() {}
   explicit TestStruct(T init) : wrapper(init) {}
 };
-
-// Give the GCPtr version GCManagedDeletePolicy as required.
-namespace JS {
-
-template <typename T>
-struct DeletePolicy<TestStruct<js::GCPtr<T>, T>>
-    : public js::GCManagedDeletePolicy<TestStruct<js::GCPtr<T>, T>> {};
-
-template <typename T>
-struct DeletePolicy<TestStruct<const js::GCPtr<T>, T>>
-    : public js::GCManagedDeletePolicy<TestStruct<const js::GCPtr<T>, T>> {};
-
-}  // namespace JS
 
 template <typename T>
 static T* CreateNurseryGCThing(JSContext* cx) {
@@ -90,12 +77,6 @@ JSObject* CreateTenuredGCThing(JSContext* cx) {
   return obj;
 }
 
-static void MakeWhite(JSObject* obj) {
-  gc::TenuredCell* cell = &obj->asTenured();
-  cell->unmark();
-  MOZ_ASSERT(!obj->isMarkedAny());
-}
-
 static void MakeGray(JSObject* obj) {
   gc::TenuredCell* cell = &obj->asTenured();
   cell->unmark();
@@ -110,9 +91,7 @@ static void MakeGray(JSObject* obj) {
 //  - HeapPtr
 //  - WeakHeapPtr
 BEGIN_TEST(testGCHeapPostBarriers) {
-#ifdef JS_GC_ZEAL
   AutoLeaveZeal nozeal(cx);
-#endif /* JS_GC_ZEAL */
 
   /* Sanity check - objects start in the nursery and then become tenured. */
   JS_GC(cx);
@@ -161,8 +140,14 @@ bool TestHeapPostBarriersForWrapper() {
   CHECK((TestHeapPostBarrierConstruction<W<T*>, T>()));
   CHECK((TestHeapPostBarrierConstruction<const W<T*>, T>()));
   CHECK((TestHeapPostBarrierUpdate<W<T*>, T>()));
-  CHECK((TestHeapPostBarrierInitFailure<W<T*>, T>()));
-  CHECK((TestHeapPostBarrierInitFailure<const W<T*>, T>()));
+  if constexpr (!std::is_same_v<W<T*>, GCPtr<T*>>) {
+    // It is not allowed to delete heap memory containing GCPtrs on
+    // initialization failure like this and doing so will cause an assertion to
+    // fail in the GCPtr destructor (although we disable this in some places in
+    // this test).
+    CHECK((TestHeapPostBarrierInitFailure<W<T*>, T>()));
+    CHECK((TestHeapPostBarrierInitFailure<const W<T*>, T>()));
+  }
   return true;
 }
 
@@ -179,7 +164,7 @@ bool TestHeapPostBarrierConstruction() {
     // roots.
     JS::AutoSuppressGCAnalysis noAnalysis(cx);
 
-    auto testStruct = cx->make_unique<TestStruct<W, T*>>(initialObj);
+    auto* testStruct = js_new<TestStruct<W, T*>>(initialObj);
     CHECK(testStruct);
 
     auto& wrapper = testStruct->wrapper;
@@ -190,6 +175,15 @@ bool TestHeapPostBarrierConstruction() {
     CHECK(uintptr_t(wrapper.get()) != initialObjAsInt);
     CHECK(!js::gc::IsInsideNursery(wrapper.get()));
     CHECK(CanAccessObject(wrapper.get()));
+
+    // Disable the check that GCPtrs are only destroyed by the GC. What happens
+    // on destruction isn't relevant to the test.
+    mozilla::Maybe<gc::AutoSetThreadIsFinalizing> threadIsFinalizing;
+    if constexpr (std::is_same_v<std::remove_const_t<W>, GCPtr<T*>>) {
+      threadIsFinalizing.emplace();
+    }
+
+    js_delete(testStruct);
   }
 
   cx->minorGC(JS::GCReason::API);
@@ -213,7 +207,7 @@ bool TestHeapPostBarrierUpdate() {
     // roots.
     JS::AutoSuppressGCAnalysis noAnalysis(cx);
 
-    auto testStruct = cx->make_unique<TestStruct<W, T*>>();
+    auto* testStruct = js_new<TestStruct<W, T*>>();
     CHECK(testStruct);
 
     auto& wrapper = testStruct->wrapper;
@@ -227,6 +221,12 @@ bool TestHeapPostBarrierUpdate() {
     CHECK(uintptr_t(wrapper.get()) != initialObjAsInt);
     CHECK(!js::gc::IsInsideNursery(wrapper.get()));
     CHECK(CanAccessObject(wrapper.get()));
+
+    // Disable the check that GCPtrs are only destroyed by the GC. What happens
+    // on destruction isn't relevant to the test.
+    gc::AutoSetThreadIsFinalizing threadIsFinalizing;
+
+    js_delete(testStruct);
   }
 
   cx->minorGC(JS::GCReason::API);
@@ -339,9 +339,7 @@ END_TEST(testGCHeapPostBarriers)
 // Also check that equality comparisons on wrappers do not trigger the read
 // barrier.
 BEGIN_TEST(testGCHeapReadBarriers) {
-#ifdef JS_GC_ZEAL
   AutoLeaveZeal nozeal(cx);
-#endif /* JS_GC_ZEAL */
 
   CHECK((TestWrapperType<JS::Heap<JSObject*>, JSObject*>()));
   CHECK((TestWrapperType<JS::TenuredHeap<JSObject*>, JSObject*>()));
@@ -357,7 +355,7 @@ bool TestWrapperType() {
     Rooted<ObjectT> obj0(cx, CreateTenuredGCThing<JSObject>(cx));
     WrapperT wrapper0(obj0);
     MakeGray(obj0);
-    mozilla::Unused << *wrapper0;
+    (void)*wrapper0;
     CHECK(obj0->isMarkedBlack());
   }
 
@@ -383,8 +381,8 @@ bool TestWrapperType() {
 template <typename WrapperT, typename ObjectT>
 bool TestUnbarrieredOperations(ObjectT obj, ObjectT obj2, WrapperT& wrapper,
                                WrapperT& wrapper2) {
-  mozilla::Unused << bool(wrapper);
-  mozilla::Unused << bool(wrapper2);
+  (void)bool(wrapper);
+  (void)bool(wrapper2);
   CHECK(obj->isMarkedGray());
   CHECK(obj2->isMarkedGray());
 
@@ -427,60 +425,67 @@ bool TestUnbarrieredOperations(ObjectT obj, ObjectT obj2, WrapperT& wrapper,
 
 END_TEST(testGCHeapReadBarriers)
 
+using ObjectVector = Vector<JSObject*, 0, SystemAllocPolicy>;
+
 // Test pre-barrier implementation on wrapper types. The following wrapper types
 // have a pre-barrier:
 //  - GCPtr
 //  - HeapPtr
 //  - PreBarriered
 BEGIN_TEST(testGCHeapPreBarriers) {
-#ifdef JS_GC_ZEAL
   AutoLeaveZeal nozeal(cx);
-#endif /* JS_GC_ZEAL */
 
-  uint32_t oldMode = JS_GetGCParameter(cx, JSGC_MODE);
-  JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_ZONE_INCREMENTAL);
+  AutoGCParameter param1(cx, JSGC_INCREMENTAL_GC_ENABLED, true);
 
-  RootedObject obj1(cx, CreateTenuredGCThing<JSObject>(cx));
-  RootedObject obj2(cx, CreateTenuredGCThing<JSObject>(cx));
-  CHECK(obj1);
-  CHECK(obj2);
+  // Create a bunch of objects. These are unrooted and will be used to test
+  // whether barriers have fired by checking whether they have been marked
+  // black.
+  size_t objectCount = 100;  // Increase this if necessary when adding tests.
+  ObjectVector testObjects;
+  for (size_t i = 0; i < objectCount; i++) {
+    JSObject* obj = CreateTenuredGCThing<JSObject>(cx);
+    CHECK(obj);
+    CHECK(testObjects.append(obj));
+  }
 
   // Start an incremental GC so we can detect if we cause barriers to fire, as
   // these will mark objects black.
   JS::PrepareForFullGC(cx);
   SliceBudget budget(WorkBudget(1));
   gc::GCRuntime* gc = &cx->runtime()->gc;
-  gc->startDebugGC(GC_NORMAL, budget);
+  gc->startDebugGC(JS::GCOptions::Normal, budget);
+  while (gc->state() != gc::State::Mark) {
+    gc->debugGCSlice(budget);
+  }
   MOZ_ASSERT(cx->zone()->needsIncrementalBarrier());
 
-  TestWrapper<HeapPtr<JSObject*>>(obj1, obj2);
-  TestWrapper<PreBarriered<JSObject*>>(obj1, obj2);
+  TestWrapper<HeapPtr<JSObject*>>(testObjects);
+  TestWrapper<PreBarriered<JSObject*>>(testObjects);
 
   // GCPtr is different because 1) it doesn't support move operations as it's
   // supposed to be part of a GC thing and 2) it doesn't perform a pre-barrier
   // in its destructor because these are only destroyed as part of a GC where
   // the barrier is unnecessary.
-  TestGCPtr(obj1, obj2);
+  TestGCPtr(testObjects);
 
   gc::FinishGC(cx, JS::GCReason::API);
 
-  JS_SetGCParameter(cx, JSGC_MODE, oldMode);
-
   return true;
 }
 
 template <typename Wrapper>
-bool TestWrapper(HandleObject obj1, HandleObject obj2) {
-  CHECK(TestCopyConstruction<Wrapper>(obj1));
-  CHECK(TestMoveConstruction<Wrapper>(obj1));
-  CHECK(TestAssignment<Wrapper>(obj1, obj2));
-  CHECK(TestMoveAssignment<Wrapper>(obj1, obj2));
+bool TestWrapper(ObjectVector& testObjects) {
+  CHECK(TestCopyConstruction<Wrapper>(testObjects.popCopy()));
+  CHECK(TestMoveConstruction<Wrapper>(testObjects.popCopy()));
+  CHECK(TestAssignment<Wrapper>(testObjects.popCopy(), testObjects.popCopy()));
+  CHECK(TestMoveAssignment<Wrapper>(testObjects.popCopy(),
+                                    testObjects.popCopy()));
   return true;
 }
 
 template <typename Wrapper>
-bool TestCopyConstruction(HandleObject obj) {
-  MakeWhite(obj);
+bool TestCopyConstruction(JSObject* obj) {
+  CHECK(!obj->isMarkedAny());
 
   {
     Wrapper wrapper1(obj);
@@ -491,14 +496,14 @@ bool TestCopyConstruction(HandleObject obj) {
   }
 
   // Check destructor performs pre-barrier.
-  MOZ_ASSERT(obj->isMarkedBlack());
+  CHECK(obj->isMarkedBlack());
 
   return true;
 }
 
 template <typename Wrapper>
-bool TestMoveConstruction(HandleObject obj) {
-  MakeWhite(obj);
+bool TestMoveConstruction(JSObject* obj) {
+  CHECK(!obj->isMarkedAny());
 
   {
     Wrapper wrapper1(obj);
@@ -516,9 +521,9 @@ bool TestMoveConstruction(HandleObject obj) {
 }
 
 template <typename Wrapper>
-bool TestAssignment(HandleObject obj1, HandleObject obj2) {
-  MakeWhite(obj1);
-  MakeWhite(obj2);
+bool TestAssignment(JSObject* obj1, JSObject* obj2) {
+  CHECK(!obj1->isMarkedAny());
+  CHECK(!obj2->isMarkedAny());
 
   {
     Wrapper wrapper1(obj1);
@@ -539,9 +544,9 @@ bool TestAssignment(HandleObject obj1, HandleObject obj2) {
 }
 
 template <typename Wrapper>
-bool TestMoveAssignment(HandleObject obj1, HandleObject obj2) {
-  MakeWhite(obj1);
-  MakeWhite(obj2);
+bool TestMoveAssignment(JSObject* obj1, JSObject* obj2) {
+  CHECK(!obj1->isMarkedAny());
+  CHECK(!obj2->isMarkedAny());
 
   {
     Wrapper wrapper1(obj1);
@@ -562,14 +567,14 @@ bool TestMoveAssignment(HandleObject obj1, HandleObject obj2) {
   return true;
 }
 
-bool TestGCPtr(HandleObject obj1, HandleObject obj2) {
-  CHECK(TestGCPtrCopyConstruction(obj1));
-  CHECK(TestGCPtrAssignment(obj1, obj2));
+bool TestGCPtr(ObjectVector& testObjects) {
+  CHECK(TestGCPtrCopyConstruction(testObjects.popCopy()));
+  CHECK(TestGCPtrAssignment(testObjects.popCopy(), testObjects.popCopy()));
   return true;
 }
 
-bool TestGCPtrCopyConstruction(HandleObject obj) {
-  MakeWhite(obj);
+bool TestGCPtrCopyConstruction(JSObject* obj) {
+  CHECK(!obj->isMarkedAny());
 
   {
     // Let us destroy GCPtrs ourselves for testing purposes.
@@ -588,9 +593,9 @@ bool TestGCPtrCopyConstruction(HandleObject obj) {
   return true;
 }
 
-bool TestGCPtrAssignment(HandleObject obj1, HandleObject obj2) {
-  MakeWhite(obj1);
-  MakeWhite(obj2);
+bool TestGCPtrAssignment(JSObject* obj1, JSObject* obj2) {
+  CHECK(!obj1->isMarkedAny());
+  CHECK(!obj2->isMarkedAny());
 
   {
     // Let us destroy GCPtrs ourselves for testing purposes.

@@ -1,8 +1,8 @@
-//! Logical device
+//! Logical graphics device.
 //!
 //! # Device
 //!
-//! This module exposes the `Device` trait, which provides methods for creating
+//! This module exposes the [`Device`][Device] trait, which provides methods for creating
 //! and managing graphics resources such as buffers, images and memory.
 //!
 //! The `Adapter` and `Device` types are very similar to the Vulkan concept of
@@ -11,15 +11,8 @@
 //! handle to that physical device that has the requested capabilities
 //! and is used to actually do things.
 
-use std::any::Any;
-use std::borrow::Borrow;
-use std::ops::Range;
-use std::{fmt, iter};
-
 use crate::{
-    buffer,
-    format,
-    image,
+    buffer, format, image, memory,
     memory::{Requirements, Segment},
     pass,
     pool::CommandPoolCreateFlags,
@@ -27,284 +20,110 @@ use crate::{
     pso::DescriptorPoolCreateFlags,
     query,
     queue::QueueFamilyId,
-    window::{self, SwapchainConfig},
-    Backend,
-    MemoryTypeId,
+    Backend, MemoryTypeId,
 };
 
+use std::{any::Any, fmt, iter, ops::Range};
+
 /// Error occurred caused device to be lost.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[error("Device lost")]
 pub struct DeviceLost;
 
-impl std::fmt::Display for DeviceLost {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.write_str("Device lost")
-    }
-}
-
-impl std::error::Error for DeviceLost {}
-
-/// Error occurred caused surface to be lost.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SurfaceLost;
-
-impl std::fmt::Display for SurfaceLost {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.write_str("Surface lost")
-    }
-}
-
-impl std::error::Error for SurfaceLost {}
-
-/// Native window is already in use by graphics API.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WindowInUse;
-
-impl std::fmt::Display for WindowInUse {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.write_str("Window is in use")
-    }
-}
-
-impl std::error::Error for WindowInUse {}
-
 /// Error allocating memory.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum OutOfMemory {
     /// Host memory exhausted.
+    #[error("Out of host memory")]
     Host,
     /// Device memory exhausted.
+    #[error("Out of device memory")]
     Device,
 }
 
-impl std::fmt::Display for OutOfMemory {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OutOfMemory::Host => write!(fmt, "Out of host memory"),
-            OutOfMemory::Device => write!(fmt, "Out of device memory"),
-        }
-    }
-}
-
-impl std::error::Error for OutOfMemory {}
-
-/// Error occurred caused device to be lost
-/// or out of memory error.
-#[derive(Clone, Debug, PartialEq)]
-pub enum OomOrDeviceLost {
+/// Error occurring when waiting for fences or events.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum WaitError {
     /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// Device is lost
-    DeviceLost(DeviceLost),
-}
-
-impl From<OutOfMemory> for OomOrDeviceLost {
-    fn from(error: OutOfMemory) -> Self {
-        OomOrDeviceLost::OutOfMemory(error)
-    }
-}
-
-impl From<DeviceLost> for OomOrDeviceLost {
-    fn from(error: DeviceLost) -> Self {
-        OomOrDeviceLost::DeviceLost(error)
-    }
-}
-
-impl std::fmt::Display for OomOrDeviceLost {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OomOrDeviceLost::DeviceLost(err) => write!(fmt, "Failed querying device: {}", err),
-            OomOrDeviceLost::OutOfMemory(err) => write!(fmt, "Failed querying device: {}", err),
-        }
-    }
-}
-
-impl std::error::Error for OomOrDeviceLost {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            OomOrDeviceLost::DeviceLost(err) => Some(err),
-            OomOrDeviceLost::OutOfMemory(err) => Some(err),
-        }
-    }
+    #[error(transparent)]
+    DeviceLost(#[from] DeviceLost),
 }
 
 /// Possible cause of allocation failure.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum AllocationError {
     /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
 
     /// Cannot create any more objects.
+    #[error("Too many objects")]
     TooManyObjects,
 }
 
-impl From<OutOfMemory> for AllocationError {
-    fn from(error: OutOfMemory) -> Self {
-        AllocationError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for AllocationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AllocationError::OutOfMemory(err) => write!(fmt, "Failed to allocate object: {}", err),
-            AllocationError::TooManyObjects => {
-                write!(fmt, "Failed to allocate object: Too many objects")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AllocationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AllocationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
 /// Device creation errors during `open`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum CreationError {
     /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// Device initialization failed due to implementation specific errors.
+    #[error("Implementation specific error occurred")]
     InitializationFailed,
-    /// At least one of the user requested extensions if not supported by the
-    /// physical device.
-    MissingExtension,
     /// At least one of the user requested features if not supported by the
     /// physical device.
     ///
     /// Use [`features`](trait.PhysicalDevice.html#tymethod.features)
     /// for checking the supported features.
+    #[error("Requested feature is missing")]
     MissingFeature,
     /// Too many logical devices have been created from this physical device.
     ///
     /// The implementation may only support one logical device for each physical
     /// device or lacks resources to allocate a new device.
+    #[error("Too many objects")]
     TooManyObjects,
     /// The logical or physical device are lost during the device creation
     /// process.
     ///
     /// This may be caused by hardware failure, physical device removal,
     /// power outage, etc.
+    #[error("Logical or Physical device was lost during creation")]
     DeviceLost,
 }
 
-impl std::fmt::Display for CreationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CreationError::OutOfMemory(err) => write!(fmt, "Failed to create device: {}", err),
-            CreationError::InitializationFailed => write!(
-                fmt,
-                "Failed to create device: Implementation specific error occurred"
-            ),
-            CreationError::MissingExtension => write!(
-                fmt,
-                "Failed to create device: Requested extension is missing"
-            ),
-            CreationError::MissingFeature => {
-                write!(fmt, "Failed to create device: Requested feature is missing")
-            }
-            CreationError::TooManyObjects => {
-                write!(fmt, "Failed to create device: Too many objects")
-            }
-            CreationError::DeviceLost => write!(
-                fmt,
-                "Failed to create device: Logical or Physical device was lost during creation"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CreationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CreationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
 /// Error accessing a mapping.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum MapError {
     /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// The requested mapping range is outside of the resource.
+    #[error("Requested range is outside the resource")]
     OutOfBounds,
-    /// Failed to allocate an appropriately sized contiguous virtual address range
+    /// Failed to allocate an appropriately sized contiguous virtual address range.
+    #[error("Unable to allocate an appropriately sized contiguous virtual address range")]
     MappingFailed,
-}
-
-impl From<OutOfMemory> for MapError {
-    fn from(error: OutOfMemory) -> Self {
-        MapError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for MapError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MapError::OutOfMemory(err) => write!(fmt, "Failed to map memory: {}", err),
-            MapError::OutOfBounds => write!(fmt, "Failed to map memory: Requested range is outside the resource"),
-            MapError::MappingFailed => write!(fmt, "Failed to map memory: Unable to allocate an appropriately sized contiguous virtual address range"),
-        }
-    }
-}
-
-impl std::error::Error for MapError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            MapError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
+    /// Memory is not CPU visible.
+    #[error("Memory is not CPU visible")]
+    Access,
 }
 
 /// Error binding a resource to memory allocation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum BindError {
     /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// Requested binding to memory that doesn't support the required operations.
+    #[error("Wrong memory")]
     WrongMemory,
     /// Requested binding to an invalid memory.
+    #[error("Requested range is outside the resource")]
     OutOfBounds,
-}
-
-impl From<OutOfMemory> for BindError {
-    fn from(error: OutOfMemory) -> Self {
-        BindError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for BindError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BindError::OutOfMemory(err) => {
-                write!(fmt, "Failed to bind object to memory range: {}", err)
-            }
-            BindError::OutOfBounds => write!(
-                fmt,
-                "Failed to bind object to memory range: Requested range is outside the resource"
-            ),
-            BindError::WrongMemory => {
-                write!(fmt, "Failed to bind object to memory range: Wrong memory")
-            }
-        }
-    }
-}
-
-impl std::error::Error for BindError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            BindError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
 }
 
 /// Specifies the waiting targets.
@@ -318,64 +137,44 @@ pub enum WaitFor {
 }
 
 /// An error from creating a shader module.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ShaderError {
-    /// The shader failed to compile.
+    /// Unsupported module.
+    #[error("Shader module is not supported")]
+    Unsupported,
+    /// Compilation failed.
+    #[error("Shader module failed to compile: {0:}")]
     CompilationFailed(String),
-    /// The shader is missing an entry point.
-    MissingEntryPoint(String),
-    /// The shader has a mismatch of interface (e.g missing push constants).
-    InterfaceMismatch(String),
-    /// The shader stage is not supported.
-    UnsupportedStage(pso::Stage),
-    /// Out of either host or device memory.
-    OutOfMemory(OutOfMemory),
+    /// Device ran out of memory.
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
 }
 
-impl From<OutOfMemory> for ShaderError {
-    fn from(error: OutOfMemory) -> Self {
-        ShaderError::OutOfMemory(error)
-    }
+/// Source shader code for a module.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ShaderModuleDesc<'a> {
+    /// SPIR-V word array.
+    SpirV(&'a [u32]),
 }
 
-impl std::fmt::Display for ShaderError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ShaderError::OutOfMemory(err) => write!(fmt, "Shader error: {}", err),
-            ShaderError::CompilationFailed(string) => {
-                write!(fmt, "Shader error: Compilation failed: {}", string)
-            }
-            ShaderError::MissingEntryPoint(string) => {
-                write!(fmt, "Shader error: Missing entry point: {}", string)
-            }
-            ShaderError::InterfaceMismatch(string) => {
-                write!(fmt, "Shader error: Interface mismatch: {}", string)
-            }
-            ShaderError::UnsupportedStage(stage) => {
-                write!(fmt, "Shader error: Unsupported stage: {:?}", stage)
-            }
-        }
-    }
+/// Naga shader module.
+#[allow(missing_debug_implementations)]
+pub struct NagaShader {
+    /// Shader module IR.
+    pub module: naga::Module,
+    /// Analysis information of the module.
+    pub info: naga::valid::ModuleInfo,
 }
 
-impl std::error::Error for ShaderError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ShaderError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-/// # Overview
-///
-/// A `Device` is responsible for creating and managing resources for the physical device
-/// it was created from.
+/// Logical device handle, responsible for creating and managing resources
+/// for the physical device it was created from.
 ///
 /// ## Resource Construction and Handling
 ///
-/// This device structure can then be used to create and manage different resources, like buffers,
-/// shader programs and textures. See the individual methods for more information.
+/// This device structure can then be used to create and manage different resources,
+/// like [buffers][Device::create_buffer], [shader modules][Device::create_shader_module]
+/// and [images][Device::create_image]. See the individual methods for more information.
 ///
 /// ## Mutability
 ///
@@ -405,9 +204,10 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Free device memory
     unsafe fn free_memory(&self, memory: B::Memory);
 
-    /// Create a new command pool for a given queue family.
+    /// Create a new [command pool][crate::pool::CommandPool] for a given queue family.
     ///
-    /// *Note*: the family has to be associated by one as the `Gpu::queue_groups`.
+    /// *Note*: the family has to be associated with one of [the queue groups
+    /// of this device][crate::adapter::Gpu::queue_groups].
     unsafe fn create_command_pool(
         &self,
         family: QueueFamilyId,
@@ -417,26 +217,30 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Destroy a command pool.
     unsafe fn destroy_command_pool(&self, pool: B::CommandPool);
 
-    /// Create a render pass with the given attachments and subpasses.
+    /// Create a [render pass][crate::pass] with the given attachments and subpasses.
     ///
-    /// A *render pass* represents a collection of attachments, subpasses, and dependencies between
-    /// the subpasses, and describes how the attachments are used over the course of the subpasses.
     /// The use of a render pass in a command buffer is a *render pass* instance.
-    unsafe fn create_render_pass<'a, IA, IS, ID>(
+    ///
+    /// # Arguments
+    ///
+    /// * `attachments` - [image attachments][crate::pass::Attachment] to be used in
+    ///   this render pass. Usually you need at least one attachment, to be used as output.
+    /// * `subpasses` - [subpasses][crate::pass::SubpassDesc] to use.
+    ///   You need to use at least one subpass.
+    /// * `dependencies` - [dependencies between subpasses][crate::pass::SubpassDependency].
+    ///   Can be empty.
+    unsafe fn create_render_pass<'a, Ia, Is, Id>(
         &self,
-        attachments: IA,
-        subpasses: IS,
-        dependencies: ID,
+        attachments: Ia,
+        subpasses: Is,
+        dependencies: Id,
     ) -> Result<B::RenderPass, OutOfMemory>
     where
-        IA: IntoIterator,
-        IA::Item: Borrow<pass::Attachment>,
-        IS: IntoIterator,
-        IS::Item: Borrow<pass::SubpassDesc<'a>>,
-        ID: IntoIterator,
-        ID::Item: Borrow<pass::SubpassDependency>;
+        Ia: Iterator<Item = pass::Attachment>,
+        Is: Iterator<Item = pass::SubpassDesc<'a>>,
+        Id: Iterator<Item = pass::SubpassDependency>;
 
-    /// Destroy a `RenderPass`.
+    /// Destroys a *render pass* created by this device.
     unsafe fn destroy_render_pass(&self, rp: B::RenderPass);
 
     /// Create a new pipeline layout object.
@@ -455,16 +259,14 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// accessed by a pipeline. The pipeline layout represents a sequence of descriptor sets with
     /// each having a specific layout. This sequence of layouts is used to determine the interface
     /// between shader stages and shader resources. Each pipeline is created using a pipeline layout.
-    unsafe fn create_pipeline_layout<IS, IR>(
+    unsafe fn create_pipeline_layout<'a, Is, Ic>(
         &self,
-        set_layouts: IS,
-        push_constant: IR,
+        set_layouts: Is,
+        push_constant: Ic,
     ) -> Result<B::PipelineLayout, OutOfMemory>
     where
-        IS: IntoIterator,
-        IS::Item: Borrow<B::DescriptorSetLayout>,
-        IR: IntoIterator,
-        IR::Item: Borrow<(pso::ShaderStageFlags, Range<u32>)>;
+        Is: Iterator<Item = &'a B::DescriptorSetLayout>,
+        Ic: Iterator<Item = (pso::ShaderStageFlags, Range<u32>)>;
 
     /// Destroy a pipeline layout object
     unsafe fn destroy_pipeline_layout(&self, layout: B::PipelineLayout);
@@ -482,40 +284,31 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     ) -> Result<Vec<u8>, OutOfMemory>;
 
     /// Merge a number of source pipeline caches into the target one.
-    unsafe fn merge_pipeline_caches<I>(
+    unsafe fn merge_pipeline_caches<'a, I>(
         &self,
-        target: &B::PipelineCache,
+        target: &mut B::PipelineCache,
         sources: I,
     ) -> Result<(), OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<B::PipelineCache>;
+        I: Iterator<Item = &'a B::PipelineCache>;
 
     /// Destroy a pipeline cache object.
     unsafe fn destroy_pipeline_cache(&self, cache: B::PipelineCache);
 
     /// Create a graphics pipeline.
+    ///
+    /// # Arguments
+    ///
+    /// * `desc` - the [description][crate::pso::GraphicsPipelineDesc] of
+    ///   the graphics pipeline to create.
+    /// * `cache` - the pipeline cache,
+    ///   [obtained from this device][Device::create_pipeline_cache],
+    ///   used for faster PSO creation.
     unsafe fn create_graphics_pipeline<'a>(
         &self,
         desc: &pso::GraphicsPipelineDesc<'a, B>,
         cache: Option<&B::PipelineCache>,
     ) -> Result<B::GraphicsPipeline, pso::CreationError>;
-
-    /// Create graphics pipelines.
-    unsafe fn create_graphics_pipelines<'a, I>(
-        &self,
-        descs: I,
-        cache: Option<&B::PipelineCache>,
-    ) -> Vec<Result<B::GraphicsPipeline, pso::CreationError>>
-    where
-        I: IntoIterator,
-        I::Item: Borrow<pso::GraphicsPipelineDesc<'a, B>>,
-    {
-        descs
-            .into_iter()
-            .map(|desc| self.create_graphics_pipeline(desc.borrow(), cache))
-            .collect()
-    }
 
     /// Destroy a graphics pipeline.
     ///
@@ -529,22 +322,6 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         desc: &pso::ComputePipelineDesc<'a, B>,
         cache: Option<&B::PipelineCache>,
     ) -> Result<B::ComputePipeline, pso::CreationError>;
-
-    /// Create compute pipelines.
-    unsafe fn create_compute_pipelines<'a, I>(
-        &self,
-        descs: I,
-        cache: Option<&B::PipelineCache>,
-    ) -> Vec<Result<B::ComputePipeline, pso::CreationError>>
-    where
-        I: IntoIterator,
-        I::Item: Borrow<pso::ComputePipelineDesc<'a, B>>,
-    {
-        descs
-            .into_iter()
-            .map(|desc| self.create_compute_pipeline(desc.borrow(), cache))
-            .collect()
-    }
 
     /// Destroy a compute pipeline.
     ///
@@ -563,23 +340,29 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         extent: image::Extent,
     ) -> Result<B::Framebuffer, OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<B::ImageView>;
+        I: Iterator<Item = image::FramebufferAttachment>;
 
     /// Destroy a framebuffer.
     ///
-    /// The framebuffer shouldn't be destroy before any submitted command buffer,
+    /// The framebuffer shouldn't be destroyed before any submitted command buffer,
     /// which references the framebuffer, has finished execution.
     unsafe fn destroy_framebuffer(&self, buf: B::Framebuffer);
 
-    /// Create a new shader module object through the SPIR-V binary data.
+    /// Create a new shader module object from the SPIR-V binary data.
     ///
-    /// Once a shader module has been created, any entry points it contains can be used in pipeline
-    /// shader stages as described in *Compute Pipelines* and *Graphics Pipelines*.
-    unsafe fn create_shader_module(
+    /// Once a shader module has been created, any [entry points][crate::pso::EntryPoint]
+    /// it contains can be used in pipeline shader stages of
+    /// [compute pipelines][crate::pso::ComputePipelineDesc] and
+    /// [graphics pipelines][crate::pso::GraphicsPipelineDesc].
+    unsafe fn create_shader_module(&self, spirv: &[u32]) -> Result<B::ShaderModule, ShaderError>;
+
+    /// Create a new shader module from the `naga` module.
+    unsafe fn create_shader_module_from_naga(
         &self,
-        spirv_data: &[u32],
-    ) -> Result<B::ShaderModule, ShaderError>;
+        shader: NagaShader,
+    ) -> Result<B::ShaderModule, (ShaderError, NagaShader)> {
+        Err((ShaderError::Unsupported, shader))
+    }
 
     /// Destroy a shader module module
     ///
@@ -593,6 +376,7 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         &self,
         size: u64,
         usage: buffer::Usage,
+        sparse: memory::SparseFlags,
     ) -> Result<B::Buffer, buffer::CreationError>;
 
     /// Get memory requirements for the buffer
@@ -626,6 +410,8 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Destroy a buffer view object
     unsafe fn destroy_buffer_view(&self, view: B::BufferView);
 
+    //TODO: add a list of supported formats for casting the views
+
     /// Create a new image object
     unsafe fn create_image(
         &self,
@@ -634,6 +420,7 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         format: format::Format,
         tiling: image::Tiling,
         usage: image::Usage,
+        sparse: memory::SparseFlags,
         view_caps: image::ViewCapabilities,
     ) -> Result<B::Image, image::CreationError>;
 
@@ -668,6 +455,7 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         view_kind: image::ViewKind,
         format: format::Format,
         swizzle: format::Swizzle,
+        usage: image::Usage,
         range: image::SubresourceRange,
     ) -> Result<B::ImageView, image::ViewCreationError>;
 
@@ -694,8 +482,7 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         flags: DescriptorPoolCreateFlags,
     ) -> Result<B::DescriptorPool, OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<pso::DescriptorRangeDesc>;
+        I: Iterator<Item = pso::DescriptorRangeDesc>;
 
     /// Destroy a descriptor pool object
     ///
@@ -710,106 +497,96 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Each individual descriptor binding is specified by a descriptor type, a count (array size)
     /// of the number of descriptors in the binding, a set of shader stages that **can** access the
     /// binding, and (if using immutable samplers) an array of sampler descriptors.
-    unsafe fn create_descriptor_set_layout<I, J>(
+    unsafe fn create_descriptor_set_layout<'a, I, J>(
         &self,
         bindings: I,
         immutable_samplers: J,
     ) -> Result<B::DescriptorSetLayout, OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<pso::DescriptorSetLayoutBinding>,
-        J: IntoIterator,
-        J::Item: Borrow<B::Sampler>;
+        I: Iterator<Item = pso::DescriptorSetLayoutBinding>,
+        J: Iterator<Item = &'a B::Sampler>;
 
     /// Destroy a descriptor set layout object
     unsafe fn destroy_descriptor_set_layout(&self, layout: B::DescriptorSetLayout);
 
-    /// Specifying the parameters of a descriptor set write operation
-    unsafe fn write_descriptor_sets<'a, I, J>(&self, write_iter: I)
+    /// Specifying the parameters of a descriptor set write operation.
+    unsafe fn write_descriptor_set<'a, I>(&self, op: pso::DescriptorSetWrite<'a, B, I>)
     where
-        I: IntoIterator<Item = pso::DescriptorSetWrite<'a, B, J>>,
-        J: IntoIterator,
-        J::Item: Borrow<pso::Descriptor<'a, B>>;
+        I: Iterator<Item = pso::Descriptor<'a, B>>;
 
-    /// Structure specifying a copy descriptor set operation
-    unsafe fn copy_descriptor_sets<'a, I>(&self, copy_iter: I)
-    where
-        I: IntoIterator,
-        I::Item: Borrow<pso::DescriptorSetCopy<'a, B>>;
+    /// Structure specifying a copy descriptor set operation.
+    unsafe fn copy_descriptor_set<'a>(&self, op: pso::DescriptorSetCopy<'a, B>);
 
     /// Map a memory object into application address space
     ///
     /// Call `map_memory()` to retrieve a host virtual address pointer to a region of a mappable memory object
-    unsafe fn map_memory(&self, memory: &B::Memory, segment: Segment) -> Result<*mut u8, MapError>;
+    unsafe fn map_memory(
+        &self,
+        memory: &mut B::Memory,
+        segment: Segment,
+    ) -> Result<*mut u8, MapError>;
 
     /// Flush mapped memory ranges
     unsafe fn flush_mapped_memory_ranges<'a, I>(&self, ranges: I) -> Result<(), OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<(&'a B::Memory, Segment)>;
+        I: Iterator<Item = (&'a B::Memory, Segment)>;
 
     /// Invalidate ranges of non-coherent memory from the host caches
     unsafe fn invalidate_mapped_memory_ranges<'a, I>(&self, ranges: I) -> Result<(), OutOfMemory>
     where
-        I: IntoIterator,
-        I::Item: Borrow<(&'a B::Memory, Segment)>;
+        I: Iterator<Item = (&'a B::Memory, Segment)>;
 
     /// Unmap a memory object once host access to it is no longer needed by the application
-    unsafe fn unmap_memory(&self, memory: &B::Memory);
+    unsafe fn unmap_memory(&self, memory: &mut B::Memory);
 
-    /// Create a new semaphore object
+    /// Create a new semaphore object.
     fn create_semaphore(&self) -> Result<B::Semaphore, OutOfMemory>;
 
-    /// Destroy a semaphore object
+    /// Destroy a semaphore object.
     unsafe fn destroy_semaphore(&self, semaphore: B::Semaphore);
 
-    /// Create a new fence object
+    /// Create a new fence object.
     ///
     /// Fences are a synchronization primitive that **can** be used to insert a dependency from
-    /// a queue to the host. Fences have two states - signaled and unsignaled. A fence **can** be
-    /// signaled as part of the execution of a *queue submission* command. Fences **can** be unsignaled
-    /// on the host with *reset_fences*. Fences **can** be waited on by the host with the
-    /// *wait_for_fences* command, and the current state **can** be queried with *get_fence_status*.
+    /// a queue to the host.
+    /// Fences have two states - signaled and unsignaled.
+    ///
+    /// A fence **can** be signaled as part of the execution of a
+    /// [queue submission][crate::queue::Queue::submit] command.
+    ///
+    /// Fences **can** be unsignaled on the host with
+    /// [`reset_fence`][Device::reset_fence].
+    ///
+    /// Fences **can** be waited on by the host with the
+    /// [`wait_for_fences`][Device::wait_for_fences] command.
+    ///
+    /// A fence's current state **can** be queried with
+    /// [`get_fence_status`][Device::get_fence_status].
+    ///
+    /// # Arguments
+    ///
+    /// * `signaled` - the fence will be in its signaled state.
     fn create_fence(&self, signaled: bool) -> Result<B::Fence, OutOfMemory>;
 
-    ///
-    unsafe fn reset_fence(&self, fence: &B::Fence) -> Result<(), OutOfMemory> {
-        self.reset_fences(iter::once(fence))
-    }
-
-    ///
-    unsafe fn reset_fences<I>(&self, fences: I) -> Result<(), OutOfMemory>
-    where
-        I: IntoIterator,
-        I::Item: Borrow<B::Fence>,
-    {
-        for fence in fences {
-            self.reset_fence(fence.borrow())?;
-        }
-        Ok(())
-    }
+    /// Resets a given fence to its original, unsignaled state.
+    unsafe fn reset_fence(&self, fence: &mut B::Fence) -> Result<(), OutOfMemory>;
 
     /// Blocks until the given fence is signaled.
     /// Returns true if the fence was signaled before the timeout.
-    unsafe fn wait_for_fence(
-        &self,
-        fence: &B::Fence,
-        timeout_ns: u64,
-    ) -> Result<bool, OomOrDeviceLost> {
+    unsafe fn wait_for_fence(&self, fence: &B::Fence, timeout_ns: u64) -> Result<bool, WaitError> {
         self.wait_for_fences(iter::once(fence), WaitFor::All, timeout_ns)
     }
 
     /// Blocks until all or one of the given fences are signaled.
     /// Returns true if fences were signaled before the timeout.
-    unsafe fn wait_for_fences<I>(
+    unsafe fn wait_for_fences<'a, I>(
         &self,
         fences: I,
         wait: WaitFor,
         timeout_ns: u64,
-    ) -> Result<bool, OomOrDeviceLost>
+    ) -> Result<bool, WaitError>
     where
-        I: IntoIterator,
-        I::Item: Borrow<B::Fence>,
+        I: Iterator<Item = &'a B::Fence>,
     {
         use std::{thread, time};
         fn to_ns(duration: time::Duration) -> u64 {
@@ -820,12 +597,12 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         match wait {
             WaitFor::All => {
                 for fence in fences {
-                    if !self.wait_for_fence(fence.borrow(), 0)? {
+                    if !self.wait_for_fence(fence, 0)? {
                         let elapsed_ns = to_ns(start.elapsed());
                         if elapsed_ns > timeout_ns {
                             return Ok(false);
                         }
-                        if !self.wait_for_fence(fence.borrow(), timeout_ns - elapsed_ns)? {
+                        if !self.wait_for_fence(fence, timeout_ns - elapsed_ns)? {
                             return Ok(false);
                         }
                     }
@@ -833,10 +610,10 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
                 Ok(true)
             }
             WaitFor::Any => {
-                let fences: Vec<_> = fences.into_iter().collect();
+                let fences: Vec<_> = fences.collect();
                 loop {
-                    for fence in &fences {
-                        if self.wait_for_fence(fence.borrow(), 0)? {
+                    for &fence in &fences {
+                        if self.wait_for_fence(fence, 0)? {
                             return Ok(true);
                         }
                     }
@@ -864,13 +641,13 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
     /// Query the status of an event.
     ///
     /// Returns `true` if the event is set, or `false` if it is reset.
-    unsafe fn get_event_status(&self, event: &B::Event) -> Result<bool, OomOrDeviceLost>;
+    unsafe fn get_event_status(&self, event: &B::Event) -> Result<bool, WaitError>;
 
     /// Sets an event.
-    unsafe fn set_event(&self, event: &B::Event) -> Result<(), OutOfMemory>;
+    unsafe fn set_event(&self, event: &mut B::Event) -> Result<(), OutOfMemory>;
 
     /// Resets an event.
-    unsafe fn reset_event(&self, event: &B::Event) -> Result<(), OutOfMemory>;
+    unsafe fn reset_event(&self, event: &mut B::Event) -> Result<(), OutOfMemory>;
 
     /// Create a new query pool object
     ///
@@ -892,46 +669,9 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         pool: &B::QueryPool,
         queries: Range<query::Id>,
         data: &mut [u8],
-        stride: buffer::Offset,
+        stride: buffer::Stride,
         flags: query::ResultFlags,
-    ) -> Result<bool, OomOrDeviceLost>;
-
-    /// Create a new swapchain from a surface and a queue family, optionally providing the old
-    /// swapchain to aid in resource reuse and rendering continuity.
-    ///
-    /// *Note*: The number of exposed images in the back buffer might differ
-    /// from number of internally used buffers.
-    ///
-    /// # Safety
-    ///
-    /// The queue family _must_ support surface presentation.
-    /// This can be checked by calling [`supports_queue_family`](trait.Surface.html#tymethod.supports_queue_family)
-    /// on this surface.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # extern crate gfx_backend_empty as empty;
-    /// # extern crate gfx_hal;
-    /// # fn main() {
-    /// use gfx_hal::{prelude::*, format::Format, window::SwapchainConfig};
-    ///
-    /// # let mut surface: empty::Surface = return;
-    /// # let device: empty::Device = return;
-    /// # unsafe {
-    /// let swapchain_config = SwapchainConfig::new(100, 100, Format::Rgba8Srgb, 2);
-    /// device.create_swapchain(&mut surface, swapchain_config, None);
-    /// # }}
-    /// ```
-    unsafe fn create_swapchain(
-        &self,
-        surface: &mut B::Surface,
-        config: SwapchainConfig,
-        old_swapchain: Option<B::Swapchain>,
-    ) -> Result<(B::Swapchain, Vec<B::Image>), window::CreationError>;
-
-    ///
-    unsafe fn destroy_swapchain(&self, swapchain: B::Swapchain);
+    ) -> Result<bool, WaitError>;
 
     /// Wait for all queues associated with this device to idle.
     ///
@@ -970,4 +710,13 @@ pub trait Device<B: Backend>: fmt::Debug + Any + Send + Sync {
         descriptor_set_layout: &mut B::DescriptorSetLayout,
         name: &str,
     );
+    /// Associate a name with a pipeline layout, for easier debugging in external tools or with
+    /// validation layers that can print a friendly name when referring to objects in error messages
+    unsafe fn set_pipeline_layout_name(&self, pipeline_layout: &mut B::PipelineLayout, name: &str);
+
+    /// Starts frame capture.
+    fn start_capture(&self);
+
+    /// Stops frame capture.
+    fn stop_capture(&self);
 }

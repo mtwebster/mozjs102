@@ -7,14 +7,15 @@
 #ifndef vm_TypedArrayObject_h
 #define vm_TypedArrayObject_h
 
-#include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TextUtils.h"
 
 #include "gc/Barrier.h"
 #include "gc/MaybeRooted.h"
 #include "js/Class.h"
+#include "js/experimental/TypedData.h"  // js::detail::TypedArrayLengthSlot
 #include "js/Result.h"
+#include "js/ScalarType.h"  // js::Scalar::Type
 #include "vm/ArrayBufferObject.h"
 #include "vm/ArrayBufferViewObject.h"
 #include "vm/JSObject.h"
@@ -46,7 +47,7 @@ namespace js {
 class TypedArrayObject : public ArrayBufferViewObject {
  public:
   static_assert(js::detail::TypedArrayLengthSlot == LENGTH_SLOT,
-                "bad inlined constant in jsfriendapi.h");
+                "bad inlined constant in TypedData.h");
 
   static bool sameBuffer(Handle<TypedArrayObject*> a,
                          Handle<TypedArrayObject*> b) {
@@ -89,24 +90,23 @@ class TypedArrayObject : public ArrayBufferViewObject {
   inline Scalar::Type type() const;
   inline size_t bytesPerElement() const;
 
-  static Value byteOffsetValue(const TypedArrayObject* tarr) {
-    Value v = tarr->getFixedSlot(BYTEOFFSET_SLOT);
-    MOZ_ASSERT(v.toInt32() >= 0);
-    return v;
-  }
-  static Value byteLengthValue(const TypedArrayObject* tarr) {
-    return Int32Value(tarr->getFixedSlot(LENGTH_SLOT).toInt32() *
-                      tarr->bytesPerElement());
-  }
-  static Value lengthValue(const TypedArrayObject* tarr) {
-    return tarr->getFixedSlot(LENGTH_SLOT);
-  }
-
   static bool ensureHasBuffer(JSContext* cx, Handle<TypedArrayObject*> tarray);
 
-  uint32_t byteOffset() const { return byteOffsetValue(this).toInt32(); }
-  uint32_t byteLength() const { return byteLengthValue(this).toInt32(); }
-  uint32_t length() const { return lengthValue(this).toInt32(); }
+  size_t byteLength() const { return length() * bytesPerElement(); }
+
+  size_t length() const {
+    return size_t(getFixedSlot(LENGTH_SLOT).toPrivate());
+  }
+
+  Value byteLengthValue() const {
+    size_t len = byteLength();
+    return NumberValue(len);
+  }
+
+  Value lengthValue() const {
+    size_t len = length();
+    return NumberValue(len);
+  }
 
   bool hasInlineElements() const;
   void setInlineElements();
@@ -125,9 +125,9 @@ class TypedArrayObject : public ArrayBufferViewObject {
 #endif
 
   template <AllowGC allowGC>
-  bool getElement(JSContext* cx, uint32_t index,
+  bool getElement(JSContext* cx, size_t index,
                   typename MaybeRooted<Value, allowGC>::MutableHandleType val);
-  bool getElementPure(uint32_t index, Value* vp);
+  bool getElementPure(size_t index, Value* vp);
 
   /*
    * Copy all elements from this typed array to vp. vp must point to rooted
@@ -143,40 +143,20 @@ class TypedArrayObject : public ArrayBufferViewObject {
   /*
    * Maximum allowed byte length for any typed array.
    */
-  static constexpr size_t MAX_BYTE_LENGTH = INT32_MAX;
-
-  /*
-   * Byte length above which created typed arrays will have singleton types.
-   * This only applies to typed arrays created with an existing ArrayBuffer and
-   * when not inlined from Ion.
-   */
-  static constexpr uint32_t SINGLETON_BYTE_LENGTH = 1024 * 1024 * 10;
+  static size_t maxByteLength() {
+    return ArrayBufferObject::maxBufferByteLength();
+  }
 
   static bool isOriginalLengthGetter(Native native);
 
   static bool isOriginalByteOffsetGetter(Native native);
 
+  static bool isOriginalByteLengthGetter(Native native);
+
   static void finalize(JSFreeOp* fop, JSObject* obj);
   static size_t objectMoved(JSObject* obj, JSObject* old);
 
   /* Initialization bits */
-
-  template <Value ValueGetter(const TypedArrayObject* tarr)>
-  static bool GetterImpl(JSContext* cx, const CallArgs& args) {
-    MOZ_ASSERT(is(args.thisv()));
-    args.rval().set(
-        ValueGetter(&args.thisv().toObject().as<TypedArrayObject>()));
-    return true;
-  }
-
-  // ValueGetter is a function that takes an unwrapped typed array object and
-  // returns a Value. Given such a function, Getter<> is a native that
-  // retrieves a given Value, probably from a slot on the object.
-  template <Value ValueGetter(const TypedArrayObject* tarr)>
-  static bool Getter(JSContext* cx, unsigned argc, Value* vp) {
-    CallArgs args = CallArgsFromVp(argc, vp);
-    return CallNonGenericMethod<is, GetterImpl<ValueGetter>>(cx, args);
-  }
 
   static const JSFunctionSpec protoFunctions[];
   static const JSPropertySpec protoAccessors[];
@@ -188,15 +168,17 @@ class TypedArrayObject : public ArrayBufferViewObject {
   static bool is(HandleValue v);
 
   static bool set(JSContext* cx, unsigned argc, Value* vp);
+  static bool copyWithin(JSContext* cx, unsigned argc, Value* vp);
 
   bool convertForSideEffect(JSContext* cx, HandleValue v) const;
 
  private:
   static bool set_impl(JSContext* cx, const CallArgs& args);
+  static bool copyWithin_impl(JSContext* cx, const CallArgs& args);
 };
 
-MOZ_MUST_USE bool TypedArray_bufferGetter(JSContext* cx, unsigned argc,
-                                          Value* vp);
+[[nodiscard]] bool TypedArray_bufferGetter(JSContext* cx, unsigned argc,
+                                           Value* vp);
 
 extern TypedArrayObject* NewTypedArrayWithTemplateAndLength(
     JSContext* cx, HandleObject templateObj, int32_t len);
@@ -220,7 +202,9 @@ inline Scalar::Type GetTypedArrayClassType(const JSClass* clasp) {
 
 bool IsTypedArrayConstructor(const JSObject* obj);
 
-bool IsTypedArrayConstructor(HandleValue v, uint32_t type);
+bool IsTypedArrayConstructor(HandleValue v, Scalar::Type type);
+
+JSNative TypedArrayConstructorNative(Scalar::Type type);
 
 // In WebIDL terminology, a BufferSource is either an ArrayBuffer or a typed
 // array view. In either case, extract the dataPointer/byteLength.
@@ -242,8 +226,9 @@ inline size_t TypedArrayObject::bytesPerElement() const {
 // string is a canonical numeric index which is not representable as a uint64_t,
 // the returned index is UINT64_MAX.
 template <typename CharT>
-JS::Result<mozilla::Maybe<uint64_t>> StringIsTypedArrayIndex(
-    JSContext* cx, mozilla::Range<const CharT> s);
+[[nodiscard]] bool StringToTypedArrayIndex(JSContext* cx,
+                                           mozilla::Range<const CharT> s,
+                                           mozilla::Maybe<uint64_t>* indexp);
 
 // A string |s| is a TypedArray index (or: canonical numeric index string) iff
 // |s| is "-0" or |SameValue(ToString(ToNumber(s)), s)| is true. So check for
@@ -254,39 +239,35 @@ inline bool CanStartTypedArrayIndex(CharT ch) {
   return mozilla::IsAsciiDigit(ch) || ch == '-' || ch == 'N' || ch == 'I';
 }
 
-inline JS::Result<mozilla::Maybe<uint64_t>> IsTypedArrayIndex(JSContext* cx,
-                                                              jsid id) {
-  using ResultType = decltype(IsTypedArrayIndex(cx, id));
-
+[[nodiscard]] inline bool ToTypedArrayIndex(JSContext* cx, jsid id,
+                                            mozilla::Maybe<uint64_t>* indexp) {
   if (JSID_IS_INT(id)) {
     int32_t i = JSID_TO_INT(id);
     MOZ_ASSERT(i >= 0);
-    return mozilla::Some(static_cast<uint64_t>(i));
+    indexp->emplace(i);
+    return true;
   }
 
   if (MOZ_UNLIKELY(!JSID_IS_STRING(id))) {
-    return ResultType(mozilla::Nothing());
+    MOZ_ASSERT(indexp->isNothing());
+    return true;
   }
 
   JS::AutoCheckCannotGC nogc;
-  JSAtom* atom = JSID_TO_ATOM(id);
-  if (atom->length() == 0) {
-    return ResultType(mozilla::Nothing());
+  JSAtom* atom = id.toAtom();
+
+  if (atom->empty() || !CanStartTypedArrayIndex(atom->latin1OrTwoByteChar(0))) {
+    MOZ_ASSERT(indexp->isNothing());
+    return true;
   }
 
   if (atom->hasLatin1Chars()) {
     mozilla::Range<const Latin1Char> chars = atom->latin1Range(nogc);
-    if (!CanStartTypedArrayIndex(chars[0])) {
-      return ResultType(mozilla::Nothing());
-    }
-    return StringIsTypedArrayIndex(cx, chars);
+    return StringToTypedArrayIndex(cx, chars, indexp);
   }
 
   mozilla::Range<const char16_t> chars = atom->twoByteRange(nogc);
-  if (!CanStartTypedArrayIndex(chars[0])) {
-    return ResultType(mozilla::Nothing());
-  }
-  return StringIsTypedArrayIndex(cx, chars);
+  return StringToTypedArrayIndex(cx, chars, indexp);
 }
 
 bool SetTypedArrayElement(JSContext* cx, Handle<TypedArrayObject*> obj,
@@ -297,8 +278,8 @@ bool SetTypedArrayElement(JSContext* cx, Handle<TypedArrayObject*> obj,
  * Implements [[DefineOwnProperty]] for TypedArrays when the property
  * key is a TypedArray index.
  */
-bool DefineTypedArrayElement(JSContext* cx, HandleObject arr, uint64_t index,
-                             Handle<PropertyDescriptor> desc,
+bool DefineTypedArrayElement(JSContext* cx, Handle<TypedArrayObject*> obj,
+                             uint64_t index, Handle<PropertyDescriptor> desc,
                              ObjectOpResult& result);
 
 static inline constexpr unsigned TypedArrayShift(Scalar::Type viewType) {
@@ -324,7 +305,7 @@ static inline constexpr unsigned TypedArrayShift(Scalar::Type viewType) {
   }
 }
 
-static inline unsigned TypedArrayElemSize(Scalar::Type viewType) {
+static inline constexpr unsigned TypedArrayElemSize(Scalar::Type viewType) {
   return 1u << TypedArrayShift(viewType);
 }
 

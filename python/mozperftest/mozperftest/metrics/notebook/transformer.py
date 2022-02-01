@@ -4,20 +4,22 @@
 import json
 import importlib.util
 import inspect
-import os
 import pathlib
 
-from .logger import NotebookLogger
-from mozperftest.metrics.exceptions import NotebookInvalidTransformError
-
-logger = NotebookLogger()
+from jsonschema import validate
+from mozperftest.metrics.exceptions import (
+    NotebookInvalidTransformError,
+    NotebookInvalidPathError,
+    NotebookDuplicateTransformsError,
+)
+from mozperftest.runner import HERE
+from mozperftest.utils import load_class
 
 
 class Transformer(object):
-    """Abstract class for data transformers.
-    """
+    """Abstract class for data transformers."""
 
-    def __init__(self, files=None, custom_transformer=None):
+    def __init__(self, files=None, custom_transformer=None, logger=None, prefix=None):
         """Initialize the transformer with files.
 
         :param list files: A list of files containing data to transform.
@@ -25,6 +27,8 @@ class Transformer(object):
             Must implement `transform` and `merge` methods.
         """
         self._files = files
+        self.logger = logger
+        self.prefix = prefix
 
         if custom_transformer:
             valid = (
@@ -41,6 +45,9 @@ class Transformer(object):
 
         self._custom_transformer = custom_transformer
 
+        with pathlib.Path(HERE, "schemas", "transformer_schema.json").open() as f:
+            self.schema = json.load(f)
+
     @property
     def files(self):
         return self._files
@@ -48,9 +55,15 @@ class Transformer(object):
     @files.setter
     def files(self, val):
         if not isinstance(val, list):
-            logger.warning("`files` must be a list, got %s" % type(val))
+            self.logger.warning(
+                "`files` must be a list, got %s" % type(val), self.prefix
+            )
             return
         self._files = val
+
+    @property
+    def custom_transformer(self):
+        return self._custom_transformer
 
     def open_data(self, file):
         """Opens a file of data.
@@ -84,8 +97,10 @@ class Transformer(object):
                 else:
                     data = self.open_data(file)
             except Exception as e:
-                logger.warning("Failed to open file %s, skipping" % file)
-                logger.warning("%s %s" % (e.__class__.__name__, e))
+                self.logger.warning(
+                    "Failed to open file %s, skipping" % file, self.prefix
+                )
+                self.logger.warning("%s %s" % (e.__class__.__name__, e), self.prefix)
 
             # Transform data
             try:
@@ -94,11 +109,14 @@ class Transformer(object):
                     data = [data]
                 for entry in data:
                     for ele in entry["data"]:
-                        ele.update({"file": file})
+                        if "file" not in ele:
+                            ele.update({"file": file})
                 trfmdata.extend(data)
             except Exception as e:
-                logger.warning("Failed to transform file %s, skipping" % file)
-                logger.warning("%s %s" % (e.__class__.__name__, e))
+                self.logger.warning(
+                    "Failed to transform file %s, skipping" % file, self.prefix
+                )
+                self.logger.warning("%s %s" % (e.__class__.__name__, e), self.prefix)
 
         merged = self._custom_transformer.merge(trfmdata)
 
@@ -108,12 +126,12 @@ class Transformer(object):
             for e in merged:
                 e["name"] = name
 
+        validate(instance=merged, schema=self.schema)
         return merged
 
 
 class SimplePerfherderTransformer:
-    """Transforms perfherder data into the standardized data format.
-    """
+    """Transforms perfherder data into the standardized data format."""
 
     entry_number = 0
 
@@ -135,50 +153,74 @@ class SimplePerfherderTransformer:
         return merged
 
 
+def get_transformer(path, ret_members=False):
+    """This function returns a Transformer class with the given path.
+
+    :param str path: The path points to the custom transformer.
+    :param bool ret_members: If true then return inspect.getmembers().
+    :return Transformer if not ret_members else inspect.getmembers().
+    """
+    file = pathlib.Path(path)
+
+    if file.suffix != ".py":
+        return load_class(path)
+
+    if not file.exists():
+        raise NotebookInvalidPathError(f"The path {path} does not exist.")
+
+    # Importing a source file directly
+    spec = importlib.util.spec_from_file_location(name=file.name, location=path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    members = inspect.getmembers(
+        module,
+        lambda c: inspect.isclass(c)
+        and hasattr(c, "transform")
+        and hasattr(c, "merge")
+        and callable(c.transform)
+        and callable(c.merge),
+    )
+
+    if not members and not ret_members:
+        raise NotebookInvalidTransformError(
+            f"The path {path} was found but it was not a valid transformer."
+        )
+
+    return members if ret_members else members[0][-1]
+
+
 def get_transformers(dirpath=None):
     """This function returns a dict of transformers under the given path.
 
     If more than one transformers have the same class name, an exception will be raised.
 
-    :param str dirpath: Path to a directory containing the transformers.
-    :return dict: {"transformer name": Transformer class}.
+    :param pathlib.Path dirpath: Path to a directory containing the transformers.
+    :return dict: {"Transformer class name": Transformer class}.
     """
 
-    #
-    # XXX: This function is broken when in-tree, we need to fix it eventually.
-    #
-    raise Exception("Do not use this function.")
-
-    if not dirpath or not os.path.exists(dirpath):
-        logger.warning(f"Could not find directory for transformers: {dirpath}")
-        return {}
-
     ret = {}
-    tfm_path = pathlib.Path(dirpath)
 
-    if not tfm_path.is_dir():
-        raise Exception(f"{tfm_path} is not a directory or it does not exist.")
+    if not dirpath.exists():
+        raise NotebookInvalidPathError(f"The path {dirpath.as_posix()} does not exist.")
 
-    tfm_files = list(tfm_path.glob("*.py"))
+    if not dirpath.is_dir():
+        raise NotebookInvalidPathError(
+            f"Path given is not a directory: {dirpath.as_posix()}"
+        )
+
+    tfm_files = list(dirpath.glob("*.py"))
     importlib.machinery.SOURCE_SUFFIXES.append("")
+
     for file in tfm_files:
-
-        # Importing a source file directly
-        spec = importlib.util.spec_from_file_location(
-            name=file.name, location=file.resolve().as_posix()
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        members = inspect.getmembers(
-            module, lambda c: inspect.isclass(c) and issubclass(c, Transformer)
-        )
+        members = get_transformer(file.resolve().as_posix(), True)
 
         for (name, tfm_class) in members:
-            if name in ret and name != "Transformer":
-                raise Exception(
-                    f"""Duplicated transformer {name} is found in the folder {dirpath}.
-                    Please define each transformer class with a unique class name."""
+            if name in ret:
+                raise NotebookDuplicateTransformsError(
+                    f"Duplicated transformer {name} "
+                    + f"is found in the directory {dirpath.as_posix()}."
+                    + "Please define each transformer class with a unique class name.",
                 )
             ret.update({name: tfm_class})
 

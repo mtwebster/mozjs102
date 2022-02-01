@@ -11,7 +11,7 @@ use crate::ir::{
 };
 use crate::isa::{RegInfo, TargetIsa};
 use crate::packed_option::ReservedValue;
-use crate::value_label::ValueLabelsRanges;
+use crate::value_label::{LabelValueLoc, ValueLabelsRanges};
 use crate::HashSet;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -278,11 +278,13 @@ pub fn write_block_header(
     writeln!(w, "):")
 }
 
-fn write_valueloc(w: &mut dyn Write, loc: ValueLoc, regs: &RegInfo) -> fmt::Result {
+fn write_valueloc(w: &mut dyn Write, loc: LabelValueLoc, regs: &RegInfo) -> fmt::Result {
     match loc {
-        ValueLoc::Reg(r) => write!(w, "{}", regs.display_regunit(r)),
-        ValueLoc::Stack(ss) => write!(w, "{}", ss),
-        ValueLoc::Unassigned => write!(w, "?"),
+        LabelValueLoc::ValueLoc(ValueLoc::Reg(r)) => write!(w, "{}", regs.display_regunit(r)),
+        LabelValueLoc::ValueLoc(ValueLoc::Stack(ss)) => write!(w, "{}", ss),
+        LabelValueLoc::ValueLoc(ValueLoc::Unassigned) => write!(w, "?"),
+        LabelValueLoc::Reg(r) => write!(w, "{:?}", r),
+        LabelValueLoc::SPOffset(off) => write!(w, "[sp+{}]", off),
     }
 }
 
@@ -498,6 +500,10 @@ pub fn write_operands(
     let pool = &dfg.value_lists;
     use crate::ir::instructions::InstructionData::*;
     match dfg[inst] {
+        AtomicRmw { op, args, .. } => write!(w, " {}, {}, {}", op, args[0], args[1]),
+        AtomicCas { args, .. } => write!(w, " {}, {}, {}", args[0], args[1], args[2]),
+        LoadNoOffset { flags, arg, .. } => write!(w, "{} {}", flags, arg),
+        StoreNoOffset { flags, args, .. } => write!(w, "{} {}, {}", flags, args[0], args[1]),
         Unary { arg, .. } => write!(w, " {}", arg),
         UnaryImm { imm, .. } => write!(w, " {}", imm),
         UnaryIeee32 { imm, .. } => write!(w, " {}", imm),
@@ -508,7 +514,8 @@ pub fn write_operands(
             constant_handle, ..
         } => write!(w, " {}", constant_handle),
         Binary { args, .. } => write!(w, " {}, {}", args[0], args[1]),
-        BinaryImm { arg, imm, .. } => write!(w, " {}, {}", arg, imm),
+        BinaryImm8 { arg, imm, .. } => write!(w, " {}, {}", arg, imm),
+        BinaryImm64 { arg, imm, .. } => write!(w, " {}, {}", arg, imm),
         Ternary { args, .. } => write!(w, " {}, {}, {}", args[0], args[1], args[2]),
         MultiAry { ref args, .. } => {
             if args.is_empty() {
@@ -518,8 +525,7 @@ pub fn write_operands(
             }
         }
         NullAry { .. } => write!(w, " "),
-        InsertLane { lane, args, .. } => write!(w, " {}, {}, {}", args[0], lane, args[1]),
-        ExtractLane { lane, arg, .. } => write!(w, " {}, {}", arg, lane),
+        TernaryImm8 { imm, args, .. } => write!(w, " {}, {}, {}", args[0], args[1], imm),
         Shuffle { mask, args, .. } => {
             let data = dfg.immediates.get(mask).expect(
                 "Expected the shuffle mask to already be inserted into the immediates table",

@@ -12,9 +12,10 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/EndianUtils.h"
+#include "mozilla/HashFunctions.h"  // mozilla::HashStringKnownLength
 #include "mozilla/RangedPtr.h"
-#include "mozilla/Unused.h"
 
+#include <iterator>
 #include <string.h>
 
 #include "jstypes.h"
@@ -23,10 +24,12 @@
 #include "gc/Marking.h"
 #include "gc/MaybeRooted.h"
 #include "js/CharacterEncoding.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Symbol.h"
 #include "util/Text.h"
 #include "vm/JSContext.h"
 #include "vm/SymbolType.h"
+#include "vm/WellKnownAtom.h"  // js_*_str
 #include "vm/Xdr.h"
 
 #include "gc/AtomMarking-inl.h"
@@ -37,22 +40,19 @@
 
 using namespace js;
 
-using mozilla::ArrayEnd;
-using mozilla::ArrayLength;
 using mozilla::Maybe;
 using mozilla::Nothing;
 using mozilla::RangedPtr;
 
-template <typename CharT, typename InputCharsT>
-extern void InflateUTF8CharsToBufferAndTerminate(const InputCharsT src,
+template <typename CharT>
+extern void InflateUTF8CharsToBufferAndTerminate(const JS::UTF8Chars src,
                                                  CharT* dst, size_t dstLen,
                                                  JS::SmallestEncoding encoding);
 
-template <typename CharT, typename CharsT>
-extern bool UTF8OrWTF8EqualsChars(const CharsT utf8, const CharT* chars);
+template <typename CharT>
+extern bool UTF8EqualsChars(const JS::UTF8Chars utf8, const CharT* chars);
 
-template <typename InputCharsT>
-extern bool GetUTF8AtomizationData(JSContext* cx, const InputCharsT utf8,
+extern bool GetUTF8AtomizationData(JSContext* cx, const JS::UTF8Chars utf8,
                                    size_t* outlen,
                                    JS::SmallestEncoding* encoding,
                                    HashNumber* hashNum);
@@ -64,7 +64,7 @@ struct js::AtomHasher::Lookup {
     LittleEndianChars littleEndianChars;
     const char* utf8Bytes;
   };
-  enum { TwoByteChar, LittleEndianTwoByte, Latin1, UTF8, WTF8 } type;
+  enum { TwoByteChar, LittleEndianTwoByte, Latin1, UTF8 } type;
   size_t length;
   size_t byteLength;
   const JSAtom* atom; /* Optional. */
@@ -94,6 +94,26 @@ struct js::AtomHasher::Lookup {
         length(length),
         atom(nullptr),
         hash(mozilla::HashString(chars, length)) {}
+
+  MOZ_ALWAYS_INLINE Lookup(HashNumber hash, const char16_t* chars,
+                           size_t length)
+      : twoByteChars(chars),
+        type(TwoByteChar),
+        length(length),
+        atom(nullptr),
+        hash(hash) {
+    MOZ_ASSERT(hash == mozilla::HashString(chars, length));
+  }
+
+  MOZ_ALWAYS_INLINE Lookup(HashNumber hash, const JS::Latin1Char* chars,
+                           size_t length)
+      : latin1Chars(chars),
+        type(Latin1),
+        length(length),
+        atom(nullptr),
+        hash(hash) {
+    MOZ_ASSERT(hash == mozilla::HashString(chars, length));
+  }
 
   inline explicit Lookup(const JSAtom* atom)
       : type(atom->hasLatin1Chars() ? Latin1 : TwoByteChar),
@@ -150,11 +170,7 @@ MOZ_ALWAYS_INLINE bool js::AtomHasher::match(const AtomStateEntry& entry,
         return EqualsLittleEndianChars(keyChars);
       case Lookup::UTF8: {
         JS::UTF8Chars utf8(lookup.utf8Bytes, lookup.byteLength);
-        return UTF8OrWTF8EqualsChars(utf8, keyChars);
-      }
-      case Lookup::WTF8: {
-        JS::WTF8Chars wtf8(lookup.utf8Bytes, lookup.byteLength);
-        return UTF8OrWTF8EqualsChars(wtf8, keyChars);
+        return UTF8EqualsChars(utf8, keyChars);
       }
     }
   }
@@ -169,11 +185,7 @@ MOZ_ALWAYS_INLINE bool js::AtomHasher::match(const AtomStateEntry& entry,
       return EqualsLittleEndianChars(keyChars);
     case Lookup::UTF8: {
       JS::UTF8Chars utf8(lookup.utf8Bytes, lookup.byteLength);
-      return UTF8OrWTF8EqualsChars(utf8, keyChars);
-    }
-    case Lookup::WTF8: {
-      JS::WTF8Chars wtf8(lookup.utf8Bytes, lookup.byteLength);
-      return UTF8OrWTF8EqualsChars(wtf8, keyChars);
+      return UTF8EqualsChars(utf8, keyChars);
     }
   }
 
@@ -184,7 +196,7 @@ MOZ_ALWAYS_INLINE bool js::AtomHasher::match(const AtomStateEntry& entry,
 inline JSAtom* js::AtomStateEntry::asPtr(JSContext* cx) const {
   JSAtom* atom = asPtrUnbarriered();
   if (!cx->isHelperThreadContext()) {
-    JSString::readBarrier(atom);
+    gc::ReadBarrier(atom);
   }
   return atom;
 }
@@ -192,14 +204,6 @@ inline JSAtom* js::AtomStateEntry::asPtr(JSContext* cx) const {
 UniqueChars js::AtomToPrintableString(JSContext* cx, JSAtom* atom) {
   return QuoteString(cx, atom);
 }
-
-#define DEFINE_PROTO_STRING(name, clasp) const char js_##name##_str[] = #name;
-JS_FOR_EACH_PROTOTYPE(DEFINE_PROTO_STRING)
-#undef DEFINE_PROTO_STRING
-
-#define CONST_CHAR_STR(idpart, id, text) const char js_##idpart##_str[] = text;
-FOR_EACH_COMMON_PROPERTYNAME(CONST_CHAR_STR)
-#undef CONST_CHAR_STR
 
 // Use a low initial capacity for the permanent atoms table to avoid penalizing
 // runtimes that create a small number of atoms.
@@ -209,11 +213,6 @@ MOZ_ALWAYS_INLINE AtomSet::Ptr js::FrozenAtomSet::readonlyThreadsafeLookup(
     const AtomSet::Lookup& l) const {
   return mSet->readonlyThreadsafeLookup(l);
 }
-
-struct CommonNameInfo {
-  const char* str;
-  size_t length;
-};
 
 bool JSRuntime::initializeAtoms(JSContext* cx) {
   MOZ_ASSERT(!atoms_);
@@ -246,19 +245,16 @@ bool JSRuntime::initializeAtoms(JSContext* cx) {
     return false;
   }
 
-  static const CommonNameInfo cachedNames[] = {
-#define COMMON_NAME_INFO(idpart, id, text) \
-  {js_##idpart##_str, sizeof(text) - 1},
-      FOR_EACH_COMMON_PROPERTYNAME(COMMON_NAME_INFO)
-#undef COMMON_NAME_INFO
-#define COMMON_NAME_INFO(name, clasp) {js_##name##_str, sizeof(#name) - 1},
-          JS_FOR_EACH_PROTOTYPE(COMMON_NAME_INFO)
-#undef COMMON_NAME_INFO
-#define COMMON_NAME_INFO(name) {#name, sizeof(#name) - 1},
-              JS_FOR_EACH_WELL_KNOWN_SYMBOL(COMMON_NAME_INFO)
-#undef COMMON_NAME_INFO
-#define COMMON_NAME_INFO(name) {"Symbol." #name, sizeof("Symbol." #name) - 1},
-                  JS_FOR_EACH_WELL_KNOWN_SYMBOL(COMMON_NAME_INFO)
+  // The bare symbol names are already part of the well-known set, but their
+  // descriptions are not, so enumerate them here and add them to the initial
+  // permanent atoms set below.
+  static const WellKnownAtomInfo symbolDescInfo[] = {
+#define COMMON_NAME_INFO(NAME)                                  \
+  {uint32_t(sizeof("Symbol." #NAME) - 1),                       \
+   mozilla::HashStringKnownLength("Symbol." #NAME,              \
+                                  sizeof("Symbol." #NAME) - 1), \
+   "Symbol." #NAME},
+          JS_FOR_EACH_WELL_KNOWN_SYMBOL(COMMON_NAME_INFO)
 #undef COMMON_NAME_INFO
   };
 
@@ -269,13 +265,23 @@ bool JSRuntime::initializeAtoms(JSContext* cx) {
 
   ImmutablePropertyNamePtr* names =
       reinterpret_cast<ImmutablePropertyNamePtr*>(commonNames.ref());
-  for (size_t i = 0; i < ArrayLength(cachedNames); i++, names++) {
-    JSAtom* atom =
-        Atomize(cx, cachedNames[i].str, cachedNames[i].length, PinAtom);
+  for (size_t i = 0; i < uint32_t(WellKnownAtomId::Limit); i++) {
+    const auto& info = wellKnownAtomInfos[i];
+    JSAtom* atom = Atomize(cx, info.hash, info.content, info.length, PinAtom);
     if (!atom) {
       return false;
     }
     names->init(atom->asPropertyName());
+    names++;
+  }
+
+  for (const auto& info : symbolDescInfo) {
+    JSAtom* atom = Atomize(cx, info.hash, info.content, info.length, PinAtom);
+    if (!atom) {
+      return false;
+    }
+    names->init(atom->asPropertyName());
+    names++;
   }
   MOZ_ASSERT(uintptr_t(names) == uintptr_t(commonNames + 1));
 
@@ -404,7 +410,6 @@ AtomsTable::getPartitionIndex(const AtomHasher::Lookup& lookup) {
 inline void AtomsTable::tracePinnedAtomsInSet(JSTracer* trc, AtomSet& atoms) {
   for (auto r = atoms.all(); !r.empty(); r.popFront()) {
     const AtomStateEntry& entry = r.front();
-    MOZ_ASSERT(entry.isPinned() == entry.asPtrUnbarriered()->isPinned());
     MOZ_DIAGNOSTIC_ASSERT(entry.asPtrUnbarriered());
     if (entry.isPinned()) {
       JSAtom* atom = entry.asPtrUnbarriered();
@@ -436,7 +441,7 @@ static void TracePermanentAtoms(JSTracer* trc, AtomSet::Range atoms) {
   for (; !atoms.empty(); atoms.popFront()) {
     const AtomStateEntry& entry = atoms.front();
     JSAtom* atom = entry.asPtrUnbarriered();
-    MOZ_ASSERT(atom->isPinned());
+    MOZ_ASSERT(atom->isPermanentAtom());
     TraceProcessGlobalRoot(trc, atom, "permanent atom");
   }
 }
@@ -526,9 +531,9 @@ inline bool AtomsTable::SweepIterator::empty() const {
   return partitionIndex == PartitionCount;
 }
 
-inline JSAtom* AtomsTable::SweepIterator::front() const {
+inline AtomStateEntry AtomsTable::SweepIterator::front() const {
   MOZ_ASSERT(!empty());
-  return atomsIter->front().asPtrUnbarriered();
+  return atomsIter->front();
 }
 
 inline void AtomsTable::SweepIterator::removeFront() {
@@ -598,15 +603,14 @@ bool AtomsTable::sweepIncrementally(SweepIterator& atomsToSweep,
       return false;
     }
 
-    JSAtom* atom = atomsToSweep.front();
+    AtomStateEntry entry = atomsToSweep.front();
+    JSAtom* atom = entry.asPtrUnbarriered();
     MOZ_DIAGNOSTIC_ASSERT(atom);
-    // TODO: Bug 1574981 - investigate talos regression in
-    // AtomsTable::sweepIncrementally
     if (IsAboutToBeFinalizedUnbarriered(&atom)) {
-      MOZ_ASSERT(!atom->isPinned());
+      MOZ_ASSERT(!entry.isPinned());
       atomsToSweep.removeFront();
     } else {
-      MOZ_ASSERT(atom == atomsToSweep.front());
+      MOZ_ASSERT(atom == entry.asPtrUnbarriered());
     }
     atomsToSweep.popFront();
   }
@@ -740,14 +744,14 @@ static MOZ_ALWAYS_INLINE JSAtom* AtomizeAndCopyCharsFromLookup(
 
 template <typename Chars>
 static MOZ_ALWAYS_INLINE JSAtom* AllocateNewAtom(
-    JSContext* cx, Chars chars, size_t length, PinningBehavior pin,
+    JSContext* cx, Chars chars, size_t length,
     const Maybe<uint32_t>& indexValue, const AtomHasher::Lookup& lookup);
 
 template <typename CharT, typename = std::enable_if_t<!std::is_const_v<CharT>>>
 static MOZ_ALWAYS_INLINE JSAtom* AllocateNewAtom(
-    JSContext* cx, CharT* chars, size_t length, PinningBehavior pin,
+    JSContext* cx, CharT* chars, size_t length,
     const Maybe<uint32_t>& indexValue, const AtomHasher::Lookup& lookup) {
-  return AllocateNewAtom(cx, const_cast<const CharT*>(chars), length, pin,
+  return AllocateNewAtom(cx, const_cast<const CharT*>(chars), length,
                          indexValue, lookup);
 }
 
@@ -783,14 +787,13 @@ MOZ_ALWAYS_INLINE JSAtom* AtomsTable::atomizeAndCopyChars(
 
   if (p) {
     JSAtom* atom = p->asPtr(cx);
-    if (pin && !atom->isPinned()) {
-      atom->setPinned();
+    if (pin && !p->isPinned()) {
       p->setPinned(true);
     }
     return atom;
   }
 
-  JSAtom* atom = AllocateNewAtom(cx, chars, length, pin, indexValue, lookup);
+  JSAtom* atom = AllocateNewAtom(cx, chars, length, indexValue, lookup);
   if (!atom) {
     return nullptr;
   }
@@ -836,8 +839,7 @@ static MOZ_NEVER_INLINE JSAtom* PermanentlyAtomizeAndCopyChars(
     return p->asPtr(cx);
   }
 
-  JSAtom* atom =
-      AllocateNewAtom(cx, chars, length, DoNotPinAtom, indexValue, lookup);
+  JSAtom* atom = AllocateNewAtom(cx, chars, length, indexValue, lookup);
   if (!atom) {
     return nullptr;
   }
@@ -861,13 +863,12 @@ static MOZ_NEVER_INLINE JSAtom* PermanentlyAtomizeAndCopyChars(
   return atom;
 }
 
-template <typename CharsT>
-struct AtomizeUTF8OrWTF8CharsWrapper {
-  CharsT utf8;
+struct AtomizeUTF8CharsWrapper {
+  JS::UTF8Chars utf8;
   JS::SmallestEncoding encoding;
 
-  AtomizeUTF8OrWTF8CharsWrapper(const CharsT& chars,
-                                JS::SmallestEncoding minEncode)
+  AtomizeUTF8CharsWrapper(const JS::UTF8Chars& chars,
+                          JS::SmallestEncoding minEncode)
       : utf8(chars), encoding(minEncode) {}
 };
 
@@ -876,22 +877,23 @@ struct AtomizeUTF8OrWTF8CharsWrapper {
 template <typename CharT>
 static MOZ_ALWAYS_INLINE JSLinearString* MakeLinearStringForAtomization(
     JSContext* cx, const CharT* chars, size_t length) {
-  return NewStringCopyN<NoGC>(cx, chars, length);
+  return NewStringCopyN<NoGC>(cx, chars, length, gc::TenuredHeap);
 }
 
 // MakeLinearStringForAtomization has one further variant -- a non-template
 // overload accepting LittleEndianChars.
 static MOZ_ALWAYS_INLINE JSLinearString* MakeLinearStringForAtomization(
     JSContext* cx, LittleEndianChars chars, size_t length) {
-  return NewStringFromLittleEndianNoGC(cx, chars, length);
+  return NewStringFromLittleEndianNoGC(cx, chars, length, gc::TenuredHeap);
 }
 
-template <typename CharT, typename WrapperT>
+template <typename CharT>
 static MOZ_ALWAYS_INLINE JSLinearString* MakeUTF8AtomHelper(
-    JSContext* cx, const WrapperT* chars, size_t length) {
+    JSContext* cx, const AtomizeUTF8CharsWrapper* chars, size_t length) {
   if (JSInlineString::lengthFits<CharT>(length)) {
     CharT* storage;
-    JSInlineString* str = AllocateInlineString<NoGC>(cx, length, &storage);
+    JSInlineString* str =
+        AllocateInlineString<NoGC>(cx, length, &storage, gc::TenuredHeap);
     if (!str) {
       return nullptr;
     }
@@ -914,15 +916,13 @@ static MOZ_ALWAYS_INLINE JSLinearString* MakeUTF8AtomHelper(
   InflateUTF8CharsToBufferAndTerminate(chars->utf8, newStr.get(), length,
                                        chars->encoding);
 
-  return JSLinearString::new_<NoGC>(cx, std::move(newStr), length);
+  return JSLinearString::new_<NoGC>(cx, std::move(newStr), length,
+                                    gc::TenuredHeap);
 }
 
 // Another 2 variants of MakeLinearStringForAtomization.
-// This is used by AtomizeUTF8OrWTF8CharsWrapper with UTF8Chars or WTF8Chars.
-template <typename InputCharsT>
-/* static */ MOZ_ALWAYS_INLINE JSLinearString* MakeLinearStringForAtomization(
-    JSContext* cx, const AtomizeUTF8OrWTF8CharsWrapper<InputCharsT>* chars,
-    size_t length) {
+static MOZ_ALWAYS_INLINE JSLinearString* MakeLinearStringForAtomization(
+    JSContext* cx, const AtomizeUTF8CharsWrapper* chars, size_t length) {
   if (length == 0) {
     return cx->emptyString();
   }
@@ -935,7 +935,7 @@ template <typename InputCharsT>
 
 template <typename Chars>
 static MOZ_ALWAYS_INLINE JSAtom* AllocateNewAtom(
-    JSContext* cx, Chars chars, size_t length, PinningBehavior pin,
+    JSContext* cx, Chars chars, size_t length,
     const Maybe<uint32_t>& indexValue, const AtomHasher::Lookup& lookup) {
   AutoAllocInAtomsZone ac(cx);
 
@@ -950,12 +950,15 @@ static MOZ_ALWAYS_INLINE JSAtom* AllocateNewAtom(
   JSAtom* atom = linear->morphAtomizedStringIntoAtom(lookup.hash);
   MOZ_ASSERT(atom->hash() == lookup.hash);
 
-  if (pin) {
-    atom->setPinned();
-  }
-
   if (indexValue) {
-    atom->maybeInitializeIndex(*indexValue, true);
+    atom->setIsIndex(*indexValue);
+  } else {
+    // We need to call isIndexSlow directly to avoid the flag check in isIndex,
+    // because we still have to initialize that flag.
+    uint32_t index;
+    if (atom->isIndexSlow(&index)) {
+      atom->setIsIndex(index);
+    }
   }
 
   return atom;
@@ -966,8 +969,8 @@ JSAtom* js::AtomizeString(JSContext* cx, JSString* str,
   if (str->isAtom()) {
     JSAtom& atom = str->asAtom();
     /* N.B. static atoms are effectively always interned. */
-    if (pin == PinAtom && !atom.isPinned()) {
-      cx->runtime()->atoms().pinExistingAtom(cx, &atom);
+    if (pin == PinAtom && !atom.isPermanentAtom()) {
+      cx->runtime()->atoms().maybePinExistingAtom(cx, &atom);
     }
 
     return &atom;
@@ -978,22 +981,64 @@ JSAtom* js::AtomizeString(JSContext* cx, JSString* str,
     return nullptr;
   }
 
+  if (cx->isMainThreadContext() && pin == DoNotPinAtom) {
+    if (JSAtom* atom = cx->caches().stringToAtomCache.lookup(linear)) {
+      return atom;
+    }
+  }
+
   Maybe<uint32_t> indexValue;
   if (str->hasIndexValue()) {
     indexValue.emplace(str->getIndexValue());
   }
 
   JS::AutoCheckCannotGC nogc;
-  return linear->hasLatin1Chars()
-             ? AtomizeAndCopyChars(cx, linear->latin1Chars(nogc),
-                                   linear->length(), pin, indexValue)
-             : AtomizeAndCopyChars(cx, linear->twoByteChars(nogc),
-                                   linear->length(), pin, indexValue);
+  JSAtom* atom = linear->hasLatin1Chars()
+                     ? AtomizeAndCopyChars(cx, linear->latin1Chars(nogc),
+                                           linear->length(), pin, indexValue)
+                     : AtomizeAndCopyChars(cx, linear->twoByteChars(nogc),
+                                           linear->length(), pin, indexValue);
+  if (!atom) {
+    return nullptr;
+  }
+
+  if (cx->isMainThreadContext() && pin == DoNotPinAtom) {
+    cx->caches().stringToAtomCache.maybePut(linear, atom);
+  }
+
+  return atom;
 }
 
-void AtomsTable::pinExistingAtom(JSContext* cx, JSAtom* atom) {
+bool js::AtomIsPinned(JSContext* cx, JSAtom* atom) {
+  JSRuntime* rt = cx->runtime();
+  return rt->atoms().atomIsPinned(rt, atom);
+}
+
+bool AtomsTable::atomIsPinned(JSRuntime* rt, JSAtom* atom) {
   MOZ_ASSERT(atom);
-  MOZ_ASSERT(!atom->isPinned());
+
+  if (atom->isPermanentAtom()) {
+    return true;
+  }
+
+  AtomHasher::Lookup lookup(atom);
+
+  AtomsTable::Partition& part = *partitions[getPartitionIndex(lookup)];
+  AtomsTable::AutoLock lock(rt, part.lock);
+  AtomSet::Ptr p = part.atoms.lookup(lookup);
+  if (!p && part.atomsAddedWhileSweeping) {
+    p = part.atomsAddedWhileSweeping->lookup(lookup);
+  }
+
+  MOZ_ASSERT(p);  // Non-permanent atoms must exist in atoms table.
+  MOZ_ASSERT(p->asPtrUnbarriered() == atom);
+
+  return p->isPinned();
+}
+
+void AtomsTable::maybePinExistingAtom(JSContext* cx, JSAtom* atom) {
+  MOZ_ASSERT(atom);
+  MOZ_ASSERT(!atom->isPermanentAtom());
 
   AtomHasher::Lookup lookup(atom);
 
@@ -1004,25 +1049,33 @@ void AtomsTable::pinExistingAtom(JSContext* cx, JSAtom* atom) {
     p = part.atomsAddedWhileSweeping->lookup(lookup);
   }
 
-  MOZ_ASSERT(p);  // Unpinned atoms must exist in atoms table.
+  MOZ_ASSERT(p);  // Non-permanent atoms must exist in atoms table.
   MOZ_ASSERT(p->asPtrUnbarriered() == atom);
 
-  atom->setPinned();
   p->setPinned(true);
 }
 
 JSAtom* js::Atomize(JSContext* cx, const char* bytes, size_t length,
                     PinningBehavior pin, const Maybe<uint32_t>& indexValue) {
-  CHECK_THREAD(cx);
-
   const Latin1Char* chars = reinterpret_cast<const Latin1Char*>(bytes);
   return AtomizeAndCopyChars(cx, chars, length, pin, indexValue);
+}
+
+JSAtom* js::Atomize(JSContext* cx, HashNumber hash, const char* bytes,
+                    size_t length, PinningBehavior pin) {
+  const Latin1Char* chars = reinterpret_cast<const Latin1Char*>(bytes);
+  if (JSAtom* s = cx->staticStrings().lookup(chars, length)) {
+    return s;
+  }
+
+  AtomHasher::Lookup lookup(hash, chars, length);
+  return AtomizeAndCopyCharsFromLookup(cx, chars, length, lookup, pin,
+                                       Nothing());
 }
 
 template <typename CharT>
 JSAtom* js::AtomizeChars(JSContext* cx, const CharT* chars, size_t length,
                          PinningBehavior pin) {
-  CHECK_THREAD(cx);
   return AtomizeAndCopyChars(cx, chars, length, pin, Nothing());
 }
 
@@ -1032,9 +1085,27 @@ template JSAtom* js::AtomizeChars(JSContext* cx, const Latin1Char* chars,
 template JSAtom* js::AtomizeChars(JSContext* cx, const char16_t* chars,
                                   size_t length, PinningBehavior pin);
 
-template <typename CharsT>
-JSAtom* AtomizeUTF8OrWTF8Chars(JSContext* cx, const char* utf8Chars,
-                               size_t utf8ByteLength) {
+/* |chars| must not point into an inline or short string. */
+template <typename CharT>
+JSAtom* js::AtomizeChars(JSContext* cx, HashNumber hash, const CharT* chars,
+                         size_t length) {
+  if (JSAtom* s = cx->staticStrings().lookup(chars, length)) {
+    return s;
+  }
+
+  AtomHasher::Lookup lookup(hash, chars, length);
+  return AtomizeAndCopyCharsFromLookup(
+      cx, chars, length, lookup, PinningBehavior::DoNotPinAtom, Nothing());
+}
+
+template JSAtom* js::AtomizeChars(JSContext* cx, HashNumber hash,
+                                  const Latin1Char* chars, size_t length);
+
+template JSAtom* js::AtomizeChars(JSContext* cx, HashNumber hash,
+                                  const char16_t* chars, size_t length);
+
+JSAtom* js::AtomizeUTF8Chars(JSContext* cx, const char* utf8Chars,
+                             size_t utf8ByteLength) {
   {
     // Permanent atoms,|JSRuntime::atoms_|, and  static strings are disjoint
     // sets.  |AtomizeAndCopyCharsFromLookup| only consults the first two sets,
@@ -1075,35 +1146,22 @@ JSAtom* AtomizeUTF8OrWTF8Chars(JSContext* cx, const char* utf8Chars,
   size_t length;
   HashNumber hash;
   JS::SmallestEncoding forCopy;
-  CharsT utf8(utf8Chars, utf8ByteLength);
+  JS::UTF8Chars utf8(utf8Chars, utf8ByteLength);
   if (!GetUTF8AtomizationData(cx, utf8, &length, &forCopy, &hash)) {
     return nullptr;
   }
 
-  AtomizeUTF8OrWTF8CharsWrapper<CharsT> chars(utf8, forCopy);
+  AtomizeUTF8CharsWrapper chars(utf8, forCopy);
   AtomHasher::Lookup lookup(utf8Chars, utf8ByteLength, length, hash);
-  if (std::is_same_v<CharsT, WTF8Chars>) {
-    lookup.type = AtomHasher::Lookup::WTF8;
-  }
   return AtomizeAndCopyCharsFromLookup(cx, &chars, length, lookup, DoNotPinAtom,
                                        Nothing());
-}
-
-JSAtom* js::AtomizeUTF8Chars(JSContext* cx, const char* utf8Chars,
-                             size_t utf8ByteLength) {
-  return AtomizeUTF8OrWTF8Chars<UTF8Chars>(cx, utf8Chars, utf8ByteLength);
-}
-
-JSAtom* js::AtomizeWTF8Chars(JSContext* cx, const char* wtf8Chars,
-                             size_t wtf8ByteLength) {
-  return AtomizeUTF8OrWTF8Chars<WTF8Chars>(cx, wtf8Chars, wtf8ByteLength);
 }
 
 bool js::IndexToIdSlow(JSContext* cx, uint32_t index, MutableHandleId idp) {
   MOZ_ASSERT(index > JSID_INT_MAX);
 
   char16_t buf[UINT32_CHAR_BUFFER_LENGTH];
-  RangedPtr<char16_t> end(ArrayEnd(buf), buf, ArrayEnd(buf));
+  RangedPtr<char16_t> end(std::end(buf), buf, std::end(buf));
   RangedPtr<char16_t> start = BackfillIndexInCharBuffer(index, end);
 
   JSAtom* atom = AtomizeChars(cx, start.get(), end - start);
@@ -1207,8 +1265,6 @@ template JSAtom* js::ToAtom<NoGC>(JSContext* cx, const Value& v);
 static JSAtom* AtomizeLittleEndianTwoByteChars(JSContext* cx,
                                                const uint8_t* leTwoByte,
                                                size_t length) {
-  CHECK_THREAD(cx);
-
   LittleEndianChars chars(leTwoByte);
 
   if (JSAtom* s = cx->staticStrings().lookup(chars, length)) {
@@ -1247,62 +1303,7 @@ template XDRResult js::XDRAtomOrNull(XDRState<XDR_ENCODE>* xdr,
                                      MutableHandleAtom atomp);
 
 template <XDRMode mode>
-static XDRResult XDRAtomIndex(XDRState<mode>* xdr, uint32_t* index) {
-  return xdr->codeUint32(index);
-}
-
-template <XDRMode mode>
 XDRResult js::XDRAtom(XDRState<mode>* xdr, MutableHandleAtom atomp) {
-  if (!xdr->hasAtomMap() && !xdr->hasAtomTable()) {
-    return XDRAtomData(xdr, atomp);
-  }
-
-  if (mode == XDR_ENCODE) {
-    MOZ_ASSERT(xdr->hasAtomMap());
-
-    // Atom contents are encoded in a separate buffer, which is joined to the
-    // final result in XDRIncrementalEncoder::linearize. References to atoms
-    // are encoded as indices into the atom stream.
-    uint32_t atomIndex;
-    XDRAtomMap::AddPtr p = xdr->atomMap().lookupForAdd(atomp.get());
-    if (p) {
-      atomIndex = p->value();
-    } else {
-      xdr->switchToAtomBuf();
-      MOZ_TRY(XDRAtomData(xdr, atomp));
-      xdr->switchToMainBuf();
-
-      atomIndex = xdr->natoms();
-      xdr->natoms() += 1;
-      if (!xdr->atomMap().add(p, atomp.get(), atomIndex)) {
-        return xdr->fail(JS::TranscodeResult_Throw);
-      }
-    }
-    MOZ_TRY(XDRAtomIndex(xdr, &atomIndex));
-    return Ok();
-  }
-
-  MOZ_ASSERT(mode == XDR_DECODE && xdr->hasAtomTable());
-
-  uint32_t atomIndex;
-  MOZ_TRY(XDRAtomIndex(xdr, &atomIndex));
-  if (atomIndex >= xdr->atomTable().length()) {
-    return xdr->fail(JS::TranscodeResult_Failure_BadDecode);
-  }
-  JSAtom* atom = xdr->atomTable()[atomIndex];
-
-  atomp.set(atom);
-  return Ok();
-}
-
-template XDRResult js::XDRAtom(XDRState<XDR_DECODE>* xdr,
-                               MutableHandleAtom atomp);
-
-template XDRResult js::XDRAtom(XDRState<XDR_ENCODE>* xdr,
-                               MutableHandleAtom atomp);
-
-template <XDRMode mode>
-XDRResult js::XDRAtomData(XDRState<mode>* xdr, MutableHandleAtom atomp) {
   bool latin1 = false;
   uint32_t length = 0;
   uint32_t lengthAndEncoding = 0;
@@ -1336,7 +1337,7 @@ XDRResult js::XDRAtomData(XDRState<mode>* xdr, MutableHandleAtom atomp) {
     if (length) {
       const uint8_t* ptr;
       size_t nbyte = length * sizeof(Latin1Char);
-      MOZ_TRY(xdr->peekData(&ptr, nbyte));
+      MOZ_TRY(xdr->readData(&ptr, nbyte));
       chars = reinterpret_cast<const Latin1Char*>(ptr);
     }
     atom = AtomizeChars(cx, chars, length);
@@ -1344,23 +1345,23 @@ XDRResult js::XDRAtomData(XDRState<mode>* xdr, MutableHandleAtom atomp) {
     const uint8_t* twoByteCharsLE = nullptr;
     if (length) {
       size_t nbyte = length * sizeof(char16_t);
-      MOZ_TRY(xdr->peekData(&twoByteCharsLE, nbyte));
+      MOZ_TRY(xdr->readData(&twoByteCharsLE, nbyte));
     }
     atom = AtomizeLittleEndianTwoByteChars(cx, twoByteCharsLE, length);
   }
 
   if (!atom) {
-    return xdr->fail(JS::TranscodeResult_Throw);
+    return xdr->fail(JS::TranscodeResult::Throw);
   }
   atomp.set(atom);
   return Ok();
 }
 
-template XDRResult js::XDRAtomData(XDRState<XDR_ENCODE>* xdr,
-                                   MutableHandleAtom atomp);
+template XDRResult js::XDRAtom(XDRState<XDR_DECODE>* xdr,
+                               MutableHandleAtom atomp);
 
-template XDRResult js::XDRAtomData(XDRState<XDR_DECODE>* xdr,
-                                   MutableHandleAtom atomp);
+template XDRResult js::XDRAtom(XDRState<XDR_ENCODE>* xdr,
+                               MutableHandleAtom atomp);
 
 Handle<PropertyName*> js::ClassName(JSProtoKey key, JSContext* cx) {
   return ClassName(key, cx->names());

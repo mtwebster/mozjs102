@@ -16,30 +16,33 @@
 #include "js/RootingAPI.h"    // JS::Handle, JS::Rooted, JS::MutableHandle
 #include "js/Value.h"         // JS::Value, JS_IS_CONSTRUCTING
 #include "vm/JSFunction.h"    // JSFunction
+#include "vm/JSObject.h"      // js::GenericObject, js::NewObjectKind
 #include "vm/NativeObject.h"  // js::NativeObject::create
-#include "vm/ObjectGroup.h"  // js::ObjectGroup, js::GenericObject, js::NewObjectKind
-#include "vm/Shape.h"        // js::Shape
+#include "vm/Shape.h"         // js::Shape
 
 #include "gc/ObjectKind-inl.h"  // js::gc::GetGCObjectKind
 #include "vm/JSObject-inl.h"  // js::GetInitialHeap, js::NewBuiltinClassInstance
 #include "vm/NativeObject-inl.h"  // js::NativeObject::{create,setLastProperty}
 
-/* static */ inline JS::Result<js::PlainObject*, JS::OOM&>
-js::PlainObject::createWithTemplate(JSContext* cx,
-                                    JS::Handle<PlainObject*> templateObject) {
-  JS::Rooted<ObjectGroup*> group(cx, templateObject->group());
-  MOZ_ASSERT(group->clasp() == &PlainObject::class_);
-
-  gc::InitialHeap heap = GetInitialHeap(GenericObject, group);
-
-  JS::Rooted<Shape*> shape(cx, templateObject->lastProperty());
+/* static */ inline JS::Result<js::PlainObject*, JS::OOM>
+js::PlainObject::createWithShape(JSContext* cx, JS::Handle<Shape*> shape) {
+  MOZ_ASSERT(shape->getObjectClass() == &PlainObject::class_);
+  gc::InitialHeap heap = GetInitialHeap(GenericObject, &PlainObject::class_);
 
   gc::AllocKind kind = gc::GetGCObjectKind(shape->numFixedSlots());
   MOZ_ASSERT(gc::CanChangeToBackgroundAllocKind(kind, shape->getObjectClass()));
   kind = gc::ForegroundToBackgroundAllocKind(kind);
 
-  return NativeObject::create(cx, kind, heap, shape, group)
-      .map([](NativeObject* obj) { return &obj->as<PlainObject>(); });
+  return NativeObject::create(cx, kind, heap, shape).map([](NativeObject* obj) {
+    return &obj->as<PlainObject>();
+  });
+}
+
+/* static */ inline JS::Result<js::PlainObject*, JS::OOM>
+js::PlainObject::createWithTemplate(JSContext* cx,
+                                    JS::Handle<PlainObject*> templateObject) {
+  JS::Rooted<Shape*> shape(cx, templateObject->shape());
+  return createWithShape(cx, shape);
 }
 
 inline js::gc::AllocKind js::PlainObject::allocKindForTenure() const {
@@ -51,8 +54,9 @@ inline js::gc::AllocKind js::PlainObject::allocKindForTenure() const {
 
 namespace js {
 
-/* Make an object with pregenerated shape from a NEWOBJECT bytecode. */
-static inline PlainObject* CopyInitializerObject(
+// Create an object based on a template object created for either a NewObject
+// bytecode op or for a constructor call.
+static inline PlainObject* CopyTemplateObject(
     JSContext* cx, JS::Handle<PlainObject*> baseobj,
     NewObjectKind newKind = GenericObject) {
   MOZ_ASSERT(!baseobj->inDictionaryMode());
@@ -62,13 +66,14 @@ static inline PlainObject* CopyInitializerObject(
   allocKind = gc::ForegroundToBackgroundAllocKind(allocKind);
   MOZ_ASSERT_IF(baseobj->isTenured(),
                 allocKind == baseobj->asTenured().getAllocKind());
-  JS::Rooted<PlainObject*> obj(
-      cx, NewBuiltinClassInstance<PlainObject>(cx, allocKind, newKind));
+  RootedObject proto(cx, baseobj->staticPrototype());
+  JS::Rooted<PlainObject*> obj(cx, NewObjectWithGivenProtoAndKinds<PlainObject>(
+                                       cx, proto, allocKind, newKind));
   if (!obj) {
     return nullptr;
   }
 
-  if (!obj->setLastProperty(cx, baseobj->lastProperty())) {
+  if (!obj->setShapeAndUpdateSlots(cx, baseobj->shape())) {
     return nullptr;
   }
 

@@ -7,9 +7,9 @@
 use crate::prefix::{
     DECODER_HEADER_ACK, DECODER_INSERT_COUNT_INCREMENT, DECODER_STREAM_CANCELLATION,
 };
-use crate::qpack_send_buf::QPData;
+use crate::qpack_send_buf::QpackData;
 use crate::reader::{IntReader, ReadByte};
-use crate::{Error, Res};
+use crate::Res;
 use neqo_common::{qdebug, qtrace};
 use std::mem;
 
@@ -34,7 +34,7 @@ impl DecoderInstruction {
         }
     }
 
-    pub(crate) fn marshal(&self, enc: &mut QPData) {
+    pub(crate) fn marshal(&self, enc: &mut QpackData) {
         match self {
             Self::InsertCountIncrement { increment } => {
                 enc.encode_prefixed_encoded_int(DECODER_INSERT_COUNT_INCREMENT, *increment);
@@ -76,52 +76,47 @@ impl DecoderInstructionReader {
         }
     }
 
-    pub fn read_instructions<R: ReadByte>(
-        &mut self,
-        recv: &mut R,
-    ) -> Res<Option<DecoderInstruction>> {
+    /// ### Errors
+    ///  1) `NeedMoreData` if the reader needs more data
+    ///  2) `ClosedCriticalStream`
+    ///  3) other errors will be translated to `DecoderStream` by the caller of this function.
+    pub fn read_instructions<R: ReadByte>(&mut self, recv: &mut R) -> Res<DecoderInstruction> {
         qdebug!([self], "read a new instraction");
         loop {
             match &mut self.state {
-                DecoderInstructionReaderState::ReadInstruction => match recv.read_byte() {
-                    Ok(b) => {
-                        self.instruction = DecoderInstruction::get_instruction(b);
-                        self.state = DecoderInstructionReaderState::ReadInt {
-                            reader: IntReader::make(
-                                b,
-                                &[
-                                    DECODER_HEADER_ACK,
-                                    DECODER_STREAM_CANCELLATION,
-                                    DECODER_INSERT_COUNT_INCREMENT,
-                                ],
-                            ),
-                        };
-                    }
-                    Err(Error::NoMoreData) => break Ok(None),
-                    Err(Error::ClosedCriticalStream) => break Err(Error::ClosedCriticalStream),
-                    _ => break Err(Error::DecoderStream),
-                },
-                DecoderInstructionReaderState::ReadInt { reader } => match reader.read(recv) {
-                    Ok(Some(val)) => {
-                        qtrace!([self], "varint read {}", val);
-                        match &mut self.instruction {
-                            DecoderInstruction::InsertCountIncrement { increment: v }
-                            | DecoderInstruction::HeaderAck { stream_id: v }
-                            | DecoderInstruction::StreamCancellation { stream_id: v } => {
-                                *v = val;
-                                self.state = DecoderInstructionReaderState::ReadInstruction;
-                                break Ok(Some(mem::replace(
-                                    &mut self.instruction,
-                                    DecoderInstruction::NoInstruction,
-                                )));
-                            }
-                            _ => unreachable!("This instruction cannot be in this state."),
+                DecoderInstructionReaderState::ReadInstruction => {
+                    let b = recv.read_byte()?;
+                    self.instruction = DecoderInstruction::get_instruction(b);
+                    self.state = DecoderInstructionReaderState::ReadInt {
+                        reader: IntReader::make(
+                            b,
+                            &[
+                                DECODER_HEADER_ACK,
+                                DECODER_STREAM_CANCELLATION,
+                                DECODER_INSERT_COUNT_INCREMENT,
+                            ],
+                        ),
+                    };
+                }
+                DecoderInstructionReaderState::ReadInt { reader } => {
+                    let val = reader.read(recv)?;
+                    qtrace!([self], "varint read {}", val);
+                    match &mut self.instruction {
+                        DecoderInstruction::InsertCountIncrement { increment: v }
+                        | DecoderInstruction::HeaderAck { stream_id: v }
+                        | DecoderInstruction::StreamCancellation { stream_id: v } => {
+                            *v = val;
+                            self.state = DecoderInstructionReaderState::ReadInstruction;
+                            break Ok(mem::replace(
+                                &mut self.instruction,
+                                DecoderInstruction::NoInstruction,
+                            ));
+                        }
+                        DecoderInstruction::NoInstruction => {
+                            unreachable!("This instruction cannot be in this state.")
                         }
                     }
-                    Ok(None) => break Ok(None),
-                    Err(Error::ClosedCriticalStream) => break Err(Error::ClosedCriticalStream),
-                    Err(_) => break Err(Error::DecoderStream),
-                },
+                }
             }
         }
     }
@@ -130,20 +125,18 @@ impl DecoderInstructionReader {
 #[cfg(test)]
 mod test {
 
-    use super::{DecoderInstruction, DecoderInstructionReader, Error, QPData};
+    use super::{DecoderInstruction, DecoderInstructionReader, QpackData};
     use crate::reader::test_receiver::TestReceiver;
+    use crate::Error;
 
     fn test_encoding_decoding(instruction: DecoderInstruction) {
-        let mut buf = QPData::default();
+        let mut buf = QpackData::default();
         instruction.marshal(&mut buf);
         let mut test_receiver: TestReceiver = TestReceiver::default();
         test_receiver.write(&buf);
         let mut decoder = DecoderInstructionReader::new();
         assert_eq!(
-            decoder
-                .read_instructions(&mut test_receiver)
-                .unwrap()
-                .unwrap(),
+            decoder.read_instructions(&mut test_receiver).unwrap(),
             instruction
         );
     }
@@ -161,23 +154,20 @@ mod test {
     }
 
     fn test_encoding_decoding_slow_reader(instruction: DecoderInstruction) {
-        let mut buf = QPData::default();
+        let mut buf = QpackData::default();
         instruction.marshal(&mut buf);
         let mut test_receiver: TestReceiver = TestReceiver::default();
         let mut decoder = DecoderInstructionReader::new();
         for i in 0..buf.len() - 1 {
             test_receiver.write(&buf[i..=i]);
-            assert!(decoder
-                .read_instructions(&mut test_receiver)
-                .unwrap()
-                .is_none());
+            assert_eq!(
+                decoder.read_instructions(&mut test_receiver),
+                Err(Error::NeedMoreData)
+            );
         }
         test_receiver.write(&buf[buf.len() - 1..buf.len()]);
         assert_eq!(
-            decoder
-                .read_instructions(&mut test_receiver)
-                .unwrap()
-                .unwrap(),
+            decoder.read_instructions(&mut test_receiver).unwrap(),
             instruction
         );
     }
@@ -203,7 +193,7 @@ mod test {
         let mut decoder = DecoderInstructionReader::new();
         assert_eq!(
             decoder.read_instructions(&mut test_receiver),
-            Err(Error::DecoderStream)
+            Err(Error::IntegerOverflow)
         );
 
         let mut test_receiver: TestReceiver = TestReceiver::default();
@@ -214,7 +204,7 @@ mod test {
         let mut decoder = DecoderInstructionReader::new();
         assert_eq!(
             decoder.read_instructions(&mut test_receiver),
-            Err(Error::DecoderStream)
+            Err(Error::IntegerOverflow)
         );
 
         let mut test_receiver: TestReceiver = TestReceiver::default();
@@ -225,7 +215,7 @@ mod test {
         let mut decoder = DecoderInstructionReader::new();
         assert_eq!(
             decoder.read_instructions(&mut test_receiver),
-            Err(Error::DecoderStream)
+            Err(Error::IntegerOverflow)
         );
     }
 }

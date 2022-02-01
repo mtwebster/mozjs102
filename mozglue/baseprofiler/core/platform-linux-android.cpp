@@ -63,7 +63,6 @@
 #include <stdarg.h>
 
 #include "prenv.h"
-#include "mozilla/LinuxSignal.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/DebugOnly.h"
 
@@ -78,9 +77,11 @@ namespace baseprofiler {
 int profiler_current_process_id() { return getpid(); }
 
 int profiler_current_thread_id() {
-#if defined(GP_OS_linux) || defined(GP_OS_android)
-  // glibc doesn't provide a wrapper for gettid().
+#if defined(GP_OS_linux)
+  // glibc doesn't provide a wrapper for gettid() until 2.30
   return static_cast<int>(static_cast<pid_t>(syscall(SYS_gettid)));
+#elif defined(GP_OS_android)
+  return gettid();
 #elif defined(GP_OS_freebsd)
   long id;
   (void)thr_self(&id);
@@ -294,7 +295,7 @@ Sampler::Sampler(PSLockRef aLock)
 
   // Request profiling signals.
   struct sigaction sa;
-  sa.sa_sigaction = MOZ_SIGNAL_TRAMPOLINE(SigprofHandler);
+  sa.sa_sigaction = SigprofHandler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART | SA_SIGINFO;
   if (sigaction(SIGPROF, &sa, &mOldSigprofHandler) != 0) {
@@ -330,66 +331,67 @@ void Sampler::SuspendAndSampleAndResumeThread(
 
   // Send message 1 to the samplee (the thread to be sampled), by
   // signalling at it.
+  // This could fail if the thread doesn't exist anymore.
   int r = tgkill(mMyPid, sampleeTid, SIGPROF);
-  MOZ_ASSERT(r == 0);
-
-  // Wait for message 2 from the samplee, indicating that the context
-  // is available and that the thread is suspended.
-  while (true) {
-    r = sem_wait(&sSigHandlerCoordinator->mMessage2);
-    if (r == -1 && errno == EINTR) {
-      // Interrupted by a signal.  Try again.
-      continue;
+  if (r == 0) {
+    // Wait for message 2 from the samplee, indicating that the context
+    // is available and that the thread is suspended.
+    while (true) {
+      r = sem_wait(&sSigHandlerCoordinator->mMessage2);
+      if (r == -1 && errno == EINTR) {
+        // Interrupted by a signal.  Try again.
+        continue;
+      }
+      // We don't expect any other kind of failure.
+      MOZ_ASSERT(r == 0);
+      break;
     }
-    // We don't expect any other kind of failure.
+
+    //----------------------------------------------------------------//
+    // Sample the target thread.
+
+    // WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+    //
+    // The profiler's "critical section" begins here.  In the critical section,
+    // we must not do any dynamic memory allocation, nor try to acquire any lock
+    // or any other unshareable resource.  This is because the thread to be
+    // sampled has been suspended at some entirely arbitrary point, and we have
+    // no idea which unsharable resources (locks, essentially) it holds.  So any
+    // attempt to acquire any lock, including the implied locks used by the
+    // malloc implementation, risks deadlock.  This includes TimeStamp::Now(),
+    // which gets a lock on Windows.
+
+    // The samplee thread is now frozen and sSigHandlerCoordinator->mUContext is
+    // valid.  We can poke around in it and unwind its stack as we like.
+
+    // Extract the current register values.
+    Registers regs;
+    PopulateRegsFromContext(regs, &sSigHandlerCoordinator->mUContext);
+    aProcessRegs(regs, aNow);
+
+    //----------------------------------------------------------------//
+    // Resume the target thread.
+
+    // Send message 3 to the samplee, which tells it to resume.
+    r = sem_post(&sSigHandlerCoordinator->mMessage3);
     MOZ_ASSERT(r == 0);
-    break;
-  }
 
-  //----------------------------------------------------------------//
-  // Sample the target thread.
-
-  // WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
-  //
-  // The profiler's "critical section" begins here.  In the critical section,
-  // we must not do any dynamic memory allocation, nor try to acquire any lock
-  // or any other unshareable resource.  This is because the thread to be
-  // sampled has been suspended at some entirely arbitrary point, and we have
-  // no idea which unsharable resources (locks, essentially) it holds.  So any
-  // attempt to acquire any lock, including the implied locks used by the
-  // malloc implementation, risks deadlock.  This includes TimeStamp::Now(),
-  // which gets a lock on Windows.
-
-  // The samplee thread is now frozen and sSigHandlerCoordinator->mUContext is
-  // valid.  We can poke around in it and unwind its stack as we like.
-
-  // Extract the current register values.
-  Registers regs;
-  PopulateRegsFromContext(regs, &sSigHandlerCoordinator->mUContext);
-  aProcessRegs(regs, aNow);
-
-  //----------------------------------------------------------------//
-  // Resume the target thread.
-
-  // Send message 3 to the samplee, which tells it to resume.
-  r = sem_post(&sSigHandlerCoordinator->mMessage3);
-  MOZ_ASSERT(r == 0);
-
-  // Wait for message 4 from the samplee, which tells us that it has
-  // finished with |sSigHandlerCoordinator|.
-  while (true) {
-    r = sem_wait(&sSigHandlerCoordinator->mMessage4);
-    if (r == -1 && errno == EINTR) {
-      continue;
+    // Wait for message 4 from the samplee, which tells us that it has
+    // finished with |sSigHandlerCoordinator|.
+    while (true) {
+      r = sem_wait(&sSigHandlerCoordinator->mMessage4);
+      if (r == -1 && errno == EINTR) {
+        continue;
+      }
+      MOZ_ASSERT(r == 0);
+      break;
     }
-    MOZ_ASSERT(r == 0);
-    break;
-  }
 
-  // The profiler's critical section ends here.  After this point, none of the
-  // critical section limitations documented above apply.
-  //
-  // WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+    // The profiler's critical section ends here.  After this point, none of the
+    // critical section limitations documented above apply.
+    //
+    // WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+  }
 
   // This isn't strictly necessary, but doing so does help pick up anomalies
   // in which the signal handler is running when it shouldn't be.
@@ -409,14 +411,16 @@ static void* ThreadEntry(void* aArg) {
 }
 
 SamplerThread::SamplerThread(PSLockRef aLock, uint32_t aActivityGeneration,
-                             double aIntervalMilliseconds)
+                             double aIntervalMilliseconds,
+                             bool aStackWalkEnabled,
+                             bool aNoTimerResolutionChange)
     : mSampler(aLock),
       mActivityGeneration(aActivityGeneration),
       mIntervalMicroseconds(
           std::max(1, int(floor(aIntervalMilliseconds * 1000 + 0.5)))) {
 #if defined(USE_LUL_STACKWALK)
   lul::LUL* lul = CorePS::Lul(aLock);
-  if (!lul) {
+  if (!lul && aStackWalkEnabled) {
     CorePS::SetLul(aLock, MakeUnique<lul::LUL>(logging_sink_for_LUL));
     // Read all the unwind info currently available.
     lul = CorePS::Lul(aLock);
@@ -496,27 +500,27 @@ void SamplerThread::Stop(PSLockRef aLock) {
 // Unfortunately all this is only doable on non-Android because Bionic doesn't
 // have pthread_atfork.
 
-// In the parent, before the fork, record IsPaused, and then pause.
+// In the parent, before the fork, record IsSamplingPaused, and then pause.
 static void paf_prepare() {
   MOZ_RELEASE_ASSERT(CorePS::Exists());
 
   PSAutoLock lock;
 
   if (ActivePS::Exists(lock)) {
-    ActivePS::SetWasPaused(lock, ActivePS::IsPaused(lock));
-    ActivePS::SetIsPaused(lock, true);
+    ActivePS::SetWasSamplingPaused(lock, ActivePS::IsSamplingPaused(lock));
+    ActivePS::SetIsSamplingPaused(lock, true);
   }
 }
 
-// In the parent, after the fork, return IsPaused to the pre-fork state.
+// In the parent, after the fork, return IsSamplingPaused to the pre-fork state.
 static void paf_parent() {
   MOZ_RELEASE_ASSERT(CorePS::Exists());
 
   PSAutoLock lock;
 
   if (ActivePS::Exists(lock)) {
-    ActivePS::SetIsPaused(lock, ActivePS::WasPaused(lock));
-    ActivePS::SetWasPaused(lock, false);
+    ActivePS::SetIsSamplingPaused(lock, ActivePS::WasSamplingPaused(lock));
+    ActivePS::SetWasSamplingPaused(lock, false);
   }
 }
 

@@ -8,6 +8,7 @@
 
 #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
 
+#include "gc/GCEnum.h"                    // js::gc::ZealMode
 #include "js/CompilationAndEvaluation.h"  // JS::Evaluate
 #include "js/SourceText.h"                // JS::Source{Ownership,Text}
 #include "jsapi-tests/tests.h"
@@ -69,10 +70,10 @@ virtual JSContext* createContext() override {
     return nullptr;
   }
   JS_SetGCParameter(cx, JSGC_MAX_NURSERY_BYTES, js::gc::ChunkSize);
-  setNativeStackQuota(cx);
+#ifdef JS_GC_ZEAL
+  JS_UnsetGCZeal(cx, uint8_t(js::gc::ZealMode::GenerationalGC));
+#endif
   return cx;
 }
-
-virtual void destroyContext() override { JS_DestroyContext(cx); }
 
 END_TEST(testGCOutOfMemory)

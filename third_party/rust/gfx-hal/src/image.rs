@@ -4,8 +4,7 @@
 
 use crate::{
     buffer::Offset as RawOffset,
-    device,
-    format,
+    device, format,
     pso::{Comparison, Rect},
 };
 use std::{f32, hash, ops::Range};
@@ -87,7 +86,7 @@ impl Offset {
             y: self.y + extent.height as i32,
             z: self.z + extent.depth as i32,
         };
-        self .. end
+        self..end
     }
 }
 
@@ -104,123 +103,66 @@ pub enum Tiling {
 }
 
 /// Pure image object creation error.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum CreationError {
     /// Out of either host or device memory.
-    OutOfMemory(device::OutOfMemory),
+    #[error(transparent)]
+    OutOfMemory(#[from] device::OutOfMemory),
     /// The format is not supported by the device.
+    #[error("Unsupported format: {0:?}")]
     Format(format::Format),
     /// The kind doesn't support a particular operation.
+    #[error("Specified kind doesn't support particular operation")]
     Kind,
     /// Failed to map a given multisampled kind to the device.
+    #[error("Specified format doesn't support specified sampling {0:}")]
     Samples(NumSamples),
     /// Unsupported size in one of the dimensions.
+    #[error("Unsupported size in one of the dimensions {0:}")]
     Size(Size),
     /// The given data has a different size than the target image slice.
+    #[error("The given data has a different size ({0:}) than the target image slice")]
     Data(usize),
     /// The mentioned usage mode is not supported
+    #[error("Unsupported usage: {0:?}")]
     Usage(Usage),
-}
-
-impl From<device::OutOfMemory> for CreationError {
-    fn from(error: device::OutOfMemory) -> Self {
-        CreationError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for CreationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CreationError::OutOfMemory(err) => write!(fmt, "Failed to create image: {}", err),
-            CreationError::Format(format) => write!(fmt, "Failed to create image: Unsupported format: {:?}", format),
-            CreationError::Kind => write!(fmt, "Failed to create image: Specified kind doesn't support particular operation"), // Room for improvement.
-            CreationError::Samples(samples) => write!(fmt, "Failed to create image: Specified format doesn't support specified sampling {}", samples),
-            CreationError::Size(size) => write!(fmt, "Failed to create image: Unsupported size in one of the dimensions {}", size),
-            CreationError::Data(data) => write!(fmt, "Failed to create image: The given data has a different size {{{}}} than the target image slice", data), // Actually nothing emits this.
-            CreationError::Usage(usage) => write!(fmt, "Failed to create image: Unsupported usage: {:?}", usage),
-        }
-    }
-}
-
-impl std::error::Error for CreationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CreationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
 }
 
 /// Error creating an `ImageView`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ViewCreationError {
+    /// Out of either Host or Device memory
+    #[error(transparent)]
+    OutOfMemory(#[from] device::OutOfMemory),
     /// The required usage flag is not present in the image.
+    #[error("Specified usage flags are not present in the image {0:?}")]
     Usage(Usage),
     /// Selected mip level doesn't exist.
+    #[error("Selected level doesn't exist in the image {0:}")]
     Level(Level),
     /// Selected array layer doesn't exist.
-    Layer(LayerError),
+    #[error(transparent)]
+    Layer(#[from] LayerError),
     /// An incompatible format was requested for the view.
+    #[error("Incompatible format: {0:?}")]
     BadFormat(format::Format),
     /// An incompatible view kind was requested for the view.
+    #[error("Incompatible kind: {0:?}")]
     BadKind(ViewKind),
-    /// Out of either Host or Device memory
-    OutOfMemory(device::OutOfMemory),
     /// The backend refused for some reason.
+    #[error("Implementation specific error occurred")]
     Unsupported,
 }
 
-impl From<device::OutOfMemory> for ViewCreationError {
-    fn from(error: device::OutOfMemory) -> Self {
-        ViewCreationError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for ViewCreationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ViewCreationError::Usage(usage) => write!(fmt, "Failed to create image view: Specified usage flags are not present in the image {:?}", usage),
-            ViewCreationError::Level(level) => write!(fmt, "Failed to create image view: Selected level doesn't exist in the image {}", level),
-            ViewCreationError::Layer(err) => write!(fmt, "Failed to create image view: {}", err),
-            ViewCreationError::BadFormat(format) => write!(fmt, "Failed to create image view: Incompatible format {:?}", format),
-            ViewCreationError::BadKind(kind) => write!(fmt, "Failed to create image view: Incompatible kind {:?}", kind),
-            ViewCreationError::OutOfMemory(err) => write!(fmt, "Failed to create image view: {}", err),
-            ViewCreationError::Unsupported => write!(fmt, "Failed to create image view: Implementation specific error occurred"),
-        }
-    }
-}
-
-impl std::error::Error for ViewCreationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ViewCreationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
 /// An error associated with selected image layer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum LayerError {
     /// The source image kind doesn't support array slices.
+    #[error("Source image doesn't support view kind {0:?}")]
     NotExpected(Kind),
     /// Selected layers are outside of the provided range.
-    OutOfBounds(Range<Layer>),
-}
-
-impl std::fmt::Display for LayerError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayerError::NotExpected(kind) => {
-                write!(fmt, "Kind {{{:?}}} does not support arrays", kind)
-            }
-            LayerError::OutOfBounds(layers) => write!(
-                fmt,
-                "Out of bounds layers {} .. {}",
-                layers.start, layers.end
-            ),
-        }
-    }
+    #[error("Selected layers are out of bounds")]
+    OutOfBounds,
 }
 
 /// How to [filter](https://en.wikipedia.org/wiki/Texture_filtering) the
@@ -325,7 +267,7 @@ impl Kind {
     }
 
     /// Count the number of mipmap levels.
-    pub fn num_levels(&self) -> Level {
+    pub fn compute_num_levels(&self) -> Level {
         use std::cmp::max;
         match *self {
             Kind::D2(_, _, _, s) if s > 1 => {
@@ -335,7 +277,7 @@ impl Kind {
             _ => {
                 let extent = self.extent();
                 let dominant = max(max(extent.width, extent.height), extent.depth);
-                (1 ..).find(|level| dominant >> level == 0).unwrap()
+                (1..).find(|level| dominant >> level == 0).unwrap()
             }
         }
     }
@@ -386,6 +328,7 @@ pub enum ViewKind {
 bitflags!(
     /// Capabilities to create views into an image.
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    #[derive(Default)]
     pub struct ViewCapabilities: u32 {
         /// Support creation of views with different formats.
         const MUTABLE_FORMAT = 0x0000_0008;
@@ -454,6 +397,20 @@ pub enum WrapMode {
     MirrorClamp,
 }
 
+/// Specifies how the image texels in the filter kernel are reduced to a single value.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ReductionMode {
+    ///
+    WeightedAverage,
+    ///
+    /// Only valid if `Features::SAMPLER_FILTER_MINMAX` is enabled.
+    Minimum,
+    ///
+    /// Only valid if `Features::SAMPLER_FILTER_MINMAX` is enabled.
+    Maximum,
+}
+
 /// A wrapper for the LOD level of an image. Needed so that we can
 /// implement Eq and Hash for it.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
@@ -462,7 +419,7 @@ pub struct Lod(pub f32);
 
 impl Lod {
     /// Possible LOD range.
-    pub const RANGE: Range<Self> = Lod(f32::MIN) .. Lod(f32::MAX);
+    pub const RANGE: Range<Self> = Lod(f32::MIN)..Lod(f32::MAX);
 }
 
 impl Eq for Lod {}
@@ -498,11 +455,32 @@ impl Into<[f32; 4]> for PackedColor {
     }
 }
 
+/// The border color for `WrapMode::Border` wrap mode.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum BorderColor {
+    ///
+    TransparentBlack,
+    ///
+    OpaqueBlack,
+    ///
+    OpaqueWhite,
+}
+
+impl Into<[f32; 4]> for BorderColor {
+    fn into(self) -> [f32; 4] {
+        match self {
+            BorderColor::TransparentBlack => [0.0, 0.0, 0.0, 0.0],
+            BorderColor::OpaqueBlack => [0.0, 0.0, 0.0, 1.0],
+            BorderColor::OpaqueWhite => [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
 /// Specifies how to sample from an image.  These are all the parameters
 /// available that alter how the GPU goes from a coordinate in an image
 /// to producing an actual value from the texture, including filtering/
 /// scaling, wrap mode, etc.
-// TODO: document the details of sampling.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SamplerDesc {
@@ -512,6 +490,8 @@ pub struct SamplerDesc {
     pub mag_filter: Filter,
     /// Mip filter method to use.
     pub mip_filter: Filter,
+    /// Reduction mode over the filter.
+    pub reduction_mode: ReductionMode,
     /// Wrapping mode for each of the U, V, and W axis (S, T, and R in OpenGL
     /// speak).
     pub wrap_mode: (WrapMode, WrapMode, WrapMode),
@@ -524,7 +504,7 @@ pub struct SamplerDesc {
     /// Comparison mode, used primary for a shadow map.
     pub comparison: Option<Comparison>,
     /// Border color is used when one of the wrap modes is set to border.
-    pub border: PackedColor,
+    pub border: BorderColor,
     /// Specifies whether the texture coordinates are normalized.
     pub normalized: bool,
     /// Anisotropic filtering.
@@ -541,11 +521,12 @@ impl SamplerDesc {
             min_filter: filter,
             mag_filter: filter,
             mip_filter: filter,
+            reduction_mode: ReductionMode::WeightedAverage,
             wrap_mode: (wrap, wrap, wrap),
             lod_bias: Lod(0.0),
             lod_range: Lod::RANGE.clone(),
             comparison: None,
-            border: PackedColor(0),
+            border: BorderColor::TransparentBlack,
             normalized: true,
             anisotropy_clamp: None,
         }
@@ -588,6 +569,12 @@ pub enum Layout {
     Preinitialized,
     /// The layout that an image must be in to be presented to the display.
     Present,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::General
+    }
 }
 
 bitflags!(
@@ -654,15 +641,49 @@ pub struct SubresourceLayers {
 }
 
 /// A subset of resources contained within an image.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SubresourceRange {
     /// Included aspects: color/depth/stencil
     pub aspects: format::Aspects,
-    /// Included mipmap levels
-    pub levels: Range<Level>,
-    /// Included array levels
-    pub layers: Range<Layer>,
+    /// First mipmap level in this subresource
+    pub level_start: Level,
+    /// Number of sequential levels in this subresource.
+    ///
+    /// A value of `None` indicates the subresource contains
+    /// all of the remaining levels.
+    pub level_count: Option<Level>,
+    /// First layer in this subresource
+    pub layer_start: Layer,
+    /// Number of sequential layers in this subresource.
+    ///
+    /// A value of `None` indicates the subresource contains
+    /// all of the remaining layers.
+    pub layer_count: Option<Layer>,
+}
+
+impl From<SubresourceLayers> for SubresourceRange {
+    fn from(sub: SubresourceLayers) -> Self {
+        SubresourceRange {
+            aspects: sub.aspects,
+            level_start: sub.level,
+            level_count: Some(1),
+            layer_start: sub.layers.start,
+            layer_count: Some(sub.layers.end - sub.layers.start),
+        }
+    }
+}
+
+impl SubresourceRange {
+    /// Resolve the concrete level count based on the total number of layers in an image.
+    pub fn resolve_level_count(&self, total: Level) -> Level {
+        self.level_count.unwrap_or(total - self.level_start)
+    }
+
+    /// Resolve the concrete layer count based on the total number of layer in an image.
+    pub fn resolve_layer_count(&self, total: Layer) -> Layer {
+        self.layer_count.unwrap_or(total - self.layer_start)
+    }
 }
 
 /// Image format properties.
@@ -693,4 +714,60 @@ pub struct SubresourceFootprint {
     pub array_pitch: RawOffset,
     /// Byte distance between depth slices.
     pub depth_pitch: RawOffset,
+}
+
+/// The type of tile to check for with `get_tile_size`.
+#[derive(Debug)]
+pub enum TileKind {
+    /// A volume or 3D image tile kind.
+    Volume,
+    /// A flat or 2D image tile kind, with the number of samples for MSAA.
+    Flat(NumSamples),
+}
+
+// https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/vkspec.html#sparsememory-standard-shapes
+// https://docs.microsoft.com/en-us/windows/win32/direct3d11/texture2d-and-texture2darray-subresource-tiling
+/// Tile or block size for sparse binding
+pub fn get_tile_size(tile_kind: TileKind, texel_bits: u16) -> (u16, u16, u16) {
+    match tile_kind {
+        TileKind::Flat(samples) => {
+            let sizes = match texel_bits {
+                8 => (256, 256, 1),
+                16 => (256, 128, 1),
+                32 => (128, 128, 1),
+                64 => (128, 64, 1),
+                128 => (64, 64, 1),
+                _ => unimplemented!(),
+            };
+            match samples {
+                1 => sizes,
+                2 => (sizes.0 / 2, sizes.1, 1),
+                4 => (sizes.0 / 2, sizes.1 / 2, 1),
+                8 => (sizes.0 / 4, sizes.1 / 2, 1),
+                16 => (sizes.0 / 4, sizes.1 / 4, 1),
+                _ => unimplemented!(),
+            }
+        }
+        TileKind::Volume => match texel_bits {
+            8 => (64, 32, 32),
+            16 => (32, 32, 32),
+            32 => (32, 32, 16),
+            64 => (32, 16, 16),
+            128 => (16, 16, 16),
+            _ => unimplemented!(),
+        },
+    }
+}
+
+/// Description of a framebuffer attachment.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct FramebufferAttachment {
+    /// Usage that an image is created with.
+    pub usage: Usage,
+    /// View capabilities that an image is created with.
+    pub view_caps: ViewCapabilities,
+    //TODO: make this a list
+    /// The image view format.
+    pub format: format::Format,
 }

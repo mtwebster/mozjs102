@@ -5,13 +5,14 @@ from unittest import mock
 import shutil
 import string
 import random
+import pathlib
 
 import pytest
 
 from mozperftest.tests.support import get_running_env, EXAMPLE_TEST
-from mozperftest.environment import BROWSER
-from mozperftest.browser.browsertime import add_options
-from mozperftest.browser.browsertime.runner import (
+from mozperftest.environment import TEST, SYSTEM
+from mozperftest.test.browsertime import add_options
+from mozperftest.test.browsertime.runner import (
     NodeException,
     matches,
     extract_browser_name,
@@ -26,13 +27,30 @@ def fetch(self, url):
     return os.path.join(HERE, "fetched_artifact.zip")
 
 
-@mock.patch("mozperftest.browser.browsertime.runner.install_package")
+def mocked_jsonload(val):
+    return val.__iter__.return_value
+
+
+def build_mock_open(files_data):
+    mocked_opens = []
+
+    for data in files_data:
+        mocked_file = mock.MagicMock()
+        mocked_file.__enter__.return_value.__iter__.return_value = data
+        mocked_opens.append(mocked_file)
+
+    m = mock.mock_open()
+    m.side_effect = mocked_opens
+    return m
+
+
+@mock.patch("mozperftest.test.browsertime.runner.install_package")
 @mock.patch(
-    "mozperftest.browser.noderunner.NodeRunner.verify_node_install", new=lambda x: True
+    "mozperftest.test.noderunner.NodeRunner.verify_node_install", new=lambda x: True
 )
 @mock.patch("mozbuild.artifact_cache.ArtifactCache.fetch", new=fetch)
 @mock.patch(
-    "mozperftest.browser.browsertime.runner.BrowsertimeRunner._setup_node_packages",
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner._setup_node_packages",
     new=lambda x, y: None,
 )
 def test_browser(*mocked):
@@ -42,14 +60,16 @@ def test_browser(*mocked):
         browsertime_geckodriver="GECKODRIVER",
         browsertime_iterations=1,
         browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+        browsertime_no_window_recorder=False,
+        browsertime_viewport_size="1234x567",
     )
 
-    browser = env.layers[BROWSER]
-    env.set_arg("tests", [EXAMPLE_TEST])
-
+    sys = env.layers[SYSTEM]
+    browser = env.layers[TEST]
     try:
-        with browser as b, silence():
-            b(metadata)
+        with sys as s, browser as b, silence():
+            b(s(metadata))
     finally:
         shutil.rmtree(mach_cmd._mach_context.state_dir)
     assert mach_cmd.run_process.call_count == 1
@@ -70,13 +90,107 @@ def test_browser(*mocked):
     assert results[0]["name"] == "Example"
 
 
-@mock.patch("mozperftest.browser.browsertime.runner.install_package")
 @mock.patch(
-    "mozperftest.browser.noderunner.NodeRunner.verify_node_install", new=lambda x: True
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner.browsertime_js",
+    new=pathlib.Path("doesn't-exist"),
+)
+@mock.patch(
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner.visualmetrics_py",
+    new=pathlib.Path("doesn't-exist-either"),
+)
+def test_browsertime_not_existing():
+    _, _, env = get_running_env(
+        android=True,
+        android_app_name="something",
+        browsertime_geckodriver="GECKODRIVER",
+        browsertime_iterations=1,
+        browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+    )
+    browser = env.layers[TEST]
+    btime_layer = browser.layers[0]
+    assert btime_layer._should_install()
+
+
+@mock.patch(
+    "mozperftest.test.browsertime.runner.pathlib.Path.exists", new=lambda x: True
+)
+def test_browsertime_no_reinstall():
+    _, _, env = get_running_env(
+        android=True,
+        android_app_name="something",
+        browsertime_geckodriver="GECKODRIVER",
+        browsertime_iterations=1,
+        browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+    )
+
+    with mock.patch(
+        "mozperftest.test.browsertime.runner.pathlib.Path.open",
+        build_mock_open(
+            [
+                {
+                    "devDependencies": {
+                        "browsertime": "89771a1d6be54114db190427dbc281582cba3d47"
+                    }
+                },
+                {
+                    "_from": (
+                        "browsertime@https://github.com/sitespeedio/browsertime"
+                        "/tarball/89771a1d6be54114db190427dbc281582cba3d47"
+                    )
+                },
+            ]
+        ),
+    ), mock.patch("mozperftest.test.browsertime.runner.json.load", new=mocked_jsonload):
+        browser = env.layers[TEST]
+        btime_layer = browser.layers[0]
+        assert not btime_layer._should_install()
+
+
+@mock.patch(
+    "mozperftest.test.browsertime.runner.pathlib.Path.exists", new=lambda x: True
+)
+def test_browsertime_should_reinstall():
+    _, _, env = get_running_env(
+        android=True,
+        android_app_name="something",
+        browsertime_geckodriver="GECKODRIVER",
+        browsertime_iterations=1,
+        browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+    )
+
+    with mock.patch(
+        "mozperftest.test.browsertime.runner.pathlib.Path.open",
+        build_mock_open(
+            [
+                {
+                    "devDependencies": {
+                        "browsertime": "89771a1d6be54114db190427dbc281582cba3d47"
+                    }
+                },
+                {
+                    "_from": (
+                        "browsertime@https://github.com/sitespeedio/browsertime"
+                        "/tarball/98747854be54114db190427dbc281582cba3d47"
+                    )
+                },
+            ]
+        ),
+    ), mock.patch("mozperftest.test.browsertime.runner.json.load", new=mocked_jsonload):
+        browser = env.layers[TEST]
+        btime_layer = browser.layers[0]
+        assert btime_layer._should_install()
+
+
+@mock.patch("mozperftest.test.browsertime.runner.install_package")
+@mock.patch(
+    "mozperftest.test.noderunner.NodeRunner.verify_node_install", new=lambda x: True
 )
 @mock.patch("mozbuild.artifact_cache.ArtifactCache.fetch", new=fetch)
 @mock.patch(
-    "mozperftest.browser.browsertime.runner.BrowsertimeRunner._setup_node_packages",
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner._setup_node_packages",
     new=lambda x, y: None,
 )
 def test_browser_failed(*mocked):
@@ -86,34 +200,41 @@ def test_browser_failed(*mocked):
         browsertime_geckodriver="GECKODRIVER",
         browsertime_iterations=1,
         browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+        browsertime_no_window_recorder=False,
+        browsertime_viewport_size="1234x567",
     )
     # set the return value to 1 to simulate a node failure
     mach_cmd.run_process.return_value = 1
-    browser = env.layers[BROWSER]
-    env.set_arg("tests", [EXAMPLE_TEST])
+    browser = env.layers[TEST]
+    sys = env.layers[SYSTEM]
 
-    with browser as b, silence(), pytest.raises(NodeException):
-        b(metadata)
+    with sys as s, browser as b, silence(), pytest.raises(NodeException):
+        b(s(metadata))
 
 
-@mock.patch("mozperftest.browser.browsertime.runner.install_package")
+@mock.patch("mozperftest.test.browsertime.runner.install_package")
 @mock.patch(
-    "mozperftest.browser.noderunner.NodeRunner.verify_node_install", new=lambda x: True
+    "mozperftest.test.noderunner.NodeRunner.verify_node_install", new=lambda x: True
 )
 @mock.patch("mozbuild.artifact_cache.ArtifactCache.fetch", new=fetch)
 @mock.patch(
-    "mozperftest.browser.browsertime.runner.BrowsertimeRunner._setup_node_packages",
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner._setup_node_packages",
     new=lambda x, y: None,
 )
 def test_browser_desktop(*mocked):
     mach_cmd, metadata, env = get_running_env(
-        browsertime_iterations=1, browsertime_extra_options="one=1,two=2",
+        browsertime_iterations=1,
+        browsertime_extra_options="one=1,two=2",
+        tests=[EXAMPLE_TEST],
+        browsertime_no_window_recorder=False,
+        browsertime_viewport_size="1234x567",
     )
-    browser = env.layers[BROWSER]
-    env.set_arg("tests", [EXAMPLE_TEST])
+    browser = env.layers[TEST]
+    sys = env.layers[SYSTEM]
 
     try:
-        with browser as b, silence():
+        with sys as s, browser as b, silence():
             # just checking that the setup_helper property gets
             # correctly initialized
             browsertime = browser.layers[-1]
@@ -121,7 +242,7 @@ def test_browser_desktop(*mocked):
             helper = browsertime.setup_helper
             assert browsertime.setup_helper is helper
 
-            b(metadata)
+            b(s(metadata))
     finally:
         shutil.rmtree(mach_cmd._mach_context.state_dir)
 
@@ -140,47 +261,55 @@ def test_add_options():
     assert "two=2" in extra
 
 
-@mock.patch("mozperftest.browser.browsertime.runner.install_package")
+@mock.patch("mozperftest.test.browsertime.runner.install_package")
 @mock.patch(
-    "mozperftest.browser.noderunner.NodeRunner.verify_node_install", new=lambda x: True
+    "mozperftest.test.noderunner.NodeRunner.verify_node_install", new=lambda x: True
 )
 @mock.patch("mozbuild.artifact_cache.ArtifactCache.fetch", new=fetch)
-@mock.patch("mozperftest.browser.browsertime.runner.BrowsertimeRunner.setup_helper")
+@mock.patch("mozperftest.test.browsertime.runner.BrowsertimeRunner.setup_helper")
 def test_install_url(*mocked):
     url = "https://here/tarball/" + "".join(
         [random.choice(string.hexdigits[:-6]) for c in range(40)]
     )
-    mach, metadata, env = get_running_env(browsertime_install_url=url)
-    browser = env.layers[BROWSER]
-    env.set_arg("tests", [EXAMPLE_TEST])
+    mach, metadata, env = get_running_env(
+        browsertime_install_url=url,
+        tests=[EXAMPLE_TEST],
+        browsertime_no_window_recorder=False,
+        browsertime_viewport_size="1234x567",
+    )
+    browser = env.layers[TEST]
+    sys = env.layers[SYSTEM]
 
     try:
-        with temporary_env(MOZ_AUTOMATION="1"), browser as b, silence():
-            b(metadata)
+        with sys as s, temporary_env(MOZ_AUTOMATION="1"), browser as b, silence():
+            b(s(metadata))
     finally:
         shutil.rmtree(mach._mach_context.state_dir)
 
     assert mach.run_process.call_count == 1
 
 
-@mock.patch("mozperftest.browser.browsertime.runner.install_package")
+@mock.patch("mozperftest.test.browsertime.runner.install_package")
 @mock.patch(
-    "mozperftest.browser.noderunner.NodeRunner.verify_node_install", new=lambda x: True
+    "mozperftest.test.noderunner.NodeRunner.verify_node_install", new=lambda x: True
 )
 @mock.patch("mozbuild.artifact_cache.ArtifactCache.fetch", new=fetch)
 @mock.patch(
-    "mozperftest.browser.browsertime.runner.BrowsertimeRunner._setup_node_packages",
+    "mozperftest.test.browsertime.runner.BrowsertimeRunner._setup_node_packages",
     new=lambda x, y: None,
 )
 def test_install_url_bad(*mocked):
-    mach, metadata, env = get_running_env(browsertime_install_url="meh")
-    browser = env.layers[BROWSER]
-    env.set_arg("tests", [EXAMPLE_TEST])
+    mach, metadata, env = get_running_env(
+        browsertime_install_url="meh",
+        tests=[EXAMPLE_TEST],
+    )
+    browser = env.layers[TEST]
+    sys = env.layers[SYSTEM]
 
     with pytest.raises(ValueError):
         try:
-            with browser as b, silence():
-                b(metadata)
+            with sys as s, browser as b, silence():
+                b(s(metadata))
         finally:
             shutil.rmtree(mach._mach_context.state_dir)
 

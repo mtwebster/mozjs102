@@ -19,17 +19,26 @@
 #ifndef wasm_gc_h
 #define wasm_gc_h
 
-#include "jit/MacroAssembler.h"
+#include "mozilla/BinarySearch.h"
+
+#include "jit/MacroAssembler.h"  // For ABIArgIter
+#include "js/AllocPolicy.h"
+#include "js/Vector.h"
 #include "util/Memory.h"
 
 namespace js {
+
+namespace jit {
+class MacroAssembler;
+}  // namespace jit
+
 namespace wasm {
 
 using namespace js::jit;
 
-// Definitions for stack maps.
+// Definitions for stackmaps.
 
-typedef Vector<bool, 32, SystemAllocPolicy> ExitStubMapVector;
+using ExitStubMapVector = Vector<bool, 32, SystemAllocPolicy>;
 
 struct StackMap final {
   // A StackMap is a bit-array containing numMappedWords bits, one bit per
@@ -47,10 +56,11 @@ struct StackMap final {
   // as to limit its range to 11 bits, where
   // 11 == ceil(log2(MaxParams * sizeof-biggest-param-type-in-words))
   //
-  // The map may also cover a ref-typed DebugFrame.  If so that can be noted,
-  // since users of the map need to trace pointers in such a DebugFrame.
+  // The stackmap may also cover a DebugFrame (all DebugFrames get a map).  If
+  // so that can be noted, since users of the map need to trace pointers in a
+  // DebugFrame.
   //
-  // Finally, for sanity checking only, for stack maps associated with a wasm
+  // Finally, for sanity checking only, for stackmaps associated with a wasm
   // trap exit stub, the number of words used by the trap exit stub save area
   // is also noted.  This is used in Instance::traceFrame to check that the
   // TrapExitDummyValue is in the expected place in the frame.
@@ -64,7 +74,10 @@ struct StackMap final {
   // Where is Frame* relative to the top?  This is an offset in words.
   uint32_t frameOffsetFromTop : 11;
 
-  // Notes the presence of a DebugFrame which may contain GC-managed data.
+  // Notes the presence of a DebugFrame.  The DebugFrame may or may not contain
+  // GC-managed data but always gets a stackmap, as computing whether a stack
+  // map is definitively needed is brittle and ultimately not a worthwhile
+  // optimization.
   uint32_t hasDebugFrame : 1;
 
  private:
@@ -175,22 +188,22 @@ class StackMaps {
  public:
   StackMaps() : sorted_(false) {}
   ~StackMaps() {
-    for (size_t i = 0; i < mapping_.length(); i++) {
-      mapping_[i].map->destroy();
-      mapping_[i].map = nullptr;
+    for (auto& maplet : mapping_) {
+      maplet.map->destroy();
+      maplet.map = nullptr;
     }
   }
-  MOZ_MUST_USE bool add(uint8_t* nextInsnAddr, StackMap* map) {
+  [[nodiscard]] bool add(uint8_t* nextInsnAddr, StackMap* map) {
     MOZ_ASSERT(!sorted_);
     return mapping_.append(Maplet(nextInsnAddr, map));
   }
-  MOZ_MUST_USE bool add(const Maplet& maplet) {
+  [[nodiscard]] bool add(const Maplet& maplet) {
     return add(maplet.nextInsnAddr, maplet.map);
   }
   void clear() {
-    for (size_t i = 0; i < mapping_.length(); i++) {
-      mapping_[i].nextInsnAddr = nullptr;
-      mapping_[i].map = nullptr;
+    for (auto& maplet : mapping_) {
+      maplet.nextInsnAddr = nullptr;
+      maplet.map = nullptr;
     }
     mapping_.clear();
   }
@@ -204,7 +217,7 @@ class StackMaps {
     return m;
   }
   void offsetBy(uintptr_t delta) {
-    for (size_t i = 0; i < mapping_.length(); i++) mapping_[i].offsetBy(delta);
+    for (auto& maplet : mapping_) maplet.offsetBy(delta);
   }
   void sort() {
     MOZ_ASSERT(!sorted_);
@@ -222,13 +235,13 @@ class StackMaps {
         }
         return 0;
       }
-      explicit Comparator(uint8_t* aTarget) : mTarget(aTarget) {}
+      explicit Comparator(const uint8_t* aTarget) : mTarget(aTarget) {}
       const uint8_t* mTarget;
     };
 
     size_t result;
-    if (BinarySearchIf(mapping_, 0, mapping_.length(), Comparator(nextInsnAddr),
-                       &result)) {
+    if (mozilla::BinarySearchIf(mapping_, 0, mapping_.length(),
+                                Comparator(nextInsnAddr), &result)) {
       return mapping_[result].map;
     }
 
@@ -252,7 +265,7 @@ class StackMaps {
 // the complete native-ABI-level call signature.
 template <class T>
 static inline size_t StackArgAreaSizeUnaligned(const T& argTypes) {
-  ABIArgIter<const T> i(argTypes);
+  WasmABIArgIter<const T> i(argTypes);
   while (!i.done()) {
     i++;
   }
@@ -261,7 +274,7 @@ static inline size_t StackArgAreaSizeUnaligned(const T& argTypes) {
 
 static inline size_t StackArgAreaSizeUnaligned(
     const SymbolicAddressSignature& saSig) {
-  // ABIArgIter::ABIArgIter wants the items to be iterated over to be
+  // WasmABIArgIter::ABIArgIter wants the items to be iterated over to be
   // presented in some type that has methods length() and operator[].  So we
   // have to wrap up |saSig|'s array of types in this API-matching class.
   class MOZ_STACK_CLASS ItemsAndLength {
@@ -298,7 +311,7 @@ static inline size_t StackArgAreaSizeAligned(const T& argTypes) {
 // A stackmap creation helper.  Create a stackmap from a vector of booleans.
 // The caller owns the resulting stackmap.
 
-typedef Vector<bool, 128, SystemAllocPolicy> StackMapBoolVector;
+using StackMapBoolVector = Vector<bool, 128, SystemAllocPolicy>;
 
 wasm::StackMap* ConvertStackMapBoolVectorToStackMap(
     const StackMapBoolVector& vec, bool hasRefs);
@@ -322,7 +335,7 @@ wasm::StackMap* ConvertStackMapBoolVectorToStackMap(
 // The "space reserved before trap" is the space reserved by
 // MacroAssembler::wasmReserveStackChecked, in the case where the frame is
 // "small", as determined by that function.
-MOZ_MUST_USE bool CreateStackMapForFunctionEntryTrap(
+[[nodiscard]] bool CreateStackMapForFunctionEntryTrap(
     const ArgTypeVector& argTypes, const MachineState& trapExitLayout,
     size_t trapExitLayoutWords, size_t nBytesReservedBeforeTrap,
     size_t nInboundStackArgBytes, wasm::StackMap** result);
@@ -332,7 +345,7 @@ MOZ_MUST_USE bool CreateStackMapForFunctionEntryTrap(
 // vector of booleans describing the ref-ness of the saved integer registers.
 // |args[0]| corresponds to the low addressed end of the described section of
 // the save area.
-MOZ_MUST_USE bool GenerateStackmapEntriesForTrapExit(
+[[nodiscard]] bool GenerateStackmapEntriesForTrapExit(
     const ArgTypeVector& args, const MachineState& trapExitLayout,
     const size_t trapExitLayoutNumWords, ExitStubMapVector* extras);
 
@@ -390,6 +403,12 @@ void EmitWasmPostBarrierGuard(MacroAssembler& masm,
                               const Maybe<Register>& object,
                               Register otherScratch, Register setValue,
                               Label* skipBarrier);
+
+#ifdef DEBUG
+// Check whether |nextPC| is a valid code address for a stackmap created by
+// this compiler.
+bool IsValidStackMapKey(bool debugEnabled, const uint8_t* nextPC);
+#endif
 
 }  // namespace wasm
 }  // namespace js

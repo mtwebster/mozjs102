@@ -6,19 +6,26 @@
 
 #include "jit/WarpBuilderShared.h"
 
-#include "jit/MIRBuilderShared.h"
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
 
 using namespace js;
 using namespace js::jit;
 
-WarpBuilderShared::WarpBuilderShared(MIRGenerator& mirGen,
+WarpBuilderShared::WarpBuilderShared(WarpSnapshot& snapshot,
+                                     MIRGenerator& mirGen,
                                      MBasicBlock* current_)
-    : mirGen_(mirGen), alloc_(mirGen.alloc()), current(current_) {}
+    : snapshot_(snapshot),
+      mirGen_(mirGen),
+      alloc_(mirGen.alloc()),
+      current(current_) {}
 
 bool WarpBuilderShared::resumeAfter(MInstruction* ins, BytecodeLocation loc) {
-  MOZ_ASSERT(ins->isEffectful());
+  // resumeAfter should only be used with effectful instructions. The only
+  // exception is MInt64ToBigInt, it's used to convert the result of a call into
+  // Wasm code so we attach the resume point to that instead of to the call.
+  MOZ_ASSERT(ins->isEffectful() || ins->isInt64ToBigInt());
+  MOZ_ASSERT(!ins->isMovable());
 
   MResumePoint* resumePoint = MResumePoint::New(
       alloc(), ins->block(), loc.toRawBytecode(), MResumePoint::ResumeAfter);
@@ -45,65 +52,33 @@ void WarpBuilderShared::pushConstant(const Value& v) {
 }
 
 MCall* WarpBuilderShared::makeCall(CallInfo& callInfo, bool needsThisCheck,
-                                   WrappedFunction* target) {
-  MOZ_ASSERT_IF(needsThisCheck, !target);
+                                   WrappedFunction* target, bool isDOMCall) {
+  auto addUndefined = [this]() -> MConstant* {
+    return constant(UndefinedValue());
+  };
 
-  // TODO: Investigate DOM calls.
-  bool isDOMCall = false;
-  DOMObjectKind objKind = DOMObjectKind::Unknown;
+  return MakeCall(alloc(), addUndefined, callInfo, needsThisCheck, target,
+                  isDOMCall);
+}
 
-  uint32_t targetArgs = callInfo.argc();
+MInstruction* WarpBuilderShared::makeSpreadCall(CallInfo& callInfo,
+                                                bool isSameRealm,
+                                                WrappedFunction* target) {
+  // TODO: support SpreadNew and SpreadSuperCall
+  MOZ_ASSERT(!callInfo.constructing());
 
-  // Collect number of missing arguments provided that the target is
-  // scripted. Native functions are passed an explicit 'argc' parameter.
-  if (target && !target->isBuiltinNative()) {
-    targetArgs = std::max<uint32_t>(target->nargs(), callInfo.argc());
+  // Load dense elements of the argument array.
+  MElements* elements = MElements::New(alloc(), callInfo.arrayArg());
+  current->add(elements);
+
+  auto* apply = MApplyArray::New(alloc(), target, callInfo.callee(), elements,
+                                 callInfo.thisArg());
+
+  if (callInfo.ignoresReturnValue()) {
+    apply->setIgnoresReturnValue();
   }
-
-  MCall* call =
-      MCall::New(alloc(), target, targetArgs + 1 + callInfo.constructing(),
-                 callInfo.argc(), callInfo.constructing(),
-                 callInfo.ignoresReturnValue(), isDOMCall, objKind);
-  if (!call) {
-    return nullptr;
+  if (isSameRealm) {
+    apply->setNotCrossRealm();
   }
-
-  if (callInfo.constructing()) {
-    // Note: setThis should have been done by the caller of makeCall.
-    if (needsThisCheck) {
-      call->setNeedsThisCheck();
-    }
-
-    // Pass |new.target|
-    call->addArg(targetArgs + 1, callInfo.getNewTarget());
-  }
-
-  // Explicitly pad any missing arguments with |undefined|.
-  // This permits skipping the argumentsRectifier.
-  MOZ_ASSERT_IF(target && targetArgs > callInfo.argc(),
-                !target->isBuiltinNative());
-  for (uint32_t i = targetArgs; i > callInfo.argc(); i--) {
-    MConstant* undef = constant(UndefinedValue());
-    if (!alloc().ensureBallast()) {
-      return nullptr;
-    }
-    call->addArg(i, undef);
-  }
-
-  // Add explicit arguments.
-  // Skip addArg(0) because it is reserved for |this|.
-  for (int32_t i = callInfo.argc() - 1; i >= 0; i--) {
-    call->addArg(i + 1, callInfo.getArg(i));
-  }
-
-  // Pass |this| and callee.
-  call->addArg(0, callInfo.thisArg());
-  call->initCallee(callInfo.callee());
-
-  if (target) {
-    // The callee must be a JSFunction so we don't need a Class check.
-    call->disableClassCheck();
-  }
-
-  return call;
+  return apply;
 }

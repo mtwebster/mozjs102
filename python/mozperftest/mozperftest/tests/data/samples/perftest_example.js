@@ -6,6 +6,8 @@
 
 var someVar;
 
+someVar = 2;
+
 async function setUp(context) {
   context.log.info("setUp example!");
 }
@@ -20,21 +22,25 @@ async function tearDown(context) {
   context.log.info("tearDown example!");
 }
 
+module.noexport = {};
 
 module.exports = {
   setUp,
   tearDown,
   test,
   owner: "Performance Testing Team",
-  test_name: "Example",
+  name: "Example",
   description: "The description of the example test.",
-  long_description: `
+  longDescription: `
   This is a longer description of the test perhaps including information
   about how it should be run locally or links to relevant information.
   `,
-  usage: `
-  ./mach perftest python/mozperftest/mozperftest/tests/data/samples/perftest_example.js
-  `,
-  supported_browser: ["Fenix nightly", "Geckoview_example", "Fennec", "Firefox"],
-  platform: ["Android", "Desktop"],
+  supportedBrowsers: ["Fenix nightly", "Geckoview_example", "Fennec", "Firefox"],
+  supportedPlatforms: ["Android", "Desktop"],
+  options: {
+      default: {perfherder: true, verbose: false},
+      linux: {perfherder_metrics: [{name:"speed",unit:"bps_lin"}], verbose: true},
+      mac: {perfherder_metrics: [{name:"speed",unit:"bps_mac"}], verbose: true},
+      win: {perfherder_metrics: [{name:"speed",unit:"bps_win"}], verbose: true}
+  }
 };

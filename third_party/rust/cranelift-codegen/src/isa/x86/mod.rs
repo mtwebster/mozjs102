@@ -21,9 +21,10 @@ use crate::isa::{EncInfo, RegClass, RegInfo, TargetIsa};
 use crate::regalloc;
 use crate::result::CodegenResult;
 use crate::timing;
-use alloc::borrow::Cow;
-use alloc::boxed::Box;
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use core::any::Any;
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use target_lexicon::{PointerWidth, Triple};
 
 #[allow(dead_code)]
@@ -53,9 +54,12 @@ fn isa_constructor(
         PointerWidth::U32 => &enc_tables::LEVEL1_I32[..],
         PointerWidth::U64 => &enc_tables::LEVEL1_I64[..],
     };
+
+    let isa_flags = settings::Flags::new(&shared_flags, builder);
+
     Box::new(Isa {
         triple,
-        isa_flags: settings::Flags::new(&shared_flags, builder),
+        isa_flags,
         shared_flags,
         cpumode: level1,
     })
@@ -72,6 +76,15 @@ impl TargetIsa for Isa {
 
     fn flags(&self) -> &shared_settings::Flags {
         &self.shared_flags
+    }
+
+    fn isa_flags(&self) -> Vec<shared_settings::Value> {
+        self.isa_flags.iter().collect()
+    }
+
+    fn hash_all_flags(&self, mut hasher: &mut dyn Hasher) {
+        self.shared_flags.hash(&mut hasher);
+        self.isa_flags.hash(&mut hasher);
     }
 
     fn uses_cpu_flags(&self) -> bool {
@@ -172,6 +185,10 @@ impl TargetIsa for Isa {
     #[cfg(feature = "unwind")]
     fn create_systemv_cie(&self) -> Option<gimli::write::CommonInformationEntry> {
         Some(unwind::systemv::create_cie())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
     }
 }
 

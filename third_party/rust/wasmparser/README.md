@@ -2,8 +2,8 @@
 
 **A [Bytecode Alliance](https://bytecodealliance.org/) project**
 
-![CI](https://github.com/bytecodealliance/wasmparser/workflows/CI/badge.svg)
 [![crates.io link](https://img.shields.io/crates/v/wasmparser.svg)](https://crates.io/crates/wasmparser)
+[![docs.rs docs](https://img.shields.io/static/v1?label=docs&message=wasmparser&color=blue&style=flat-square)](https://docs.rs/wasmparser/)
 
 The decoder library provides lightweight and fast decoding/parsing of WebAssembly binary files.
 
@@ -15,40 +15,6 @@ See also its sibling at https://github.com/wasdk/wasmparser
 ## Documentation
 
 The documentation and examples can be found at the https://docs.rs/wasmparser/
-
-
-## Example
-
-```rust
-use wasmparser::WasmDecoder;
-use wasmparser::Parser;
-use wasmparser::ParserState;
-
-fn get_name(bytes: &[u8]) -> &str {
-  str::from_utf8(bytes).ok().unwrap()
-}
-
-fn main() {
-  let ref buf: Vec<u8> = read_wasm_bytes();
-  let mut parser = Parser::new(buf);
-  loop {
-    let state = parser.read();
-    match *state {
-        ParserState::BeginWasm { .. } => {
-            println!("====== Module");
-        }
-        ParserState::ExportSectionEntry { field, ref kind, .. } => {
-            println!("  Export {} {:?}", get_name(field), kind);
-        }
-        ParserState::ImportSectionEntry { module, field, .. } => {
-            println!("  Import {}::{}", get_name(module), get_name(field))
-        }
-        ParserState::EndWasm => break,
-        _ => ( /* println!(" Other {:?}", state) */ )
-    }
-  }
-}
-```
 
 
 ## Fuzzing

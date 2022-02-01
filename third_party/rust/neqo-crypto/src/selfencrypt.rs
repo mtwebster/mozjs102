@@ -4,11 +4,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::aead::Aead;
-use crate::constants::*;
+use crate::constants::{Cipher, Version};
 use crate::err::{Error, Res};
-use crate::hkdf;
 use crate::p11::{random, SymKey};
+use crate::{hkdf, Aead};
 
 use neqo_common::{hex, qinfo, qtrace, Encoder};
 
@@ -42,7 +41,7 @@ impl SelfEncrypt {
 
     fn make_aead(&self, k: &SymKey, salt: &[u8]) -> Res<Aead> {
         debug_assert_eq!(salt.len(), Self::SALT_LENGTH);
-        let salt = hkdf::import_key(self.version, self.cipher, salt)?;
+        let salt = hkdf::import_key(self.version, salt)?;
         let secret = hkdf::extract(self.version, self.cipher, Some(&salt), k)?;
         Aead::new(self.version, self.cipher, &secret, "neqo self")
     }
@@ -67,7 +66,6 @@ impl SelfEncrypt {
     ///
     /// # Errors
     /// Failure to protect using NSS AEAD APIs produces an error.
-    #[allow(clippy::similar_names)] // aad is similar to aead
     pub fn seal(&self, aad: &[u8], plaintext: &[u8]) -> Res<Vec<u8>> {
         // Format is:
         // struct {
@@ -78,8 +76,8 @@ impl SelfEncrypt {
         // };
         // AAD covers the entire header, plus the value of the AAD parameter that is provided.
         let salt = random(Self::SALT_LENGTH);
-        let aead = self.make_aead(&self.key, &salt)?;
-        let encoded_len = 2 + salt.len() + plaintext.len() + aead.expansion();
+        let cipher = self.make_aead(&self.key, &salt)?;
+        let encoded_len = 2 + salt.len() + plaintext.len() + cipher.expansion();
 
         let mut enc = Encoder::with_capacity(encoded_len);
         enc.encode_byte(Self::VERSION);
@@ -92,7 +90,7 @@ impl SelfEncrypt {
         let offset = enc.len();
         let mut output: Vec<u8> = enc.into();
         output.resize(encoded_len, 0);
-        aead.encrypt(0, &extended_aad, plaintext, &mut output[offset..])?;
+        cipher.encrypt(0, &extended_aad, plaintext, &mut output[offset..])?;
         qtrace!(
             ["SelfEncrypt"],
             "seal {} {} -> {}",

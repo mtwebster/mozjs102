@@ -6,9 +6,14 @@
 
 #include "jit/x86-shared/MacroAssembler-x86-shared.h"
 
+#include "mozilla/Casting.h"
+
+#include "jsmath.h"
+
 #include "jit/JitFrames.h"
 #include "jit/MacroAssembler.h"
 #include "jit/MoveEmitter.h"
+#include "js/ScalarType.h"  // js::Scalar::Type
 
 #include "jit/MacroAssembler-inl.h"
 
@@ -150,6 +155,40 @@ MacroAssemblerX86Shared::Double* MacroAssemblerX86Shared::getDouble(double d) {
 MacroAssemblerX86Shared::SimdData* MacroAssemblerX86Shared::getSimdData(
     const SimdConstant& v) {
   return getConstant<SimdData, SimdMap>(v, simdMap_, simds_);
+}
+
+void MacroAssemblerX86Shared::binarySimd128(
+    const SimdConstant& rhs, FloatRegister lhsDest,
+    void (MacroAssembler::*regOp)(const Operand&, FloatRegister, FloatRegister),
+    void (MacroAssembler::*constOp)(const SimdConstant&, FloatRegister)) {
+  ScratchSimd128Scope scratch(asMasm());
+  if (maybeInlineSimd128Int(rhs, scratch)) {
+    (asMasm().*regOp)(Operand(scratch), lhsDest, lhsDest);
+  } else {
+    (asMasm().*constOp)(rhs, lhsDest);
+  }
+}
+
+void MacroAssemblerX86Shared::binarySimd128(
+    const SimdConstant& rhs, FloatRegister lhs,
+    void (MacroAssembler::*regOp)(const Operand&, FloatRegister),
+    void (MacroAssembler::*constOp)(const SimdConstant&, FloatRegister)) {
+  ScratchSimd128Scope scratch(asMasm());
+  if (maybeInlineSimd128Int(rhs, scratch)) {
+    (asMasm().*regOp)(Operand(scratch), lhs);
+  } else {
+    (asMasm().*constOp)(rhs, lhs);
+  }
+}
+
+void MacroAssemblerX86Shared::bitwiseTestSimd128(const SimdConstant& rhs,
+                                                 FloatRegister lhs) {
+  ScratchSimd128Scope scratch(asMasm());
+  if (maybeInlineSimd128Int(rhs, scratch)) {
+    vptest(scratch, lhs);
+  } else {
+    asMasm().vptestSimd128(rhs, lhs);
+  }
 }
 
 void MacroAssemblerX86Shared::minMaxDouble(FloatRegister first,
@@ -354,7 +393,13 @@ void MacroAssembler::flexibleRemainder32(
 // ===============================================================
 // Stack manipulation functions.
 
+size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet set) {
+  return set.gprs().size() * sizeof(intptr_t) + set.fpus().getPushSizeInBytes();
+}
+
 void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
+  mozilla::DebugOnly<size_t> framePushedInitial = framePushed();
+
   FloatRegisterSet fpuSet(set.fpus().reduceSetForPush());
   unsigned numFpu = fpuSet.size();
   int32_t diffF = fpuSet.getPushSizeInBytes();
@@ -385,14 +430,25 @@ void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
     }
   }
   MOZ_ASSERT(numFpu == 0);
+
   // x64 padding to keep the stack aligned on uintptr_t. Keep in sync with
   // GetPushSizeInBytes.
-  diffF -= diffF % sizeof(uintptr_t);
+  size_t alignExtra = ((size_t)diffF) % sizeof(uintptr_t);
+  MOZ_ASSERT_IF(sizeof(uintptr_t) == 8, alignExtra == 0 || alignExtra == 4);
+  MOZ_ASSERT_IF(sizeof(uintptr_t) == 4, alignExtra == 0);
+  diffF -= alignExtra;
   MOZ_ASSERT(diffF == 0);
+
+  // The macroassembler will keep the stack sizeof(uintptr_t)-aligned, so
+  // we don't need to take into account `alignExtra` here.
+  MOZ_ASSERT(framePushed() - framePushedInitial ==
+             PushRegsInMaskSizeInBytes(set));
 }
 
 void MacroAssembler::storeRegsInMask(LiveRegisterSet set, Address dest,
                                      Register) {
+  mozilla::DebugOnly<size_t> offsetInitial = dest.offset;
+
   FloatRegisterSet fpuSet(set.fpus().reduceSetForPush());
   unsigned numFpu = fpuSet.size();
   int32_t diffF = fpuSet.getPushSizeInBytes();
@@ -423,14 +479,26 @@ void MacroAssembler::storeRegsInMask(LiveRegisterSet set, Address dest,
     }
   }
   MOZ_ASSERT(numFpu == 0);
+
   // x64 padding to keep the stack aligned on uintptr_t. Keep in sync with
-  // GetPushBytesInSize.
-  diffF -= diffF % sizeof(uintptr_t);
+  // GetPushSizeInBytes.
+  size_t alignExtra = ((size_t)diffF) % sizeof(uintptr_t);
+  MOZ_ASSERT_IF(sizeof(uintptr_t) == 8, alignExtra == 0 || alignExtra == 4);
+  MOZ_ASSERT_IF(sizeof(uintptr_t) == 4, alignExtra == 0);
+  diffF -= alignExtra;
   MOZ_ASSERT(diffF == 0);
+
+  // What this means is: if `alignExtra` is nonzero, then the save area size
+  // actually used is `alignExtra` bytes smaller than what
+  // PushRegsInMaskSizeInBytes claims.  Hence we need to compensate for that.
+  MOZ_ASSERT(alignExtra + offsetInitial - dest.offset ==
+             PushRegsInMaskSizeInBytes(set));
 }
 
 void MacroAssembler::PopRegsInMaskIgnore(LiveRegisterSet set,
                                          LiveRegisterSet ignore) {
+  mozilla::DebugOnly<size_t> framePushedInitial = framePushed();
+
   FloatRegisterSet fpuSet(set.fpus().reduceSetForPush());
   unsigned numFpu = fpuSet.size();
   int32_t diffG = set.gprs().size() * sizeof(intptr_t);
@@ -483,6 +551,9 @@ void MacroAssembler::PopRegsInMaskIgnore(LiveRegisterSet set,
     freeStack(reservedG);
   }
   MOZ_ASSERT(diffG == 0);
+
+  MOZ_ASSERT(framePushedInitial - framePushed() ==
+             PushRegsInMaskSizeInBytes(set));
 }
 
 void MacroAssembler::Push(const Operand op) {
@@ -628,8 +699,9 @@ uint32_t MacroAssembler::pushFakeReturnAddress(Register scratch) {
 
 CodeOffset MacroAssembler::wasmTrapInstruction() { return ud2(); }
 
-void MacroAssembler::wasmBoundsCheck(Condition cond, Register index,
-                                     Register boundsCheckLimit, Label* label) {
+void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
+                                       Register boundsCheckLimit,
+                                       Label* label) {
   cmp32(index, boundsCheckLimit);
   j(cond, label);
   if (JitOptions.spectreIndexMasking) {
@@ -637,8 +709,8 @@ void MacroAssembler::wasmBoundsCheck(Condition cond, Register index,
   }
 }
 
-void MacroAssembler::wasmBoundsCheck(Condition cond, Register index,
-                                     Address boundsCheckLimit, Label* label) {
+void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
+                                       Address boundsCheckLimit, Label* label) {
   cmp32(index, Operand(boundsCheckLimit));
   j(cond, label);
   if (JitOptions.spectreIndexMasking) {
@@ -1546,7 +1618,7 @@ void MacroAssembler::floorFloat32ToInt32(FloatRegister src, Register dest,
     // Round toward -Infinity.
     {
       ScratchFloat32Scope scratch(*this);
-      vroundss(X86Encoding::RoundDown, src, scratch, scratch);
+      vroundss(X86Encoding::RoundDown, src, scratch);
       truncateFloat32ToInt32(scratch, dest, fail);
     }
   } else {
@@ -1601,7 +1673,7 @@ void MacroAssembler::floorDoubleToInt32(FloatRegister src, Register dest,
     // Round toward -Infinity.
     {
       ScratchDoubleScope scratch(*this);
-      vroundsd(X86Encoding::RoundDown, src, scratch, scratch);
+      vroundsd(X86Encoding::RoundDown, src, scratch);
       truncateDoubleToInt32(scratch, dest, fail);
     }
   } else {
@@ -1665,7 +1737,7 @@ void MacroAssembler::ceilFloat32ToInt32(FloatRegister src, Register dest,
     // x <= -1 or x > -0
     bind(&lessThanOrEqualMinusOne);
     // Round toward +Infinity.
-    vroundss(X86Encoding::RoundUp, src, scratch, scratch);
+    vroundss(X86Encoding::RoundUp, src, scratch);
     truncateFloat32ToInt32(scratch, dest, fail);
     return;
   }
@@ -1710,7 +1782,7 @@ void MacroAssembler::ceilDoubleToInt32(FloatRegister src, Register dest,
     // x <= -1 or x > -0
     bind(&lessThanOrEqualMinusOne);
     // Round toward +Infinity.
-    vroundsd(X86Encoding::RoundUp, src, scratch, scratch);
+    vroundsd(X86Encoding::RoundUp, src, scratch);
     truncateDoubleToInt32(scratch, dest, fail);
     return;
   }
@@ -1735,6 +1807,48 @@ void MacroAssembler::ceilDoubleToInt32(FloatRegister src, Register dest,
   truncateDoubleToInt32(src, dest, fail);
 
   bind(&end);
+}
+
+void MacroAssembler::truncDoubleToInt32(FloatRegister src, Register dest,
+                                        Label* fail) {
+  Label lessThanOrEqualMinusOne;
+
+  // Bail on ]-1; -0] range
+  {
+    ScratchDoubleScope scratch(*this);
+    loadConstantDouble(-1, scratch);
+    branchDouble(Assembler::DoubleLessThanOrEqualOrUnordered, src, scratch,
+                 &lessThanOrEqualMinusOne);
+  }
+
+  // Test for remaining values with the sign bit set, i.e. ]-1; -0]
+  vmovmskpd(src, dest);
+  branchTest32(Assembler::NonZero, dest, Imm32(1), fail);
+
+  // x <= -1 or x >= +0, truncation is the way to go.
+  bind(&lessThanOrEqualMinusOne);
+  truncateDoubleToInt32(src, dest, fail);
+}
+
+void MacroAssembler::truncFloat32ToInt32(FloatRegister src, Register dest,
+                                         Label* fail) {
+  Label lessThanOrEqualMinusOne;
+
+  // Bail on ]-1; -0] range
+  {
+    ScratchFloat32Scope scratch(*this);
+    loadConstantFloat32(-1.f, scratch);
+    branchFloat(Assembler::DoubleLessThanOrEqualOrUnordered, src, scratch,
+                &lessThanOrEqualMinusOne);
+  }
+
+  // Test for remaining values with the sign bit set, i.e. ]-1; -0]
+  vmovmskps(src, dest);
+  branchTest32(Assembler::NonZero, dest, Imm32(1), fail);
+
+  // x <= -1 or x >= +0, truncation is the way to go.
+  bind(&lessThanOrEqualMinusOne);
+  truncateFloat32ToInt32(src, dest, fail);
 }
 
 void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
@@ -1787,7 +1901,7 @@ void MacroAssembler::roundFloat32ToInt32(FloatRegister src, Register dest,
       // Add 0.5 and round toward -Infinity. The result is stored in the temp
       // register (currently contains 0.5).
       addFloat32(src, temp);
-      vroundss(X86Encoding::RoundDown, temp, scratch, scratch);
+      vroundss(X86Encoding::RoundDown, temp, scratch);
 
       // Truncate.
       truncateFloat32ToInt32(scratch, dest, fail);
@@ -1873,7 +1987,7 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
       // Add 0.5 and round toward -Infinity. The result is stored in the temp
       // register (currently contains 0.5).
       addDouble(src, temp);
-      vroundsd(X86Encoding::RoundDown, temp, scratch, scratch);
+      vroundsd(X86Encoding::RoundDown, temp, scratch);
 
       // Truncate.
       truncateDoubleToInt32(scratch, dest, fail);
@@ -1907,6 +2021,48 @@ void MacroAssembler::roundDoubleToInt32(FloatRegister src, Register dest,
   }
 
   bind(&end);
+}
+
+void MacroAssembler::nearbyIntDouble(RoundingMode mode, FloatRegister src,
+                                     FloatRegister dest) {
+  MOZ_ASSERT(HasRoundInstruction(mode));
+  vroundsd(Assembler::ToX86RoundingMode(mode), src, dest);
+}
+
+void MacroAssembler::nearbyIntFloat32(RoundingMode mode, FloatRegister src,
+                                      FloatRegister dest) {
+  MOZ_ASSERT(HasRoundInstruction(mode));
+  vroundss(Assembler::ToX86RoundingMode(mode), src, dest);
+}
+
+void MacroAssembler::copySignDouble(FloatRegister lhs, FloatRegister rhs,
+                                    FloatRegister output) {
+  ScratchDoubleScope scratch(*this);
+
+  double clearSignMask = mozilla::BitwiseCast<double>(INT64_MAX);
+  loadConstantDouble(clearSignMask, scratch);
+  vandpd(scratch, lhs, output);
+
+  double keepSignMask = mozilla::BitwiseCast<double>(INT64_MIN);
+  loadConstantDouble(keepSignMask, scratch);
+  vandpd(rhs, scratch, scratch);
+
+  vorpd(scratch, output, output);
+}
+
+void MacroAssembler::copySignFloat32(FloatRegister lhs, FloatRegister rhs,
+                                     FloatRegister output) {
+  ScratchFloat32Scope scratch(*this);
+
+  float clearSignMask = mozilla::BitwiseCast<float>(INT32_MAX);
+  loadConstantFloat32(clearSignMask, scratch);
+  vandps(scratch, lhs, output);
+
+  float keepSignMask = mozilla::BitwiseCast<float>(INT32_MIN);
+  loadConstantFloat32(keepSignMask, scratch);
+  vandps(rhs, scratch, scratch);
+
+  vorps(scratch, output, output);
 }
 
 //}}} check_macroassembler_style

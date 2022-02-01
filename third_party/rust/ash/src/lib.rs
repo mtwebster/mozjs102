@@ -1,4 +1,8 @@
-#![allow(clippy::too_many_arguments, clippy::missing_safety_doc)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::missing_safety_doc,
+    clippy::upper_case_acronyms
+)]
 //! # Vulkan API
 //!
 //! <https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/index.html>
@@ -23,11 +27,15 @@
 //!
 
 pub use crate::device::Device;
-pub use crate::entry::{Entry, EntryCustom, InstanceError, LoadingError};
+pub use crate::entry::{EntryCustom, InstanceError};
+#[cfg(feature = "libloading")]
+pub use crate::entry_libloading::{Entry, LoadingError};
 pub use crate::instance::Instance;
 
 mod device;
 mod entry;
+#[cfg(feature = "libloading")]
+mod entry_libloading;
 mod instance;
 pub mod prelude;
 pub mod util;

@@ -10,13 +10,13 @@
 
 #include "vm/JSFunction-inl.h"
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Range.h"
 #include "mozilla/Utf8.h"
 
 #include <algorithm>
+#include <iterator>
 #include <string.h>
 
 #include "jsapi.h"
@@ -27,6 +27,7 @@
 #include "builtin/Eval.h"
 #include "builtin/Object.h"
 #include "builtin/SelfHostingDefines.h"
+#include "builtin/Symbol.h"
 #include "frontend/BytecodeCompilation.h"
 #include "frontend/BytecodeCompiler.h"
 #include "frontend/TokenStream.h"
@@ -35,15 +36,20 @@
 #include "jit/InlinableNatives.h"
 #include "jit/Ion.h"
 #include "js/CallNonGenericMethod.h"
+#include "js/CompilationAndEvaluation.h"
 #include "js/CompileOptions.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #include "js/PropertySpec.h"
 #include "js/Proxy.h"
 #include "js/SourceText.h"
 #include "js/StableStringChars.h"
 #include "js/Wrapper.h"
 #include "util/StringBuffer.h"
+#include "util/Text.h"
 #include "vm/AsyncFunction.h"
 #include "vm/AsyncIteration.h"
+#include "vm/BooleanObject.h"
 #include "vm/FunctionFlags.h"          // js::FunctionFlags
 #include "vm/GeneratorAndAsyncKind.h"  // js::GeneratorKind, js::FunctionAsyncKind
 #include "vm/GlobalObject.h"
@@ -52,10 +58,13 @@
 #include "vm/JSContext.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
+#include "vm/NumberObject.h"
 #include "vm/PlainObject.h"  // js::PlainObject
 #include "vm/SelfHosting.h"
 #include "vm/Shape.h"
 #include "vm/SharedImmutableStringsCache.h"
+#include "vm/StringObject.h"
+#include "vm/WellKnownAtom.h"  // js_*_str
 #include "vm/WrapperObject.h"
 #include "vm/Xdr.h"
 #include "wasm/AsmJS.h"
@@ -68,7 +77,6 @@
 
 using namespace js;
 
-using mozilla::ArrayLength;
 using mozilla::CheckedInt;
 using mozilla::Maybe;
 using mozilla::Some;
@@ -373,7 +381,7 @@ static bool ResolveInterpretedFunctionPrototype(JSContext* cx,
   }
 
   RootedPlainObject proto(
-      cx, NewSingletonObjectWithGivenProto<PlainObject>(cx, objProto));
+      cx, NewTenuredObjectWithGivenProto<PlainObject>(cx, objProto));
   if (!proto) {
     return false;
   }
@@ -426,18 +434,17 @@ bool JSFunction::hasNonConfigurablePrototypeDataProperty() {
 
   if (isSelfHostedBuiltin()) {
     // Self-hosted constructors other than bound functions have a
-    // non-configurable .prototype data property. See the MakeConstructible
-    // intrinsic.
+    // non-configurable .prototype data property.
     if (!isConstructor() || isBoundFunction()) {
       return false;
     }
 #ifdef DEBUG
     PropertyName* prototypeName =
         runtimeFromMainThread()->commonNames->prototype;
-    Shape* shape = lookupPure(prototypeName);
-    MOZ_ASSERT(shape);
-    MOZ_ASSERT(shape->isDataProperty());
-    MOZ_ASSERT(!shape->configurable());
+    Maybe<PropertyInfo> prop = lookupPure(prototypeName);
+    MOZ_ASSERT(prop.isSome());
+    MOZ_ASSERT(prop->isDataProperty());
+    MOZ_ASSERT(!prop->configurable());
 #endif
     return true;
   }
@@ -448,28 +455,28 @@ bool JSFunction::hasNonConfigurablePrototypeDataProperty() {
   }
 
   PropertyName* prototypeName = runtimeFromMainThread()->commonNames->prototype;
-  Shape* shape = lookupPure(prototypeName);
-  return shape && shape->isDataProperty() && !shape->configurable();
+  Maybe<PropertyInfo> prop = lookupPure(prototypeName);
+  return prop.isSome() && prop->isDataProperty() && !prop->configurable();
 }
 
 static bool fun_mayResolve(const JSAtomState& names, jsid id, JSObject*) {
-  if (!JSID_IS_ATOM(id)) {
+  if (!id.isAtom()) {
     return false;
   }
 
-  JSAtom* atom = JSID_TO_ATOM(id);
+  JSAtom* atom = id.toAtom();
   return atom == names.prototype || atom == names.length || atom == names.name;
 }
 
 static bool fun_resolve(JSContext* cx, HandleObject obj, HandleId id,
                         bool* resolvedp) {
-  if (!JSID_IS_ATOM(id)) {
+  if (!id.isAtom()) {
     return true;
   }
 
   RootedFunction fun(cx, &obj->as<JSFunction>());
 
-  if (JSID_IS_ATOM(id, cx->names().prototype)) {
+  if (id.isAtom(cx->names().prototype)) {
     if (!fun->needsPrototypeProperty()) {
       return true;
     }
@@ -482,8 +489,8 @@ static bool fun_resolve(JSContext* cx, HandleObject obj, HandleId id,
     return true;
   }
 
-  bool isLength = JSID_IS_ATOM(id, cx->names().length);
-  if (isLength || JSID_IS_ATOM(id, cx->names().name)) {
+  bool isLength = id.isAtom(cx->names().length);
+  if (isLength || id.isAtom(cx->names().name)) {
     MOZ_ASSERT(!IsInternalFunctionObject(*obj));
 
     RootedValue v(cx);
@@ -548,7 +555,6 @@ XDRResult js::XDRInterpretedFunction(XDRState<mode>* xdr,
     IsGenerator = 1 << 1,
     IsAsync = 1 << 2,
     IsLazy = 1 << 3,
-    HasSingletonType = 1 << 4,
   };
 
   /* NB: Keep this in sync with CloneInnerInterpretedFunction. */
@@ -568,11 +574,7 @@ XDRResult js::XDRInterpretedFunction(XDRState<mode>* xdr,
   if (mode == XDR_ENCODE) {
     fun = objp;
     if (!fun->isInterpreted() || fun->isBoundFunction()) {
-      return xdr->fail(JS::TranscodeResult_Failure_NotInterpretedFun);
-    }
-
-    if (fun->isSingleton()) {
-      xdrFlags |= HasSingletonType;
+      return xdr->fail(JS::TranscodeResult::Failure_NotInterpretedFun);
     }
 
     if (fun->isGenerator()) {
@@ -596,20 +598,10 @@ XDRResult js::XDRInterpretedFunction(XDRState<mode>* xdr,
     }
 
     nargs = fun->nargs();
-    flags = (fun->flags().toRaw() & ~FunctionFlags::MUTABLE_FLAGS);
+    flags = FunctionFlags::clearMutableflags(fun->flags()).toRaw();
 
     atom = fun->displayAtom();
-
-    // The environment of any function which is not reused will always be
-    // null, it is later defined when a function is cloned or reused to
-    // mirror the scope chain.
-    MOZ_ASSERT_IF(fun->isSingleton() && !fun->baseScript()->hasBeenCloned(),
-                  fun->environment() == nullptr);
   }
-
-  // Everything added below can substituted by the non-lazy-script version of
-  // this function later.
-  js::AutoXDRTree funTree(xdr, xdr->getTreeKey(fun));
 
   MOZ_TRY(xdr->codeUint8(&xdrFlags));
 
@@ -630,7 +622,7 @@ XDRResult js::XDRInterpretedFunction(XDRState<mode>* xdr,
 
     RootedObject proto(cx);
     if (!GetFunctionPrototype(cx, generatorKind, asyncKind, &proto)) {
-      return xdr->fail(JS::TranscodeResult_Throw);
+      return xdr->fail(JS::TranscodeResult::Throw);
     }
 
     gc::AllocKind allocKind = gc::AllocKind::FUNCTION;
@@ -644,20 +636,15 @@ XDRResult js::XDRInterpretedFunction(XDRState<mode>* xdr,
         FunctionFlags::MUTABLE_FLAGS | FunctionFlags::SELFHOSTLAZY |
         FunctionFlags::BOUND_FUN | FunctionFlags::WASM_JIT_ENTRY;
     if ((flags & UnsupportedFlags) != 0) {
-      return xdr->fail(JS::TranscodeResult_Failure_BadDecode);
+      return xdr->fail(JS::TranscodeResult::Failure_BadDecode);
     }
 
     fun = NewFunctionWithProto(cx, nullptr, nargs, FunctionFlags(flags),
                                nullptr, atom, proto, allocKind, TenuredObject);
     if (!fun) {
-      return xdr->fail(JS::TranscodeResult_Throw);
+      return xdr->fail(JS::TranscodeResult::Throw);
     }
     objp.set(fun);
-
-    bool singleton = (xdrFlags & HasSingletonType);
-    if (!JSFunction::setTypeForScriptedFunction(cx, fun, singleton)) {
-      return xdr->fail(JS::TranscodeResult_Throw);
-    }
   }
 
   if (xdrFlags & IsLazy) {
@@ -732,7 +719,8 @@ bool JS::OrdinaryHasInstance(JSContext* cx, HandleObject objArg, HandleValue v,
   /* Step 2. */
   if (obj->is<JSFunction>() && obj->isBoundFunction()) {
     /* Steps 2a-b. */
-    if (!CheckRecursionLimit(cx)) {
+    AutoCheckRecursionLimit recursion(cx);
+    if (!recursion.check(cx)) {
       return false;
     }
     obj = obj->as<JSFunction>().getBoundFunctionTarget();
@@ -774,7 +762,7 @@ bool JS::OrdinaryHasInstance(JSContext* cx, HandleObject objArg, HandleValue v,
 
 inline void JSFunction::trace(JSTracer* trc) {
   if (isExtended()) {
-    TraceRange(trc, ArrayLength(toExtended()->extendedSlots),
+    TraceRange(trc, std::size(toExtended()->extendedSlots),
                (GCPtrValue*)toExtended()->extendedSlots, "nativeReserved");
   }
 
@@ -816,7 +804,7 @@ static JSObject* CreateFunctionConstructor(JSContext* cx, JSProtoKey key) {
       cx, NewFunctionWithProto(
               cx, Function, 1, FunctionFlags::NATIVE_CTOR, nullptr,
               HandlePropertyName(cx->names().Function), functionProto,
-              gc::AllocKind::FUNCTION, SingletonObject));
+              gc::AllocKind::FUNCTION, TenuredObject));
   if (!functionCtor) {
     return nullptr;
   }
@@ -838,7 +826,7 @@ static JSObject* CreateFunctionPrototype(JSContext* cx, JSProtoKey key) {
   return NewFunctionWithProto(
       cx, FunctionPrototype, 0, FunctionFlags::NATIVE_FUN, nullptr,
       HandlePropertyName(cx->names().empty), objectProto,
-      gc::AllocKind::FUNCTION, SingletonObject);
+      gc::AllocKind::FUNCTION, TenuredObject);
 }
 
 JSString* js::FunctionToStringCache::lookup(BaseScript* script) const {
@@ -1032,28 +1020,6 @@ JSString* fun_toStringHelper(JSContext* cx, HandleObject obj, bool isToSource) {
   return FunctionToString(cx, obj.as<JSFunction>(), isToSource);
 }
 
-bool js::FunctionHasDefaultHasInstance(JSFunction* fun,
-                                       const WellKnownSymbols& symbols) {
-  jsid id = SYMBOL_TO_JSID(symbols.hasInstance);
-  Shape* shape = fun->lookupPure(id);
-  if (shape) {
-    if (!shape->isDataProperty()) {
-      return false;
-    }
-    const Value hasInstance = fun->as<NativeObject>().getSlot(shape->slot());
-    return IsNativeFunction(hasInstance, fun_symbolHasInstance);
-  }
-
-#ifdef DEBUG
-  // The proto must be Function.__proto__. It has an immutable @@hasInstance
-  // property. (Callers should check this first.)
-  Value funProto = fun->global().getPrototype(JSProto_Function);
-  MOZ_ASSERT(fun->staticPrototype() == &funProto.toObject());
-#endif
-
-  return true;
-}
-
 bool js::fun_toString(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(IsFunctionObject(args.calleev()));
@@ -1152,49 +1118,32 @@ bool js::fun_apply(JSContext* cx, unsigned argc, Value* vp) {
     return fun_call(cx, (args.length() > 0) ? 1 : 0, vp);
   }
 
+  // Step 3.
+  if (!args[1].isObject()) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_BAD_APPLY_ARGS, js_apply_str);
+    return false;
+  }
+
+  // Steps 4-5 (note erratum removing steps originally numbered 5 and 7 in
+  // original version of ES5).
+  RootedObject aobj(cx, &args[1].toObject());
+  uint64_t length;
+  if (!GetLengthProperty(cx, aobj, &length)) {
+    return false;
+  }
+
+  // Step 6.
   InvokeArgs args2(cx);
+  if (!args2.init(cx, length)) {
+    return false;
+  }
 
-  // A JS_OPTIMIZED_ARGUMENTS magic value means that 'arguments' flows into
-  // this apply call from a scripted caller and, as an optimization, we've
-  // avoided creating it since apply can simply pull the argument values from
-  // the calling frame (which we must do now).
-  if (args[1].isMagic(JS_OPTIMIZED_ARGUMENTS)) {
-    // Step 3-6.
-    ScriptFrameIter iter(cx);
-    MOZ_ASSERT(iter.numActualArgs() <= ARGS_LENGTH_MAX);
-    if (!args2.init(cx, iter.numActualArgs())) {
-      return false;
-    }
+  MOZ_ASSERT(length <= ARGS_LENGTH_MAX);
 
-    // Steps 7-8.
-    iter.unaliasedForEachActual(cx, CopyTo(args2.array()));
-  } else {
-    // Step 3.
-    if (!args[1].isObject()) {
-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                                JSMSG_BAD_APPLY_ARGS, js_apply_str);
-      return false;
-    }
-
-    // Steps 4-5 (note erratum removing steps originally numbered 5 and 7 in
-    // original version of ES5).
-    RootedObject aobj(cx, &args[1].toObject());
-    uint32_t length;
-    if (!GetLengthProperty(cx, aobj, &length)) {
-      return false;
-    }
-
-    // Step 6.
-    if (!args2.init(cx, length)) {
-      return false;
-    }
-
-    MOZ_ASSERT(length <= ARGS_LENGTH_MAX);
-
-    // Steps 7-8.
-    if (!GetElements(cx, aobj, length, args2.array())) {
-      return false;
-    }
+  // Steps 7-8.
+  if (!GetElements(cx, aobj, length, args2.array())) {
+    return false;
   }
 
   // Step 9.
@@ -1241,10 +1190,10 @@ bool JSFunction::isDerivedClassConstructor() const {
   return derived;
 }
 
-bool JSFunction::isFieldInitializer() const {
-  bool derived = hasBaseScript() && baseScript()->isFieldInitializer();
-  MOZ_ASSERT_IF(derived, isMethod());
-  return derived;
+bool JSFunction::isSyntheticFunction() const {
+  bool synthetic = hasBaseScript() && baseScript()->isSyntheticFunction();
+  MOZ_ASSERT_IF(synthetic, isMethod());
+  return synthetic;
 }
 
 /* static */
@@ -1252,7 +1201,7 @@ bool JSFunction::getLength(JSContext* cx, HandleFunction fun,
                            uint16_t* length) {
   MOZ_ASSERT(!fun->isBoundFunction());
 
-  if (fun->isNative()) {
+  if (fun->isNativeFun()) {
     *length = fun->nargs();
     return true;
   }
@@ -1275,8 +1224,9 @@ bool JSFunction::getUnresolvedLength(JSContext* cx, HandleFunction fun,
   // Bound functions' length can have values up to MAX_SAFE_INTEGER, so
   // they're handled differently from other functions.
   if (fun->isBoundFunction()) {
-    MOZ_ASSERT(fun->getExtendedSlot(BOUND_FUN_LENGTH_SLOT).isNumber());
-    v.set(fun->getExtendedSlot(BOUND_FUN_LENGTH_SLOT));
+    constexpr auto lengthSlot = FunctionExtended::BOUND_FUNCTION_LENGTH_SLOT;
+    MOZ_ASSERT(fun->getExtendedSlot(lengthSlot).isNumber());
+    v.set(fun->getExtendedSlot(lengthSlot));
     return true;
   }
 
@@ -1350,7 +1300,7 @@ JSLinearString* JSFunction::getBoundFunctionName(JSContext* cx,
 
   static constexpr char boundWithSpaceChars[] = "bound ";
   static constexpr size_t boundWithSpaceCharsLength =
-      ArrayLength(boundWithSpaceChars) - 1;  // No trailing '\0'.
+      js_strlen(boundWithSpaceChars);
   MOZ_ASSERT(
       StringEqualsAscii(cx->names().boundWithSpace, boundWithSpaceChars));
 
@@ -1488,12 +1438,12 @@ bool JSFunction::finishBoundFunctionInit(JSContext* cx, HandleFunction bound,
   }
 
   // 19.2.3.2 Function.prototype.bind, step 8.
-  bound->setExtendedSlot(BOUND_FUN_LENGTH_SLOT, NumberValue(length));
+  bound->setExtendedSlot(FunctionExtended::BOUND_FUNCTION_LENGTH_SLOT,
+                         NumberValue(length));
 
   MOZ_ASSERT(!bound->hasGuessedAtom());
 
   // Try to avoid invoking the resolve hook.
-  JSAtom* name = nullptr;
   if (targetObj->is<JSFunction>() &&
       !targetObj->as<JSFunction>().hasResolvedName()) {
     JSFunction* targetFn = &targetObj->as<JSFunction>();
@@ -1502,21 +1452,18 @@ bool JSFunction::finishBoundFunctionInit(JSContext* cx, HandleFunction bound,
     // lazily compute the full name in getBoundFunctionName(), therefore
     // we need to append the bound function name prefix here.
     if (targetFn->isBoundFunction() && targetFn->hasBoundFunctionNamePrefix()) {
-      name = AppendBoundFunctionPrefix(cx, targetFn->explicitName());
+      JSAtom* name = AppendBoundFunctionPrefix(cx, targetFn->explicitName());
       if (!name) {
         return false;
       }
       bound->setPrefixedBoundFunctionName(name);
     } else {
-      name = targetFn->infallibleGetUnresolvedName(cx);
+      JSAtom* name = targetFn->infallibleGetUnresolvedName(cx);
       MOZ_ASSERT(name);
 
       bound->setAtom(name);
     }
-  }
-
-  // 19.2.3.2 Function.prototype.bind, steps 9-11.
-  if (!name) {
+  } else {
     // 19.2.3.2 Function.prototype.bind, step 9.
     RootedValue targetName(cx);
     if (!GetProperty(cx, targetObj, targetObj, cx->names().name, &targetName)) {
@@ -1534,100 +1481,17 @@ bool JSFunction::finishBoundFunctionInit(JSContext* cx, HandleFunction bound,
     // the complete prefixed name here.
     if (targetObj->is<JSFunction>() &&
         targetObj->as<JSFunction>().isBoundFunction()) {
-      name = AppendBoundFunctionPrefix(cx, targetName.toString());
+      JSAtom* name = AppendBoundFunctionPrefix(cx, targetName.toString());
       if (!name) {
         return false;
       }
       bound->setPrefixedBoundFunctionName(name);
     } else {
-      name = AtomizeString(cx, targetName.toString());
+      JSAtom* name = AtomizeString(cx, targetName.toString());
       if (!name) {
         return false;
       }
       bound->setAtom(name);
-    }
-  }
-
-  return true;
-}
-
-static bool DelazifyCanonicalScriptedFunction(JSContext* cx,
-                                              HandleFunction fun) {
-  Rooted<BaseScript*> lazy(cx, fun->baseScript());
-
-  MOZ_ASSERT(!lazy->hasBytecode(), "Script is already compiled!");
-  MOZ_ASSERT(lazy->function() == fun);
-
-  ScriptSource* ss = lazy->scriptSource();
-  size_t sourceStart = lazy->sourceStart();
-  size_t sourceLength = lazy->sourceEnd() - lazy->sourceStart();
-  bool hadLazyScriptData = lazy->hasPrivateScriptData();
-
-  if (ss->hasBinASTSource()) {
-#if defined(JS_BUILD_BINAST)
-    if (!frontend::CompileLazyBinASTFunction(
-            cx, lazy, ss->binASTSource() + sourceStart, sourceLength)) {
-      MOZ_ASSERT(fun->baseScript() == lazy);
-      MOZ_ASSERT(lazy->isReadyForDelazification());
-      return false;
-    }
-#else
-    MOZ_CRASH("Trying to delazify BinAST function in non-BinAST build");
-#endif /*JS_BUILD_BINAST */
-  } else {
-    MOZ_ASSERT(ss->hasSourceText());
-
-    // Parse and compile the script from source.
-    UncompressedSourceCache::AutoHoldEntry holder;
-
-    if (ss->hasSourceType<Utf8Unit>()) {
-      // UTF-8 source text.
-      ScriptSource::PinnedUnits<Utf8Unit> units(cx, ss, holder, sourceStart,
-                                                sourceLength);
-      if (!units.get()) {
-        return false;
-      }
-
-      if (!frontend::CompileLazyFunction(cx, lazy, units.get(), sourceLength)) {
-        // The frontend shouldn't fail after linking the function and the
-        // non-lazy script together.
-        MOZ_ASSERT(fun->baseScript() == lazy);
-        MOZ_ASSERT(lazy->isReadyForDelazification());
-        return false;
-      }
-    } else {
-      MOZ_ASSERT(ss->hasSourceType<char16_t>());
-
-      // UTF-16 source text.
-      ScriptSource::PinnedUnits<char16_t> units(cx, ss, holder, sourceStart,
-                                                sourceLength);
-      if (!units.get()) {
-        return false;
-      }
-
-      if (!frontend::CompileLazyFunction(cx, lazy, units.get(), sourceLength)) {
-        // The frontend shouldn't fail after linking the function and the
-        // non-lazy script together.
-        MOZ_ASSERT(fun->baseScript() == lazy);
-        MOZ_ASSERT(lazy->isReadyForDelazification());
-        return false;
-      }
-    }
-  }
-
-  RootedScript script(cx, fun->nonLazyScript());
-
-  // NOTE: Only allow relazification if there was no lazy PrivateScriptData.
-  // This excludes non-leaf functions and all script class constructors.
-  if (script->isRelazifiable() && !hadLazyScriptData) {
-    script->setAllowRelazify();
-  }
-
-  // XDR the newly delazified function.
-  if (ss->hasEncoder()) {
-    RootedScriptSourceObject sourceObject(cx, script->sourceObject());
-    if (!ss->xdrEncodeFunction(cx, fun, sourceObject)) {
-      return false;
     }
   }
 
@@ -1664,7 +1528,15 @@ bool JSFunction::delazifyLazilyInterpretedFunction(JSContext* cx,
   }
 
   // Finally, compile the script if it really doesn't exist.
-  return DelazifyCanonicalScriptedFunction(cx, fun);
+  if (!frontend::DelazifyCanonicalScriptedFunction(cx, fun)) {
+    // The frontend shouldn't fail after linking the function and the
+    // non-lazy script together.
+    MOZ_ASSERT(fun->baseScript() == lazy);
+    MOZ_ASSERT(lazy->isReadyForDelazification());
+    return false;
+  }
+
+  return true;
 }
 
 /* static */
@@ -1678,11 +1550,10 @@ bool JSFunction::delazifySelfHostedLazyFunction(JSContext* cx,
 
   /* Lazily cloned self-hosted script. */
   MOZ_ASSERT(fun->isSelfHostedBuiltin());
-  RootedAtom funAtom(cx, GetClonedSelfHostedFunctionName(fun));
-  if (!funAtom) {
+  Rooted<PropertyName*> funName(cx, GetClonedSelfHostedFunctionName(fun));
+  if (!funName) {
     return false;
   }
-  Rooted<PropertyName*> funName(cx, funAtom->asPropertyName());
   return cx->runtime()->cloneSelfHostedFunctionScript(cx, funName, fun);
 }
 
@@ -1730,13 +1601,22 @@ void JSFunction::maybeRelazify(JSRuntime* rt) {
   }
 
   if (isSelfHostedBuiltin()) {
-    BaseScript::writeBarrierPre(script);
+    gc::PreWriteBarrier(script);
     initSelfHostedLazyScript(&rt->selfHostedLazyScript.ref());
   } else {
     script->relazify(rt);
   }
+}
 
-  realm->scheduleDelazificationForDebugger();
+js::GeneratorKind JSFunction::clonedSelfHostedGeneratorKind() const {
+  MOZ_ASSERT(hasSelfHostedLazyScript());
+
+  // This is a lazy clone of a self-hosted builtin. It has no BaseScript, and
+  // `this->flags_` does not contain the generator kind. Consult the
+  // implementation in the self-hosting realm, which has a BaseScript.
+  MOZ_RELEASE_ASSERT(isExtended());
+  PropertyName* name = GetClonedSelfHostedFunctionName(this);
+  return runtimeFromMainThread()->getSelfHostedFunctionGeneratorKind(name);
 }
 
 // ES2018 draft rev 2aea8f3e617b49df06414eb062ab44fad87661d3
@@ -1779,8 +1659,8 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
       .setFileAndLine(filename, 1)
       .setNoScriptRval(false)
       .setIntroductionInfo(introducerFilename, introductionType, lineno,
-                           maybeScript, pcOffset)
-      .setScriptOrModule(maybeScript);
+                           pcOffset)
+      .setdeferDebugMetadata();
 
   JSStringBuilder sb(cx);
 
@@ -1871,40 +1751,6 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
     return false;
   }
 
-  /*
-   * NB: (new Function) is not lexically closed by its caller, it's just an
-   * anonymous function in the top-level scope that its constructor inhabits.
-   * Thus 'var x = 42; f = new Function("return x"); print(f())' prints 42,
-   * and so would a call to f from another top-level's script or function.
-   */
-  HandlePropertyName anonymousAtom = cx->names().anonymous;
-
-  // Initialize the function with the default prototype:
-  // Leave as nullptr to get the default from clasp for normal functions.
-  RootedObject defaultProto(cx);
-  if (!GetFunctionPrototype(cx, generatorKind, asyncKind, &defaultProto)) {
-    return false;
-  }
-
-  // Step 30-37 (reordered).
-  RootedObject globalLexical(cx, &global->lexicalEnvironment());
-  FunctionFlags flags =
-      (isGenerator || isAsync)
-          ? FunctionFlags::INTERPRETED_LAMBDA_GENERATOR_OR_ASYNC
-          : FunctionFlags::INTERPRETED_LAMBDA;
-  gc::AllocKind allocKind = gc::AllocKind::FUNCTION;
-  RootedFunction fun(
-      cx,
-      NewFunctionWithProto(cx, nullptr, 0, flags, globalLexical, anonymousAtom,
-                           defaultProto, allocKind, TenuredObject));
-  if (!fun) {
-    return false;
-  }
-
-  if (!JSFunction::setTypeForScriptedFunction(cx, fun)) {
-    return false;
-  }
-
   // Steps 7.a-b, 8.a-b, 9.a-b, 16-28.
   AutoStableStringChars stableChars(cx);
   if (!stableChars.initTwoByte(cx, functionText)) {
@@ -1920,35 +1766,44 @@ static bool CreateDynamicFunction(JSContext* cx, const CallArgs& args,
     return false;
   }
 
+  FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::Expression;
+
+  RootedFunction fun(cx);
   JSProtoKey protoKey;
   if (isAsync) {
     if (isGenerator) {
-      if (!CompileStandaloneAsyncGenerator(cx, &fun, options, srcBuf,
-                                           parameterListEnd)) {
-        return false;
-      }
+      fun = CompileStandaloneAsyncGenerator(cx, options, srcBuf,
+                                            parameterListEnd, syntaxKind);
       protoKey = JSProto_AsyncGeneratorFunction;
     } else {
-      if (!CompileStandaloneAsyncFunction(cx, &fun, options, srcBuf,
-                                          parameterListEnd)) {
-        return false;
-      }
+      fun = CompileStandaloneAsyncFunction(cx, options, srcBuf,
+                                           parameterListEnd, syntaxKind);
       protoKey = JSProto_AsyncFunction;
     }
   } else {
     if (isGenerator) {
-      if (!CompileStandaloneGenerator(cx, &fun, options, srcBuf,
-                                      parameterListEnd)) {
-        return false;
-      }
+      fun = CompileStandaloneGenerator(cx, options, srcBuf, parameterListEnd,
+                                       syntaxKind);
       protoKey = JSProto_GeneratorFunction;
     } else {
-      if (!CompileStandaloneFunction(cx, &fun, options, srcBuf,
-                                     parameterListEnd)) {
-        return false;
-      }
+      fun = CompileStandaloneFunction(cx, options, srcBuf, parameterListEnd,
+                                      syntaxKind);
       protoKey = JSProto_Function;
     }
+  }
+  if (!fun) {
+    return false;
+  }
+
+  RootedValue undefValue(cx);
+  RootedScript funScript(cx, JS_GetFunctionScript(cx, fun));
+  if (funScript && !UpdateDebugMetadata(cx, funScript, options, undefValue,
+                                        nullptr, maybeScript, maybeScript)) {
+    return false;
+  }
+
+  if (fun->isInterpreted()) {
+    fun->initEnvironment(&cx->global()->lexicalEnvironment());
   }
 
   // Steps 6, 29.
@@ -1997,7 +1852,7 @@ bool JSFunction::isBuiltinFunctionConstructor() {
 }
 
 bool JSFunction::needsExtraBodyVarEnvironment() const {
-  if (isNative()) {
+  if (isNativeFun()) {
     return false;
   }
 
@@ -2019,6 +1874,22 @@ bool JSFunction::needsNamedLambdaEnvironment() const {
   }
 
   return scope->hasEnvironment();
+}
+
+bool JSFunction::needsCallObject() const {
+  if (isNativeFun()) {
+    return false;
+  }
+
+  MOZ_ASSERT(hasBytecode());
+
+  // Note: this should be kept in sync with
+  // FunctionBox::needsCallObjectRegardlessOfBindings().
+  MOZ_ASSERT_IF(
+      baseScript()->funHasExtensibleScope() || isGenerator() || isAsync(),
+      nonLazyScript()->bodyScope()->hasEnvironment());
+
+  return nonLazyScript()->bodyScope()->hasEnvironment();
 }
 
 JSFunction* js::NewScriptedFunction(
@@ -2068,6 +1939,8 @@ JSFunction* js::NewFunctionWithProto(
   MOZ_ASSERT_IF(native, !enclosingEnv);
   MOZ_ASSERT(NewFunctionEnvironmentIsWellFormed(cx, enclosingEnv));
 
+  // NOTE: Keep this in sync with `CreateFunctionFast` in Stencil.cpp
+
   JSFunction* fun =
       NewObjectWithClassProto<JSFunction>(cx, proto, allocKind, newKind);
   if (!fun) {
@@ -2089,7 +1962,7 @@ JSFunction* js::NewFunctionWithProto(
     fun->initScript(nullptr);
     fun->initEnvironment(enclosingEnv);
   } else {
-    MOZ_ASSERT(fun->isNative());
+    MOZ_ASSERT(fun->isNativeFun());
     fun->initNative(native, nullptr);
   }
   if (allocKind == gc::AllocKind::FUNCTION_EXTENDED) {
@@ -2103,6 +1976,15 @@ JSFunction* js::NewFunctionWithProto(
 bool js::GetFunctionPrototype(JSContext* cx, js::GeneratorKind generatorKind,
                               js::FunctionAsyncKind asyncKind,
                               js::MutableHandleObject proto) {
+  // Self-hosted functions have null [[Prototype]]. This allows self-hosting to
+  // support generators, despite this loop in the builtin object graph:
+  // - %Generator%.prototype.[[Prototype]] is Iterator.prototype;
+  // - Iterator.prototype has self-hosted methods (iterator helpers).
+  if (cx->realm()->isSelfHostingRealm()) {
+    proto.set(nullptr);
+    return true;
+  }
+
   if (generatorKind == js::GeneratorKind::NotGenerator) {
     if (asyncKind == js::FunctionAsyncKind::SyncFunction) {
       proto.set(nullptr);
@@ -2126,8 +2008,7 @@ bool js::CanReuseScriptForClone(JS::Realm* realm, HandleFunction fun,
                                 HandleObject newEnclosingEnv) {
   MOZ_ASSERT(fun->isInterpreted());
 
-  if (realm != fun->realm() || fun->isSingleton() ||
-      ObjectGroup::useSingletonForClone(fun)) {
+  if (realm != fun->realm()) {
     return false;
   }
 
@@ -2171,12 +2052,6 @@ static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
     return nullptr;
   }
 
-  // FunctionFlags::HAS_INFERRED_NAME can be set at compile-time and at
-  // runtime. In the latter case we should actually clear the flag before
-  // cloning the function, but since we can't differentiate between both
-  // cases here, we'll end up with a momentarily incorrect function name.
-  // This will be fixed up in SetFunctionName(), which should happen through
-  // JSOp::SetFunName directly after JSOp::Lambda.
   constexpr uint16_t NonCloneableFlags = FunctionFlags::EXTENDED |
                                          FunctionFlags::RESOLVED_LENGTH |
                                          FunctionFlags::RESOLVED_NAME;
@@ -2213,7 +2088,6 @@ static inline JSFunction* NewFunctionClone(JSContext* cx, HandleFunction fun,
 JSFunction* js::CloneFunctionReuseScript(JSContext* cx, HandleFunction fun,
                                          HandleObject enclosingEnv,
                                          gc::AllocKind allocKind,
-                                         NewObjectKind newKind,
                                          HandleObject proto) {
   MOZ_ASSERT(cx->realm() == fun->realm());
   MOZ_ASSERT(NewFunctionEnvironmentIsWellFormed(cx, enclosingEnv));
@@ -2221,17 +2095,7 @@ JSFunction* js::CloneFunctionReuseScript(JSContext* cx, HandleFunction fun,
   MOZ_ASSERT(!fun->isBoundFunction());
   MOZ_ASSERT(CanReuseScriptForClone(cx->realm(), fun, enclosingEnv));
 
-  // If an explicit prototype is present and this prototype doesn't match the
-  // original function's prototype and furthermore the original function's group
-  // has a type, then also create a type for the cloned function. This ensures
-  // derived class constructors will have a type assigned.
-  bool setTypeForFunction = proto && fun->staticPrototype() != proto &&
-                            fun->group()->maybeInterpretedFunction();
-  if (setTypeForFunction) {
-    // The function needs to be tenured when used as an object group addendum.
-    newKind = TenuredObject;
-  }
-
+  NewObjectKind newKind = GenericObject;
   RootedFunction clone(cx,
                        NewFunctionClone(cx, fun, newKind, allocKind, proto));
   if (!clone) {
@@ -2249,17 +2113,6 @@ JSFunction* js::CloneFunctionReuseScript(JSContext* cx, HandleFunction fun,
     clone->initEnvironment(enclosingEnv);
   }
 
-  /*
-   * Clone the function, reusing its script. We can use the same group as
-   * the original function provided that its prototype is correct.
-   */
-  if (fun->staticPrototype() == clone->staticPrototype()) {
-    clone->setGroup(fun->group());
-  } else if (setTypeForFunction) {
-    if (!JSFunction::setTypeForScriptedFunction(cx, clone)) {
-      return nullptr;
-    }
-  }
   return clone;
 }
 
@@ -2279,29 +2132,13 @@ JSFunction* js::CloneFunctionAndScript(JSContext* cx, HandleFunction fun,
   }
 
   RootedFunction clone(
-      cx, NewFunctionClone(cx, fun, SingletonObject, allocKind, proto));
+      cx, NewFunctionClone(cx, fun, TenuredObject, allocKind, proto));
   if (!clone) {
     return nullptr;
   }
 
   clone->initScript(nullptr);
   clone->initEnvironment(enclosingEnv);
-
-  /*
-   * Across compartments or if we have to introduce a non-syntactic scope we
-   * have to clone the script for interpreted functions. Cross-compartment
-   * cloning only happens via JSAPI (JS::CloneFunctionObject) which
-   * dynamically ensures that 'script' has no enclosing lexical scope (only
-   * the global scope or other non-lexical scope).
-   */
-#ifdef DEBUG
-  RootedObject terminatingEnv(cx, enclosingEnv);
-  while (IsSyntacticEnvironment(terminatingEnv)) {
-    terminatingEnv = terminatingEnv->enclosingEnvironment();
-  }
-  MOZ_ASSERT_IF(!terminatingEnv->is<GlobalObject>(),
-                newScope->hasOnChain(ScopeKind::NonSyntactic));
-#endif
 
   RootedScript script(cx, fun->nonLazyScript());
   MOZ_ASSERT(script->realm() == fun->realm());
@@ -2319,7 +2156,7 @@ JSFunction* js::CloneFunctionAndScript(JSContext* cx, HandleFunction fun,
 }
 
 JSFunction* js::CloneAsmJSModuleFunction(JSContext* cx, HandleFunction fun) {
-  MOZ_ASSERT(fun->isNative());
+  MOZ_ASSERT(fun->isNativeFun());
   MOZ_ASSERT(IsAsmJSModule(fun));
   MOZ_ASSERT(fun->isExtended());
   MOZ_ASSERT(cx->compartment() == fun->compartment());
@@ -2335,18 +2172,17 @@ JSFunction* js::CloneAsmJSModuleFunction(JSContext* cx, HandleFunction fun) {
   MOZ_ASSERT(!fun->hasJitInfo());
   clone->initNative(InstantiateAsmJS, nullptr);
 
-  clone->setGroup(fun->group());
   return clone;
 }
 
 JSFunction* js::CloneSelfHostingIntrinsic(JSContext* cx, HandleFunction fun) {
-  MOZ_ASSERT(fun->isNative());
+  MOZ_ASSERT(fun->isNativeFun());
   MOZ_ASSERT(fun->realm()->isSelfHostingRealm());
   MOZ_ASSERT(!fun->isExtended());
   MOZ_ASSERT(cx->compartment() != fun->compartment());
 
   JSFunction* clone =
-      NewFunctionClone(cx, fun, SingletonObject, gc::AllocKind::FUNCTION,
+      NewFunctionClone(cx, fun, TenuredObject, gc::AllocKind::FUNCTION,
                        /* proto = */ nullptr);
   if (!clone) {
     return nullptr;
@@ -2381,9 +2217,19 @@ static JSAtom* SymbolToFunctionName(JSContext* cx, JS::Symbol* symbol,
 
   // Step 4.b.
   if (desc) {
-    // Step 4.c.
-    if (!sb.append('[') || !sb.append(desc) || !sb.append(']')) {
-      return nullptr;
+    // Note: Private symbols are wedged in, as implementation wise they're
+    // PrivateNameSymbols with a the source level name as a description
+    // i.e. obj.#f desugars to obj.[PrivateNameSymbol("#f")], however
+    // they don't use the symbol naming, but rather property naming.
+    if (symbol->isPrivateName()) {
+      if (!sb.append(desc)) {
+        return nullptr;
+      }
+    } else {
+      // Step 4.c.
+      if (!sb.append('[') || !sb.append(desc) || !sb.append(']')) {
+        return nullptr;
+      }
     }
   }
   return sb.finishAtom();
@@ -2391,7 +2237,7 @@ static JSAtom* SymbolToFunctionName(JSContext* cx, JS::Symbol* symbol,
 
 static JSAtom* NameToFunctionName(JSContext* cx, HandleValue name,
                                   FunctionPrefixKind prefixKind) {
-  MOZ_ASSERT(name.isString() || name.isNumber());
+  MOZ_ASSERT(name.isString() || name.isNumeric());
 
   if (prefixKind == FunctionPrefixKind::None) {
     return ToAtom<CanGC>(cx, name);
@@ -2431,18 +2277,18 @@ static JSAtom* NameToFunctionName(JSContext* cx, HandleValue name,
 JSAtom* js::IdToFunctionName(
     JSContext* cx, HandleId id,
     FunctionPrefixKind prefixKind /* = FunctionPrefixKind::None */) {
-  MOZ_ASSERT(JSID_IS_STRING(id) || JSID_IS_SYMBOL(id) || JSID_IS_INT(id));
+  MOZ_ASSERT(id.isString() || id.isSymbol() || id.isInt());
 
   // No prefix fastpath.
-  if (JSID_IS_ATOM(id) && prefixKind == FunctionPrefixKind::None) {
-    return JSID_TO_ATOM(id);
+  if (id.isAtom() && prefixKind == FunctionPrefixKind::None) {
+    return id.toAtom();
   }
 
   // Step 3 (implicit).
 
   // Step 4.
-  if (JSID_IS_SYMBOL(id)) {
-    return SymbolToFunctionName(cx, JSID_TO_SYMBOL(id), prefixKind);
+  if (id.isSymbol()) {
+    return SymbolToFunctionName(cx, id.toSymbol(), prefixKind);
   }
 
   // Step 5.
@@ -2452,16 +2298,11 @@ JSAtom* js::IdToFunctionName(
 
 bool js::SetFunctionName(JSContext* cx, HandleFunction fun, HandleValue name,
                          FunctionPrefixKind prefixKind) {
-  MOZ_ASSERT(name.isString() || name.isSymbol() || name.isNumber());
+  MOZ_ASSERT(name.isString() || name.isSymbol() || name.isNumeric());
 
-  // `fun` is a newly created function, so normally it can't already have an
-  // inferred name. The rare exception is when `fun` was created by cloning
-  // a singleton function; see the comment in NewFunctionClone. In that case,
-  // the inferred name is bogus, so clear it out.
-  if (fun->hasInferredName()) {
-    MOZ_ASSERT(fun->isSingleton());
-    fun->clearInferredName();
-  }
+  // `fun` is a newly created function, so it can't already have an inferred
+  // name.
+  MOZ_ASSERT(!fun->hasInferredName());
 
   // Anonymous functions should neither have an own 'name' property nor a
   // resolved name at this point.
@@ -2517,7 +2358,7 @@ void js::ReportIncompatibleMethod(JSContext* cx, const CallArgs& args,
   switch (thisv.type()) {
     case ValueType::Object:
       MOZ_ASSERT(thisv.toObject().getClass() != clasp ||
-                 !thisv.toObject().isNative() ||
+                 !thisv.toObject().is<NativeObject>() ||
                  !thisv.toObject().staticPrototype() ||
                  thisv.toObject().staticPrototype()->getClass() != clasp);
       break;

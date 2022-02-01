@@ -8,28 +8,39 @@ from pathlib import Path
 import mozlog
 from mozdevice import ADBDevice, ADBError
 from mozperftest.layers import Layer
+from mozperftest.system.android_perf_tuner import tune_performance
 from mozperftest.utils import download_file
 
 
 _ROOT_URL = "https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/"
-_FENIX_FENNEC_BUILDS = (
-    "project.mobile.fenix.v2.fennec-nightly.latest/artifacts/public/build/"
+_FENIX_NIGHTLY_BUILDS = (
+    "mobile.v2.fenix.nightly.latest.{architecture}"
+    "/artifacts/public/build/{architecture}/target.apk"
 )
-_GV_BUILDS = "gecko.v2.mozilla-central.nightly.latest.mobile.android-"
+_GV_BUILDS = "gecko.v2.mozilla-central.shippable.latest.mobile.android-"
+_REFBROW_BUILDS = (
+    "mobile.v2.reference-browser.nightly.latest.{architecture}"
+    "/artifacts/public/target.{architecture}.apk"
+)
 
 _PERMALINKS = {
-    "fenix_fennec_nightly_armeabi_v7a": _ROOT_URL
-    + _FENIX_FENNEC_BUILDS
-    + "armeabi-v7a/geckoNightly/target.apk",
-    "fenix_fennec_nightly_arm64_v8a": _ROOT_URL
-    + _FENIX_FENNEC_BUILDS
-    + "arm64-v8a/geckoNightly/target.apk",
+    "fenix_nightly_armeabi_v7a": _ROOT_URL
+    + _FENIX_NIGHTLY_BUILDS.format(architecture="armeabi-v7a"),
+    "fenix_nightly_arm64_v8a": _ROOT_URL
+    + _FENIX_NIGHTLY_BUILDS.format(architecture="arm64-v8a"),
+    # The two following aliases are used for Fenix multi-commit testing in CI
+    "fenix_nightlysim_multicommit_arm64_v8a": None,
+    "fenix_nightlysim_multicommit_armeabi_v7a": None,
     "gve_nightly_aarch64": _ROOT_URL
     + _GV_BUILDS
     + "aarch64-opt/artifacts/public/build/geckoview_example.apk",
     "gve_nightly_api16": _ROOT_URL
     + _GV_BUILDS
-    + "api-16-opt/artifacts/public/build/geckoview_example.apk",
+    + "arm-opt/artifacts/public/build/geckoview_example.apk",
+    "refbrow_nightly_aarch64": _ROOT_URL
+    + _REFBROW_BUILDS.format(architecture="arm64-v8a"),
+    "refbrow_nightly_api16": _ROOT_URL
+    + _REFBROW_BUILDS.format(architecture="armeabi-v7a"),
 }
 
 
@@ -42,13 +53,12 @@ class ADBLoggedDevice(ADBDevice):
         self._provided_logger = kw.pop("logger")
         super(ADBLoggedDevice, self).__init__(*args, **kw)
 
-    def _get_logger(self, logger_name):
+    def _get_logger(self, logger_name, verbose):
         return self._provided_logger
 
 
 class AndroidDevice(Layer):
-    """Use an android device via ADB
-    """
+    """Use an android device via ADB"""
 
     name = "android"
     activated = False
@@ -61,7 +71,7 @@ class AndroidDevice(Layer):
         },
         "timeout": {
             "type": int,
-            "default": 30,
+            "default": 60,
             "help": "Timeout in seconds for adb operations",
         },
         "clear-logcat": {
@@ -82,6 +92,14 @@ class AndroidDevice(Layer):
             "default": None,
             "help": "Captures the logcat to the provided path.",
         },
+        "perf-tuning": {
+            "action": "store_true",
+            "default": False,
+            "help": (
+                "If set, device will be tuned for performance. "
+                "This helps with decreasing the noise."
+            ),
+        },
         "intent": {"type": str, "default": None, "help": "Intent to use"},
         "activity": {"type": str, "default": None, "help": "Activity to use"},
         "install-apk": {
@@ -98,7 +116,7 @@ class AndroidDevice(Layer):
     def __init__(self, env, mach_cmd):
         super(AndroidDevice, self).__init__(env, mach_cmd)
         self.android_activity = self.app_name = self.device = None
-        self.capture_file = None
+        self.capture_logcat = self.capture_file = None
 
     def setup(self):
         pass
@@ -121,7 +139,7 @@ class AndroidDevice(Layer):
             return Path(self.get_arg("output"), path)
         return path
 
-    def __call__(self, metadata):
+    def run(self, metadata):
         self.app_name = self.get_arg("android-app-name")
         self.android_activity = self.get_arg("android-activity")
         self.clear_logcat = self.get_arg("clear-logcat")
@@ -158,8 +176,10 @@ class AndroidDevice(Layer):
         if self.clear_logcat:
             self.device.clear_logcat()
 
-        # install APKs
+        # Install APKs
         for apk in self.get_arg("android-install-apk"):
+            self.info("Uninstalling old version")
+            self.device.uninstall_app(self.get_arg("android-app-name"))
             self.info("Installing %s" % apk)
             if apk in _PERMALINKS:
                 apk = _PERMALINKS[apk]
@@ -169,7 +189,7 @@ class AndroidDevice(Layer):
                     self.info("Downloading %s" % apk)
                     download_file(apk, target)
                     self.info("Installing downloaded APK")
-                    self.device.install_app(str(target), replace=True)
+                    self.device.install_app(str(target))
             else:
                 self.device.install_app(apk, replace=True)
             self.info("Done.")
@@ -177,6 +197,9 @@ class AndroidDevice(Layer):
         # checking that the app is installed
         if not self.device.is_app_installed(self.app_name):
             raise Exception("%s is not installed" % self.app_name)
+
+        if self.get_arg("android-perf-tuning", False):
+            tune_performance(self.device)
 
         # set up default activity with the app name if none given
         if self.android_activity is None:

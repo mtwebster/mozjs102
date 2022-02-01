@@ -6,14 +6,12 @@
 
 #include "builtin/String.h"
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/Range.h"
 #include "mozilla/TextUtils.h"
-#include "mozilla/Unused.h"
 
 #include <algorithm>
 #include <limits>
@@ -32,6 +30,8 @@
 #include "builtin/RegExp.h"
 #include "jit/InlinableNatives.h"
 #include "js/Conversions.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #if !JS_HAS_INTL_API
 #  include "js/LocaleSensitive.h"
 #endif
@@ -57,13 +57,13 @@
 #include "vm/RegExpObject.h"
 #include "vm/RegExpStatics.h"
 #include "vm/SelfHosting.h"
-#include "vm/ToSource.h"  // js::ValueToSource
+#include "vm/ToSource.h"       // js::ValueToSource
+#include "vm/WellKnownAtom.h"  // js_*_str
 
 #include "vm/InlineCharBuffer-inl.h"
 #include "vm/Interpreter-inl.h"
 #include "vm/StringObject-inl.h"
 #include "vm/StringType-inl.h"
-#include "vm/TypeInference-inl.h"
 
 using namespace js;
 
@@ -467,8 +467,9 @@ const JSClass StringObject::class_ = {
  * from nearly all String.prototype.* functions.
  */
 static MOZ_ALWAYS_INLINE JSString* ToStringForStringFunction(
-    JSContext* cx, HandleValue thisv) {
-  if (!CheckRecursionLimit(cx)) {
+    JSContext* cx, const char* funName, HandleValue thisv) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return nullptr;
   }
 
@@ -489,8 +490,8 @@ static MOZ_ALWAYS_INLINE JSString* ToStringForStringFunction(
     }
   } else if (thisv.isNullOrUndefined()) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_CANT_CONVERT_TO,
-                              thisv.isNull() ? "null" : "undefined", "object");
+                              JSMSG_INCOMPATIBLE_PROTO, "String", funName,
+                              thisv.isNull() ? "null" : "undefined");
     return nullptr;
   }
 
@@ -872,7 +873,8 @@ JSString* js::StringToLowerCase(JSContext* cx, HandleString string) {
 static bool str_toLowerCase(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx,
+                   ToStringForStringFunction(cx, "toLowerCase", args.thisv()));
   if (!str) {
     return false;
   }
@@ -985,7 +987,8 @@ bool js::intl_toLocaleLowerCase(JSContext* cx, unsigned argc, Value* vp) {
 static bool str_toLocaleLowerCase(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(
+      cx, ToStringForStringFunction(cx, "toLocaleLowerCase", args.thisv()));
   if (!str) {
     return false;
   }
@@ -1310,7 +1313,8 @@ JSString* js::StringToUpperCase(JSContext* cx, HandleString string) {
 static bool str_toUpperCase(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx,
+                   ToStringForStringFunction(cx, "toUpperCase", args.thisv()));
   if (!str) {
     return false;
   }
@@ -1397,7 +1401,8 @@ bool js::intl_toLocaleUpperCase(JSContext* cx, unsigned argc, Value* vp) {
 static bool str_toLocaleUpperCase(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(
+      cx, ToStringForStringFunction(cx, "toLocaleUpperCase", args.thisv()));
   if (!str) {
     return false;
   }
@@ -1445,7 +1450,8 @@ static bool str_toLocaleUpperCase(JSContext* cx, unsigned argc, Value* vp) {
 // JSLocaleCallbacks) when Intl functionality is not exposed.
 static bool str_localeCompare(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(
+      cx, ToStringForStringFunction(cx, "localeCompare", args.thisv()));
   if (!str) {
     return false;
   }
@@ -1489,7 +1495,8 @@ static bool str_normalize(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1-2.
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx,
+                   ToStringForStringFunction(cx, "normalize", args.thisv()));
   if (!str) {
     return false;
   }
@@ -1628,7 +1635,7 @@ static bool str_charAt(JSContext* cx, unsigned argc, Value* vp) {
       goto out_of_range;
     }
   } else {
-    str = ToStringForStringFunction(cx, args.thisv());
+    str = ToStringForStringFunction(cx, "charAt", args.thisv());
     if (!str) {
       return false;
     }
@@ -1694,7 +1701,7 @@ bool js::str_charCodeAt(JSContext* cx, unsigned argc, Value* vp) {
   if (args.thisv().isString()) {
     str = args.thisv().toString();
   } else {
-    str = ToStringForStringFunction(cx, args.thisv());
+    str = ToStringForStringFunction(cx, "charCodeAt", args.thisv());
     if (!str) {
       return false;
     }
@@ -1993,7 +2000,7 @@ class StringSegmentRange {
   explicit StringSegmentRange(JSContext* cx)
       : stack(cx, StackVector(cx)), cur(cx) {}
 
-  MOZ_MUST_USE bool init(JSString* str) {
+  [[nodiscard]] bool init(JSString* str) {
     MOZ_ASSERT(stack.empty());
     return settle(str);
   }
@@ -2005,7 +2012,7 @@ class StringSegmentRange {
     return cur;
   }
 
-  MOZ_MUST_USE bool popFront() {
+  [[nodiscard]] bool popFront() {
     MOZ_ASSERT(!empty());
     if (stack.empty()) {
       cur = nullptr;
@@ -2185,7 +2192,7 @@ bool js::str_includes(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1-2.
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx, ToStringForStringFunction(cx, "includes", args.thisv()));
   if (!str) {
     return false;
   }
@@ -2237,7 +2244,7 @@ bool js::str_indexOf(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1, 2, and 3
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx, ToStringForStringFunction(cx, "indexOf", args.thisv()));
   if (!str) {
     return false;
   }
@@ -2321,7 +2328,8 @@ static bool str_lastIndexOf(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1-2.
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx,
+                   ToStringForStringFunction(cx, "lastIndexOf", args.thisv()));
   if (!str) {
     return false;
   }
@@ -2418,7 +2426,8 @@ bool js::str_startsWith(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1-2.
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx,
+                   ToStringForStringFunction(cx, "startsWith", args.thisv()));
   if (!str) {
     return false;
   }
@@ -2480,7 +2489,7 @@ bool js::str_endsWith(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Steps 1-2.
-  RootedString str(cx, ToStringForStringFunction(cx, args.thisv()));
+  RootedString str(cx, ToStringForStringFunction(cx, "endsWith", args.thisv()));
   if (!str) {
     return false;
   }
@@ -2560,9 +2569,9 @@ static void TrimString(const CharT* chars, bool trimStart, bool trimEnd,
   *pEnd = end;
 }
 
-static bool TrimString(JSContext* cx, const CallArgs& args, bool trimStart,
-                       bool trimEnd) {
-  JSString* str = ToStringForStringFunction(cx, args.thisv());
+static bool TrimString(JSContext* cx, const CallArgs& args, const char* funName,
+                       bool trimStart, bool trimEnd) {
+  JSString* str = ToStringForStringFunction(cx, funName, args.thisv());
   if (!str) {
     return false;
   }
@@ -2595,17 +2604,17 @@ static bool TrimString(JSContext* cx, const CallArgs& args, bool trimStart,
 
 static bool str_trim(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
-  return TrimString(cx, args, true, true);
+  return TrimString(cx, args, "trim", true, true);
 }
 
 static bool str_trimStart(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
-  return TrimString(cx, args, true, false);
+  return TrimString(cx, args, "trimStart", true, false);
 }
 
 static bool str_trimEnd(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
-  return TrimString(cx, args, false, true);
+  return TrimString(cx, args, "trimEnd", false, true);
 }
 
 // Utility for building a rope (lazy concatenation) of strings.
@@ -3289,30 +3298,9 @@ JSString* js::str_replaceAll_string_raw(JSContext* cx, HandleString string,
   return ReplaceAll<Latin1Char, Latin1Char>(cx, str, search, repl);
 }
 
-static ArrayObject* NewFullyAllocatedStringArray(JSContext* cx,
-                                                 HandleObjectGroup group,
-                                                 uint32_t length) {
-  ArrayObject* array = NewFullyAllocatedArrayTryUseGroup(cx, group, length);
-  if (!array) {
-    return nullptr;
-  }
-
-  // Only string values will be added to this array. Inform TI early about
-  // the element type, so we can directly initialize all elements using
-  // NativeObject::initDenseElement() instead of the slightly more expensive
-  // NativeObject::initDenseElementWithType() method.
-  // Since this function is never called to create a zero-length array, it's
-  // always necessary and correct to call AddTypePropertyId here.
-  MOZ_ASSERT(length > 0);
-  AddTypePropertyId(cx, array, JSID_VOID, TypeSet::StringType());
-
-  return array;
-}
-
 static ArrayObject* SingleElementStringArray(JSContext* cx,
-                                             HandleObjectGroup group,
                                              HandleLinearString str) {
-  ArrayObject* array = NewFullyAllocatedStringArray(cx, group, 1);
+  ArrayObject* array = NewDenseFullyAllocatedArray(cx, 1);
   if (!array) {
     return nullptr;
   }
@@ -3323,8 +3311,7 @@ static ArrayObject* SingleElementStringArray(JSContext* cx,
 
 // ES 2016 draft Mar 25, 2016 21.1.3.17 steps 4, 8, 12-18.
 static ArrayObject* SplitHelper(JSContext* cx, HandleLinearString str,
-                                uint32_t limit, HandleLinearString sep,
-                                HandleObjectGroup group) {
+                                uint32_t limit, HandleLinearString sep) {
   size_t strLength = str->length();
   size_t sepLength = sep->length();
   MOZ_ASSERT(sepLength != 0);
@@ -3336,11 +3323,11 @@ static ArrayObject* SplitHelper(JSContext* cx, HandleLinearString str,
 
     // Step 12.b.
     if (match != -1) {
-      return NewFullyAllocatedArrayTryUseGroup(cx, group, 0);
+      return NewDenseEmptyArray(cx);
     }
 
     // Steps 12.c-e.
-    return SingleElementStringArray(cx, group, str);
+    return SingleElementStringArray(cx, str);
   }
 
   // Step 3 (reordered).
@@ -3399,8 +3386,7 @@ static ArrayObject* SplitHelper(JSContext* cx, HandleLinearString str,
 
     // Step 14.c.ii.5.
     if (splits.length() == limit) {
-      return NewCopiedArrayTryUseGroup(cx, group, splits.begin(),
-                                       splits.length());
+      return NewDenseCopiedArray(cx, splits.length(), splits.begin());
     }
 
     // Step 14.c.ii.6.
@@ -3420,15 +3406,15 @@ static ArrayObject* SplitHelper(JSContext* cx, HandleLinearString str,
   }
 
   // Step 18.
-  return NewCopiedArrayTryUseGroup(cx, group, splits.begin(), splits.length());
+  return NewDenseCopiedArray(cx, splits.length(), splits.begin());
 }
 
 // Fast-path for splitting a string into a character array via split("").
 static ArrayObject* CharSplitHelper(JSContext* cx, HandleLinearString str,
-                                    uint32_t limit, HandleObjectGroup group) {
+                                    uint32_t limit) {
   size_t strLength = str->length();
   if (strLength == 0) {
-    return NewFullyAllocatedArrayTryUseGroup(cx, group, 0);
+    return NewDenseEmptyArray(cx);
   }
 
   js::StaticStrings& staticStrings = cx->staticStrings();
@@ -3437,8 +3423,7 @@ static ArrayObject* CharSplitHelper(JSContext* cx, HandleLinearString str,
              "Neither limit nor strLength is zero, so resultlen is greater "
              "than zero.");
 
-  RootedArrayObject splits(cx,
-                           NewFullyAllocatedStringArray(cx, group, resultlen));
+  RootedArrayObject splits(cx, NewDenseFullyAllocatedArray(cx, resultlen));
   if (!splits) {
     return nullptr;
   }
@@ -3454,7 +3439,7 @@ static ArrayObject* CharSplitHelper(JSContext* cx, HandleLinearString str,
       splits->initDenseElement(i, StringValue(staticStrings.getUnit(c)));
     }
   } else {
-    splits->ensureDenseInitializedLength(cx, 0, resultlen);
+    splits->ensureDenseInitializedLength(0, resultlen);
 
     for (size_t i = 0; i < resultlen; ++i) {
       JSString* sub = staticStrings.getUnitStringForElement(cx, str, i);
@@ -3471,7 +3456,7 @@ static ArrayObject* CharSplitHelper(JSContext* cx, HandleLinearString str,
 template <typename TextChar>
 static MOZ_ALWAYS_INLINE ArrayObject* SplitSingleCharHelper(
     JSContext* cx, HandleLinearString str, const TextChar* text,
-    uint32_t textLen, char16_t patCh, HandleObjectGroup group) {
+    uint32_t textLen, char16_t patCh) {
   // Count the number of occurrences of patCh within text.
   uint32_t count = 0;
   for (size_t index = 0; index < textLen; index++) {
@@ -3482,16 +3467,15 @@ static MOZ_ALWAYS_INLINE ArrayObject* SplitSingleCharHelper(
 
   // Handle zero-occurrence case - return input string in an array.
   if (count == 0) {
-    return SingleElementStringArray(cx, group, str);
+    return SingleElementStringArray(cx, str);
   }
 
   // Create the result array for the substring values.
-  RootedArrayObject splits(cx,
-                           NewFullyAllocatedStringArray(cx, group, count + 1));
+  RootedArrayObject splits(cx, NewDenseFullyAllocatedArray(cx, count + 1));
   if (!splits) {
     return nullptr;
   }
-  splits->ensureDenseInitializedLength(cx, 0, count + 1);
+  splits->ensureDenseInitializedLength(0, count + 1);
 
   // Add substrings.
   uint32_t splitsIndex = 0;
@@ -3521,8 +3505,7 @@ static MOZ_ALWAYS_INLINE ArrayObject* SplitSingleCharHelper(
 
 // ES 2016 draft Mar 25, 2016 21.1.3.17 steps 4, 8, 12-18.
 static ArrayObject* SplitSingleCharHelper(JSContext* cx, HandleLinearString str,
-                                          char16_t ch,
-                                          HandleObjectGroup group) {
+                                          char16_t ch) {
   // Step 12.
   size_t strLength = str->length();
 
@@ -3533,17 +3516,16 @@ static ArrayObject* SplitSingleCharHelper(JSContext* cx, HandleLinearString str,
 
   if (linearChars.isLatin1()) {
     return SplitSingleCharHelper(cx, str, linearChars.latin1Chars(), strLength,
-                                 ch, group);
+                                 ch);
   }
 
   return SplitSingleCharHelper(cx, str, linearChars.twoByteChars(), strLength,
-                               ch, group);
+                               ch);
 }
 
 // ES 2016 draft Mar 25, 2016 21.1.3.17 steps 4, 8, 12-18.
-ArrayObject* js::StringSplitString(JSContext* cx, HandleObjectGroup group,
-                                   HandleString str, HandleString sep,
-                                   uint32_t limit) {
+ArrayObject* js::StringSplitString(JSContext* cx, HandleString str,
+                                   HandleString sep, uint32_t limit) {
   MOZ_ASSERT(limit > 0, "Only called for strictly positive limit.");
 
   RootedLinearString linearStr(cx, str->ensureLinear(cx));
@@ -3557,60 +3539,23 @@ ArrayObject* js::StringSplitString(JSContext* cx, HandleObjectGroup group,
   }
 
   if (linearSep->length() == 0) {
-    return CharSplitHelper(cx, linearStr, limit, group);
+    return CharSplitHelper(cx, linearStr, limit);
   }
 
   if (linearSep->length() == 1 && limit >= static_cast<uint32_t>(INT32_MAX)) {
     char16_t ch = linearSep->latin1OrTwoByteChar(0);
-    return SplitSingleCharHelper(cx, linearStr, ch, group);
+    return SplitSingleCharHelper(cx, linearStr, ch);
   }
 
-  return SplitHelper(cx, linearStr, limit, linearSep, group);
-}
-
-/*
- * Python-esque sequence operations.
- */
-static bool str_concat(JSContext* cx, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  JSString* str = ToStringForStringFunction(cx, args.thisv());
-  if (!str) {
-    return false;
-  }
-
-  for (unsigned i = 0; i < args.length(); i++) {
-    JSString* argStr = ToString<NoGC>(cx, args[i]);
-    if (!argStr) {
-      RootedString strRoot(cx, str);
-      argStr = ToString<CanGC>(cx, args[i]);
-      if (!argStr) {
-        return false;
-      }
-      str = strRoot;
-    }
-
-    JSString* next = ConcatStrings<NoGC>(cx, str, argStr);
-    if (next) {
-      str = next;
-    } else {
-      RootedString strRoot(cx, str), argStrRoot(cx, argStr);
-      str = ConcatStrings<CanGC>(cx, strRoot, argStrRoot);
-      if (!str) {
-        return false;
-      }
-    }
-  }
-
-  args.rval().setString(str);
-  return true;
+  return SplitHelper(cx, linearStr, limit, linearSep);
 }
 
 static const JSFunctionSpec string_methods[] = {
     JS_FN(js_toSource_str, str_toSource, 0, 0),
 
     /* Java-like methods. */
-    JS_FN(js_toString_str, str_toString, 0, 0),
-    JS_FN(js_valueOf_str, str_toString, 0, 0),
+    JS_INLINABLE_FN(js_toString_str, str_toString, 0, 0, StringToString),
+    JS_INLINABLE_FN(js_valueOf_str, str_toString, 0, 0, StringValueOf),
     JS_INLINABLE_FN("toLowerCase", str_toLowerCase, 0, 0, StringToLowerCase),
     JS_INLINABLE_FN("toUpperCase", str_toUpperCase, 0, 0, StringToUpperCase),
     JS_INLINABLE_FN("charAt", str_charAt, 1, 0, StringCharAt),
@@ -3649,8 +3594,10 @@ static const JSFunctionSpec string_methods[] = {
     JS_SELF_HOSTED_FN("substr", "String_substr", 2, 0),
 
     /* Python-esque sequence methods. */
-    JS_FN("concat", str_concat, 1, 0),
+    JS_SELF_HOSTED_FN("concat", "String_concat", 1, 0),
     JS_SELF_HOSTED_FN("slice", "String_slice", 2, 0),
+
+    JS_SELF_HOSTED_FN("at", "String_at", 1, 0),
 
     /* HTML string methods. */
     JS_SELF_HOSTED_FN("bold", "String_bold", 0, 0),
@@ -3929,8 +3876,12 @@ Shape* StringObject::assignInitialShape(JSContext* cx,
                                         Handle<StringObject*> obj) {
   MOZ_ASSERT(obj->empty());
 
-  return NativeObject::addDataProperty(cx, obj, cx->names().length, LENGTH_SLOT,
-                                       JSPROP_PERMANENT | JSPROP_READONLY);
+  if (!NativeObject::addPropertyInReservedSlot(cx, obj, cx->names().length,
+                                               LENGTH_SLOT, {})) {
+    return nullptr;
+  }
+
+  return obj->shape();
 }
 
 JSObject* StringObject::createPrototype(JSContext* cx, JSProtoKey key) {

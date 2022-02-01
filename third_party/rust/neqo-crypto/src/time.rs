@@ -4,6 +4,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(
+    unknown_lints,
+    renamed_and_removed_lints,
+    clippy::unknown_clippy_lints,
+    clippy::upper_case_acronyms
+)] // Until we require rust 1.51.
+
 use crate::agentio::as_c_void;
 use crate::err::{Error, Res};
 use crate::once::OnceResult;
@@ -104,11 +111,9 @@ impl TryFrom<PRTime> for Time {
         let base = get_base();
         if let Some(delta) = prtime.checked_sub(base.prtime) {
             let d = Duration::from_micros(delta.try_into()?);
-            if let Some(t) = base.instant.checked_add(d) {
-                Ok(Self { t })
-            } else {
-                Err(Error::TimeTravelError)
-            }
+            base.instant
+                .checked_add(d)
+                .map_or(Err(Error::TimeTravelError), |t| Ok(Self { t }))
         } else {
             Err(Error::TimeTravelError)
         }
@@ -122,20 +127,17 @@ impl TryInto<PRTime> for Time {
         // TODO(mt) use checked_duration_since when that is available.
         let delta = self.t.duration_since(base.instant);
         if let Ok(d) = PRTime::try_from(delta.as_micros()) {
-            if let Some(v) = d.checked_add(base.prtime) {
-                Ok(v)
-            } else {
-                Err(Error::TimeTravelError)
-            }
+            d.checked_add(base.prtime).ok_or(Error::TimeTravelError)
         } else {
             Err(Error::TimeTravelError)
         }
     }
 }
 
-impl Into<Instant> for Time {
-    fn into(self) -> Instant {
-        self.t
+impl From<Time> for Instant {
+    #[must_use]
+    fn from(t: Time) -> Self {
+        t.t
     }
 }
 
@@ -182,7 +184,7 @@ pub struct TimeHolder {
 
 impl TimeHolder {
     unsafe extern "C" fn time_func(arg: *mut c_void) -> PRTime {
-        let p = arg as *mut PRTime as *const PRTime;
+        let p = arg as *const PRTime;
         *p.as_ref().unwrap()
     }
 
@@ -204,7 +206,10 @@ impl Default for TimeHolder {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::{get_base, init, Interval, PRTime, Time};
+    use crate::err::Res;
+    use std::convert::{TryFrom, TryInto};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn convert_stable() {
@@ -241,10 +246,9 @@ mod test {
     // We allow replace_consts here because
     // std::u64::max_value() isn't available
     // in all of our targets
-    #[allow(clippy::replace_consts)]
     fn overflow_interval() {
         init();
-        let interval = Interval::from(Duration::from_micros(std::u64::MAX));
+        let interval = Interval::from(Duration::from_micros(u64::max_value()));
         let res: Res<PRTime> = interval.try_into();
         assert!(res.is_err());
     }

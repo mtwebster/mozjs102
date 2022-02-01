@@ -4,16 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"  // mozilla::ArrayLength
-#include "mozilla/Utf8.h"        // mozilla::Utf8Unit
+#include "mozilla/Utf8.h"  // mozilla::Utf8Unit
 
 #include "jsfriendapi.h"
 
 #include "js/BuildId.h"  // JS::BuildIdCharVector, JS::SetProcessBuildIdOp
 #include "js/CompilationAndEvaluation.h"  // JS::Compile
+#include "js/CompileOptions.h"            // JS::CompileOptions
 #include "js/SourceText.h"                // JS::Source{Ownership,Text}
 #include "js/Transcoding.h"
 #include "jsapi-tests/tests.h"
+#include "util/Text.h"
 #include "vm/JSScript.h"
 
 #include "vm/JSScript-inl.h"
@@ -23,20 +24,21 @@ static bool GetBuildId(JS::BuildIdCharVector* buildId) {
   return buildId->append(buildid, sizeof(buildid));
 }
 
-static JSScript* FreezeThaw(JSContext* cx, JS::HandleScript script) {
+static JSScript* FreezeThaw(JSContext* cx, JS::CompileOptions& options,
+                            JS::HandleScript script) {
   JS::SetProcessBuildIdOp(::GetBuildId);
 
   // freeze
   JS::TranscodeBuffer buffer;
   JS::TranscodeResult rs = JS::EncodeScript(cx, buffer, script);
-  if (rs != JS::TranscodeResult_Ok) {
+  if (rs != JS::TranscodeResult::Ok) {
     return nullptr;
   }
 
   // thaw
   JS::RootedScript script2(cx);
-  rs = JS::DecodeScript(cx, buffer, &script2);
-  if (rs != JS::TranscodeResult_Ok) {
+  rs = JS::DecodeScript(cx, options, buffer, &script2);
+  if (rs != JS::TranscodeResult::Ok) {
     return nullptr;
   }
   return script2;
@@ -65,13 +67,12 @@ BEGIN_TEST(testXDR_bug506491) {
   options.setFileAndLine(__FILE__, __LINE__);
 
   JS::SourceText<mozilla::Utf8Unit> srcBuf;
-  CHECK(srcBuf.init(cx, s, mozilla::ArrayLength(s) - 1,
-                    JS::SourceOwnership::Borrowed));
+  CHECK(srcBuf.init(cx, s, js_strlen(s), JS::SourceOwnership::Borrowed));
 
   JS::RootedScript script(cx, JS::Compile(cx, options, srcBuf));
   CHECK(script);
 
-  script = FreezeThaw(cx, script);
+  script = FreezeThaw(cx, options, script);
   CHECK(script);
 
   // execute
@@ -100,7 +101,7 @@ BEGIN_TEST(testXDR_bug516827) {
   JS::RootedScript script(cx, JS::Compile(cx, options, srcBuf));
   CHECK(script);
 
-  script = FreezeThaw(cx, script);
+  script = FreezeThaw(cx, options, script);
   CHECK(script);
 
   // execute with null result meaning no result wanted
@@ -132,7 +133,7 @@ BEGIN_TEST(testXDR_source) {
     JS::RootedScript script(cx, JS::Compile(cx, options, srcBuf));
     CHECK(script);
 
-    script = FreezeThaw(cx, script);
+    script = FreezeThaw(cx, options, script);
     CHECK(script);
 
     JSString* out = JS_DecompileScript(cx, script);
@@ -167,7 +168,7 @@ BEGIN_TEST(testXDR_sourceMap) {
 
     // The script source takes responsibility of free'ing |expected|.
     CHECK(script->scriptSource()->setSourceMapURL(cx, expected));
-    script = FreezeThaw(cx, script);
+    script = FreezeThaw(cx, options, script);
     CHECK(script);
     CHECK(script->scriptSource());
     CHECK(script->scriptSource()->hasSourceMapURL());

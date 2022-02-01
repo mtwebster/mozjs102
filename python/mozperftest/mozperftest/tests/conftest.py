@@ -1,8 +1,12 @@
 import json
+import os
 import pathlib
 import pytest
-from mozperftest.tests.support import temp_dir
+
+from mozperftest.metrics.notebook.perftestetl import PerftestETL
+from mozperftest.tests.support import get_running_env, HERE
 from mozperftest.metrics.notebook.perftestnotebook import PerftestNotebook
+from mozperftest.utils import temp_dir
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -32,6 +36,22 @@ def data():
     }
 
     yield {"data_1": data_1, "data_2": data_2, "data_3": data_3}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def standarized_data():
+    return {
+        "browsertime": [
+            {
+                "data": [
+                    {"value": 1, "xaxis": 1, "file": "file_1"},
+                    {"value": 2, "xaxis": 2, "file": "file_2"},
+                ],
+                "name": "name",
+                "subtest": "subtest",
+            }
+        ]
+    }
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -66,17 +86,52 @@ def files(data):
 
     output = dirs["output"] / "output.json"
 
-    yield resources, dirs, output.resolve().as_posix()
+    yield {
+        "resources": resources,
+        "dirs": dirs,
+        "output": output,
+    }
 
 
 @pytest.fixture(scope="session", autouse=True)
-def ptnbs(files):
-    resources, dirs, output = files
+def ptetls(files):
+    resources, dirs, output = files["resources"], files["dirs"], files["output"]
+    _, metadata, _ = get_running_env()
     config = {"output": output}
     file_group_list = {"group_1": list(resources.values())}
     file_group_str = {"group_1": dirs["resources"].resolve().as_posix()}
 
     yield {
-        "ptnb_list": PerftestNotebook(file_group_list, config, sort_files=True),
-        "ptnb_str": PerftestNotebook(file_group_str, config, sort_files=True),
+        "ptetl_list": PerftestETL(
+            file_groups=file_group_list,
+            config=config,
+            prefix="PerftestETL",
+            logger=metadata,
+            sort_files=True,
+        ),
+        "ptetl_str": PerftestETL(
+            file_groups=file_group_str,
+            config=config,
+            prefix="PerftestETL",
+            logger=metadata,
+            sort_files=True,
+        ),
     }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ptnb(standarized_data):
+    _, metadata, _ = get_running_env()
+    return PerftestNotebook(standarized_data, metadata, "PerftestNotebook")
+
+
+@pytest.fixture(scope="function", autouse=True)
+def perftestetl_plugin():
+
+    ret = HERE / "data" / "perftestetl_plugin"
+
+    os.environ["PERFTESTETL_PLUGIN"] = ret.resolve().as_posix()
+
+    yield ret
+
+    del os.environ["PERFTESTETL_PLUGIN"]

@@ -14,7 +14,6 @@
 #include <stdint.h>  // for uint32_t, SIZE_MAX, int32_t
 
 #include "jsapi.h"             // for CallArgs, Rooted, CallArgsFromVp
-#include "jsfriendapi.h"       // for GetErrorMessage
 #include "jsnum.h"             // for ToNumber
 #include "NamespaceImports.h"  // for CallArgs, RootedValue
 
@@ -28,26 +27,29 @@
 #include "gc/Tracer.h"         // for TraceManuallyBarrieredCrossCompartmentEdge
 #include "gc/Zone.h"           // for Zone
 #include "gc/ZoneAllocator.h"  // for AddCellMemory
-#include "js/HeapAPI.h"        // for GCCellPtr
-#include "js/Wrapper.h"        // for UncheckedUnwrap
-#include "vm/ArrayObject.h"    // for ArrayObject
-#include "vm/BytecodeUtil.h"   // for GET_JUMP_OFFSET
-#include "vm/GlobalObject.h"   // for GlobalObject
-#include "vm/JSContext.h"      // for JSContext, ReportValueError
-#include "vm/JSFunction.h"     // for JSFunction
-#include "vm/JSObject.h"       // for RequireObject, JSObject
-#include "vm/ObjectOperations.h"  // for DefineDataProperty, HasOwnProperty
-#include "vm/PlainObject.h"       // for js::PlainObject
-#include "vm/Realm.h"             // for AutoRealm
-#include "vm/Runtime.h"           // for JSAtomState, JSRuntime
-#include "vm/StringType.h"        // for NameToId, PropertyName, JSAtom
-#include "wasm/WasmDebug.h"       // for ExprLoc, DebugState
-#include "wasm/WasmInstance.h"    // for Instance
-#include "wasm/WasmTypes.h"       // for Bytes
+#include "js/friend/ErrorMessages.h"  // for GetErrorMessage, JSMSG_*
+#include "js/HeapAPI.h"               // for GCCellPtr
+#include "js/Wrapper.h"               // for UncheckedUnwrap
+#include "vm/ArrayObject.h"           // for ArrayObject
+#include "vm/BytecodeUtil.h"          // for GET_JUMP_OFFSET
+#include "vm/GlobalObject.h"          // for GlobalObject
+#include "vm/JSContext.h"             // for JSContext, ReportValueError
+#include "vm/JSFunction.h"            // for JSFunction
+#include "vm/JSObject.h"              // for RequireObject, JSObject
+#include "vm/ObjectOperations.h"      // for DefineDataProperty, HasOwnProperty
+#include "vm/PlainObject.h"           // for js::PlainObject
+#include "vm/Realm.h"                 // for AutoRealm
+#include "vm/Runtime.h"               // for JSAtomState, JSRuntime
+#include "vm/StringType.h"            // for NameToId, PropertyName, JSAtom
+#include "wasm/WasmDebug.h"           // for ExprLoc, DebugState
+#include "wasm/WasmInstance.h"        // for Instance
+#include "wasm/WasmJS.h"              // for WasmInstanceObject
+#include "wasm/WasmTypes.h"           // for Bytes
 
 #include "vm/BytecodeUtil-inl.h"  // for BytecodeRangeWithPosition
 #include "vm/JSAtom-inl.h"        // for ValueToId
 #include "vm/JSObject-inl.h"  // for NewBuiltinClassInstance, NewObjectWithGivenProto, NewTenuredObjectWithGivenProto
+#include "vm/JSScript-inl.h"  // for JSScript::global
 #include "vm/ObjectOperations-inl.h"  // for GetProperty
 #include "vm/Realm-inl.h"             // for AutoRealm::AutoRealm
 
@@ -167,8 +169,8 @@ DebuggerScript* DebuggerScript::check(JSContext* cx, HandleValue v) {
   DebuggerScript& scriptObj = thisobj->as<DebuggerScript>();
 
   // Check for Debugger.Script.prototype, which is of class
-  // DebuggerScript::class but whose script is null.
-  if (!scriptObj.getReferentCell()) {
+  // DebuggerScript::class.
+  if (!scriptObj.isInstance()) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_INCOMPATIBLE_PROTO, "Debugger.Script",
                               "method", "prototype object");
@@ -193,7 +195,7 @@ struct MOZ_STACK_CLASS DebuggerScript::CallData {
         referent(cx, obj->getReferent()),
         script(cx) {}
 
-  MOZ_MUST_USE bool ensureScriptMaybeLazy() {
+  [[nodiscard]] bool ensureScriptMaybeLazy() {
     if (!referent.is<BaseScript*>()) {
       ReportValueError(cx, JSMSG_DEBUG_BAD_REFERENT, JSDVG_SEARCH_STACK,
                        args.thisv(), nullptr, "a JS script");
@@ -202,7 +204,7 @@ struct MOZ_STACK_CLASS DebuggerScript::CallData {
     return true;
   }
 
-  MOZ_MUST_USE bool ensureScript() {
+  [[nodiscard]] bool ensureScript() {
     if (!ensureScriptMaybeLazy()) {
       return false;
     }
@@ -218,6 +220,7 @@ struct MOZ_STACK_CLASS DebuggerScript::CallData {
   bool getIsFunction();
   bool getIsModule();
   bool getDisplayName();
+  bool getParameterNames();
   bool getUrl();
   bool getStartLine();
   bool getStartColumn();
@@ -233,8 +236,6 @@ struct MOZ_STACK_CLASS DebuggerScript::CallData {
   bool getPossibleBreakpointOffsets();
   bool getOffsetMetadata();
   bool getOffsetLocation();
-  template <bool Successor>
-  bool getSuccessorOrPredecessorOffsets();
   bool getEffectfulOffsets();
   bool getAllOffsets();
   bool getAllColumnOffsets();
@@ -245,7 +246,6 @@ struct MOZ_STACK_CLASS DebuggerScript::CallData {
   bool clearAllBreakpoints();
   bool isInCatchScope();
   bool getOffsetsCoverage();
-  bool setInstrumentationId();
 
   using Method = bool (CallData::*)();
 
@@ -308,7 +308,7 @@ bool DebuggerScript::CallData::getDisplayName() {
     return false;
   }
   JSFunction* func = obj->getReferentScript()->function();
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   JSString* name = func ? func->displayAtom() : nullptr;
   if (!name) {
@@ -321,6 +321,26 @@ bool DebuggerScript::CallData::getDisplayName() {
     return false;
   }
   args.rval().set(namev);
+  return true;
+}
+
+bool DebuggerScript::CallData::getParameterNames() {
+  if (!ensureScript()) {
+    return false;
+  }
+
+  RootedFunction fun(cx, referent.as<BaseScript*>()->function());
+  if (!fun) {
+    args.rval().setUndefined();
+    return true;
+  }
+
+  ArrayObject* arr = GetFunctionParameterNamesArray(cx, fun);
+  if (!arr) {
+    return false;
+  }
+
+  args.rval().setObject(*arr);
   return true;
 }
 
@@ -417,7 +437,7 @@ class DebuggerScript::GetSourceMatcher {
 };
 
 bool DebuggerScript::CallData::getSource() {
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   GetSourceMatcher matcher(cx, dbg);
   RootedDebuggerSource sourceObject(cx, referent.match(matcher));
@@ -457,7 +477,7 @@ bool DebuggerScript::CallData::getGlobal() {
   if (!ensureScript()) {
     return false;
   }
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   RootedValue v(cx, ObjectValue(script->global()));
   if (!dbg->wrapDebuggeeValue(cx, &v)) {
@@ -482,6 +502,11 @@ static bool PushFunctionScript(JSContext* cx, Debugger* dbg, HandleFunction fun,
   }
 
   Rooted<BaseScript*> script(cx, fun->baseScript());
+  MOZ_ASSERT(script);
+  if (!script) {
+    // If the function doesn't have script, ignore it.
+    return true;
+  }
   RootedObject wrapped(cx, dbg->wrapScript(cx, script));
   if (!wrapped) {
     return false;
@@ -503,6 +528,12 @@ static bool PushInnerFunctions(JSContext* cx, Debugger* dbg, HandleObject array,
     if (obj->is<JSFunction>()) {
       fun = &obj->as<JSFunction>();
 
+      // Ignore any delazification placeholder functions. These should not be
+      // exposed to debugger in any way.
+      if (fun->isGhost()) {
+        continue;
+      }
+
       if (!PushFunctionScript(cx, dbg, fun, array)) {
         return false;
       }
@@ -516,7 +547,7 @@ bool DebuggerScript::CallData::getChildScripts() {
   if (!ensureScriptMaybeLazy()) {
     return false;
   }
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   RootedObject result(cx, NewDenseEmptyArray(cx));
   if (!result) {
@@ -1325,84 +1356,6 @@ bool DebuggerScript::CallData::getOffsetLocation() {
   return true;
 }
 
-class DebuggerScript::GetSuccessorOrPredecessorOffsetsMatcher {
-  JSContext* cx_;
-  size_t offset_;
-  bool successor_;
-  MutableHandleObject result_;
-
- public:
-  GetSuccessorOrPredecessorOffsetsMatcher(JSContext* cx, size_t offset,
-                                          bool successor,
-                                          MutableHandleObject result)
-      : cx_(cx), offset_(offset), successor_(successor), result_(result) {}
-
-  using ReturnType = bool;
-
-  ReturnType match(Handle<BaseScript*> base) {
-    RootedScript script(cx_, DelazifyScript(cx_, base));
-    if (!script) {
-      return false;
-    }
-
-    if (!EnsureScriptOffsetIsValid(cx_, script, offset_)) {
-      return false;
-    }
-
-    PcVector adjacent;
-    if (successor_) {
-      if (!GetSuccessorBytecodes(script, script->code() + offset_, adjacent)) {
-        ReportOutOfMemory(cx_);
-        return false;
-      }
-    } else {
-      if (!GetPredecessorBytecodes(script, script->code() + offset_,
-                                   adjacent)) {
-        ReportOutOfMemory(cx_);
-        return false;
-      }
-    }
-
-    result_.set(NewDenseEmptyArray(cx_));
-    if (!result_) {
-      return false;
-    }
-
-    for (jsbytecode* pc : adjacent) {
-      if (!NewbornArrayPush(cx_, result_, NumberValue(pc - script->code()))) {
-        return false;
-      }
-    }
-    return true;
-  }
-  ReturnType match(Handle<WasmInstanceObject*> instance) {
-    JS_ReportErrorASCII(
-        cx_, "getSuccessorOrPredecessorOffsets NYI on wasm instances");
-    return false;
-  }
-};
-
-template <bool Successor>
-bool DebuggerScript::CallData::getSuccessorOrPredecessorOffsets() {
-  if (!args.requireAtLeast(cx, "successorOrPredecessorOffsets", 1)) {
-    return false;
-  }
-  size_t offset;
-  if (!ScriptOffset(cx, args[0], &offset)) {
-    return false;
-  }
-
-  RootedObject result(cx);
-  GetSuccessorOrPredecessorOffsetsMatcher matcher(cx, offset, Successor,
-                                                  &result);
-  if (!referent.match(matcher)) {
-    return false;
-  }
-
-  args.rval().setObject(*result);
-  return true;
-}
-
 // Return whether an opcode is considered effectful: it can have direct side
 // effects that can be observed outside of the current frame. Opcodes are not
 // effectful if they only modify the current frame's state, modify objects
@@ -1432,10 +1385,7 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::InitAliasedLexical:
     case JSOp::SetIntrinsic:
     case JSOp::InitGLexical:
-    case JSOp::DefVar:
-    case JSOp::DefLet:
-    case JSOp::DefConst:
-    case JSOp::DefFun:
+    case JSOp::GlobalOrEvalDeclInstantiation:
     case JSOp::SetFunName:
     case JSOp::MutateProto:
     case JSOp::DynamicImport:
@@ -1451,8 +1401,8 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::Lineno:
     case JSOp::JumpTarget:
     case JSOp::Undefined:
-    case JSOp::IfNe:
-    case JSOp::IfEq:
+    case JSOp::JumpIfTrue:
+    case JSOp::JumpIfFalse:
     case JSOp::Return:
     case JSOp::RetRval:
     case JSOp::And:
@@ -1517,12 +1467,11 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::PopN:
     case JSOp::DupAt:
     case JSOp::NewArray:
-    case JSOp::NewArrayCopyOnWrite:
     case JSOp::NewInit:
     case JSOp::NewObject:
-    case JSOp::NewObjectWithGroup:
     case JSOp::InitElem:
     case JSOp::InitHiddenElem:
+    case JSOp::InitLockedElem:
     case JSOp::InitElemInc:
     case JSOp::InitElemArray:
     case JSOp::InitProp:
@@ -1560,14 +1509,13 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::Swap:
     case JSOp::Pick:
     case JSOp::Unpick:
+    case JSOp::GetAliasedDebugVar:
     case JSOp::GetAliasedVar:
     case JSOp::Uint24:
     case JSOp::ResumeIndex:
     case JSOp::Int32:
     case JSOp::LoopHead:
     case JSOp::GetElem:
-    case JSOp::CallElem:
-    case JSOp::Length:
     case JSOp::Not:
     case JSOp::FunctionThis:
     case JSOp::GlobalThis:
@@ -1577,28 +1525,27 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::GetPropSuper:
     case JSOp::GetElemSuper:
     case JSOp::GetProp:
-    case JSOp::CallProp:
     case JSOp::RegExp:
     case JSOp::CallSiteObj:
     case JSOp::Object:
-    case JSOp::ClassConstructor:
     case JSOp::Typeof:
     case JSOp::TypeofExpr:
     case JSOp::ToAsyncIter:
-    case JSOp::ToId:
-    case JSOp::IterNext:
+    case JSOp::ToPropertyKey:
     case JSOp::Lambda:
     case JSOp::LambdaArrow:
     case JSOp::PushLexicalEnv:
     case JSOp::PopLexicalEnv:
     case JSOp::FreshenLexicalEnv:
     case JSOp::RecreateLexicalEnv:
+    case JSOp::PushClassBodyEnv:
     case JSOp::Iter:
     case JSOp::MoreIter:
     case JSOp::IsNoIter:
     case JSOp::EndIter:
     case JSOp::In:
     case JSOp::HasOwn:
+    case JSOp::CheckPrivateField:
     case JSOp::SetRval:
     case JSOp::Instanceof:
     case JSOp::DebugLeaveLexicalEnv:
@@ -1612,9 +1559,6 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::IsConstructing:
     case JSOp::OptimizeSpreadCall:
     case JSOp::ImportMeta:
-    case JSOp::InstrumentationActive:
-    case JSOp::InstrumentationCallback:
-    case JSOp::InstrumentationScriptId:
     case JSOp::EnterWith:
     case JSOp::LeaveWith:
     case JSOp::SpreadNew:
@@ -1623,12 +1567,10 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::CheckClassHeritage:
     case JSOp::FunWithProto:
     case JSOp::ObjWithProto:
-    case JSOp::FunctionProto:
-    case JSOp::DerivedConstructor:
+    case JSOp::BuiltinObject:
     case JSOp::CheckThis:
     case JSOp::CheckReturn:
     case JSOp::CheckThisReinit:
-    case JSOp::CheckGlobalOrEvalDecl:
     case JSOp::SuperFun:
     case JSOp::SpreadSuperCall:
     case JSOp::SuperCall:
@@ -1641,7 +1583,8 @@ static bool BytecodeIsEffectful(JSOp op) {
     case JSOp::CheckResumeKind:
     case JSOp::AfterYield:
     case JSOp::Await:
-    case JSOp::TrySkipAwait:
+    case JSOp::CanSkipAwait:
+    case JSOp::MaybeExtractAwaitValue:
     case JSOp::Generator:
     case JSOp::AsyncAwait:
     case JSOp::AsyncResolve:
@@ -1731,7 +1674,7 @@ bool DebuggerScript::CallData::getAllOffsets() {
         RootedId id(cx);
         RootedValue v(cx, NumberValue(lineno));
         offsets = NewDenseEmptyArray(cx);
-        if (!offsets || !ValueToId<CanGC>(cx, v, &id)) {
+        if (!offsets || !PrimitiveValueToId<CanGC>(cx, v, &id)) {
           return false;
         }
 
@@ -1972,7 +1915,8 @@ struct DebuggerScript::SetBreakpointMatcher {
     }
 
     // If the Debugger's compartment has killed incoming wrappers, we may not
-    // have gotten usable results from the 'wrap' calls. Treat it as a failure.
+    // have gotten usable results from the 'wrap' calls. Treat it as a
+    // failure.
     if (IsDeadProxyObject(handler_) || IsDeadProxyObject(debuggerObject_)) {
       ReportAccessDenied(cx_);
       return false;
@@ -2073,7 +2017,7 @@ bool DebuggerScript::CallData::setBreakpoint() {
   if (!args.requireAtLeast(cx, "Debugger.Script.setBreakpoint", 2)) {
     return false;
   }
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   size_t offset;
   if (!ScriptOffset(cx, args[0], &offset)) {
@@ -2097,7 +2041,7 @@ bool DebuggerScript::CallData::getBreakpoints() {
   if (!ensureScript()) {
     return false;
   }
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   jsbytecode* pc;
   if (args.length() > 0) {
@@ -2157,9 +2101,9 @@ class DebuggerScript::ClearBreakpointMatcher {
 
     // A Breakpoint belongs logically to its script's compartment, so it holds
     // its handler via a cross-compartment wrapper. But the handler passed to
-    // `clearBreakpoint` is same-compartment with the Debugger. Wrap it here, so
-    // that `DebugScript::clearBreakpointsIn` gets the right value to search
-    // for.
+    // `clearBreakpoint` is same-compartment with the Debugger. Wrap it here,
+    // so that `DebugScript::clearBreakpointsIn` gets the right value to
+    // search for.
     AutoRealm ar(cx_, script);
     if (!cx_->compartment()->wrap(cx_, &handler_)) {
       return false;
@@ -2175,10 +2119,11 @@ class DebuggerScript::ClearBreakpointMatcher {
       return true;
     }
 
-    // A Breakpoint belongs logically to its instance's compartment, so it holds
-    // its handler via a cross-compartment wrapper. But the handler passed to
-    // `clearBreakpoint` is same-compartment with the Debugger. Wrap it here, so
-    // that `DebugState::clearBreakpointsIn` gets the right value to search for.
+    // A Breakpoint belongs logically to its instance's compartment, so it
+    // holds its handler via a cross-compartment wrapper. But the handler
+    // passed to `clearBreakpoint` is same-compartment with the Debugger. Wrap
+    // it here, so that `DebugState::clearBreakpointsIn` gets the right value
+    // to search for.
     AutoRealm ar(cx_, instanceObj);
     if (!cx_->compartment()->wrap(cx_, &handler_)) {
       return false;
@@ -2194,7 +2139,7 @@ bool DebuggerScript::CallData::clearBreakpoint() {
   if (!args.requireAtLeast(cx, "Debugger.Script.clearBreakpoint", 1)) {
     return false;
   }
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
 
   JSObject* handler = RequireObject(cx, args[0]);
   if (!handler) {
@@ -2211,7 +2156,7 @@ bool DebuggerScript::CallData::clearBreakpoint() {
 }
 
 bool DebuggerScript::CallData::clearAllBreakpoints() {
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
   ClearBreakpointMatcher matcher(cx, dbg, nullptr);
   if (!referent.match(matcher)) {
     return false;
@@ -2361,27 +2306,6 @@ bool DebuggerScript::CallData::getOffsetsCoverage() {
   return true;
 }
 
-bool DebuggerScript::CallData::setInstrumentationId() {
-  if (!ensureScriptMaybeLazy()) {
-    return false;
-  }
-
-  if (!obj->getInstrumentationId().isUndefined()) {
-    JS_ReportErrorASCII(cx, "Script instrumentation ID is already set");
-    return false;
-  }
-
-  if (!args.get(0).isNumber()) {
-    JS_ReportErrorASCII(cx, "Script instrumentation ID must be a number");
-    return false;
-  }
-
-  obj->setReservedSlot(INSTRUMENTATION_ID_SLOT, args.get(0));
-
-  args.rval().setUndefined();
-  return true;
-}
-
 /* static */
 bool DebuggerScript::construct(JSContext* cx, unsigned argc, Value* vp) {
   JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_NO_CONSTRUCTOR,
@@ -2395,6 +2319,7 @@ const JSPropertySpec DebuggerScript::properties_[] = {
     JS_DEBUG_PSG("isFunction", getIsFunction),
     JS_DEBUG_PSG("isModule", getIsModule),
     JS_DEBUG_PSG("displayName", getDisplayName),
+    JS_DEBUG_PSG("parameterNames", getParameterNames),
     JS_DEBUG_PSG("url", getUrl),
     JS_DEBUG_PSG("startLine", getStartLine),
     JS_DEBUG_PSG("startColumn", getStartColumn),
@@ -2419,12 +2344,7 @@ const JSFunctionSpec DebuggerScript::methods_[] = {
     JS_DEBUG_FN("isInCatchScope", isInCatchScope, 1),
     JS_DEBUG_FN("getOffsetMetadata", getOffsetMetadata, 1),
     JS_DEBUG_FN("getOffsetsCoverage", getOffsetsCoverage, 0),
-    JS_DEBUG_FN("getSuccessorOffsets", getSuccessorOrPredecessorOffsets<true>,
-                1),
-    JS_DEBUG_FN("getPredecessorOffsets",
-                getSuccessorOrPredecessorOffsets<false>, 1),
     JS_DEBUG_FN("getEffectfulOffsets", getEffectfulOffsets, 1),
-    JS_DEBUG_FN("setInstrumentationId", setInstrumentationId, 1),
 
     // The following APIs are deprecated due to their reliance on the
     // under-defined 'entrypoint' concept. Make use of getPossibleBreakpoints,

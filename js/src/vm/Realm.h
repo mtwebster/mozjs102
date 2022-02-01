@@ -27,7 +27,6 @@
 #include "vm/NativeObject.h"
 #include "vm/PlainObject.h"    // js::PlainObject
 #include "vm/PromiseLookup.h"  // js::PromiseLookup
-#include "vm/ReceiverGuard.h"
 #include "vm/RegExpShared.h"
 #include "vm/SavedStacks.h"
 #include "vm/Time.h"
@@ -45,8 +44,9 @@ class JitRealm;
 
 class AutoRestoreRealmDebugMode;
 class GlobalObject;
-class LexicalEnvironmentObject;
+class GlobalLexicalEnvironmentObject;
 class MapObject;
+class NonSyntacticLexicalEnvironmentObject;
 class ScriptSourceObject;
 class SetObject;
 struct NativeIterator;
@@ -83,11 +83,10 @@ class DtoaCache {
 };
 
 // Cache to speed up the group/shape lookup in ProxyObject::create. A proxy's
-// group/shape is only determined by the Class + proto, so a small cache for
-// this is very effective in practice.
+// shape is only determined by the Class + proto, so a small cache for this is
+// very effective in practice.
 class NewProxyCache {
   struct Entry {
-    ObjectGroup* group;
     Shape* shape;
   };
   static const size_t NumEntries = 4;
@@ -95,23 +94,22 @@ class NewProxyCache {
 
  public:
   MOZ_ALWAYS_INLINE bool lookup(const JSClass* clasp, TaggedProto proto,
-                                ObjectGroup** group, Shape** shape) const {
+                                Shape** shape) const {
     if (!entries_) {
       return false;
     }
     for (size_t i = 0; i < NumEntries; i++) {
       const Entry& entry = entries_[i];
-      if (entry.group && entry.group->clasp() == clasp &&
-          entry.group->proto() == proto) {
-        *group = entry.group;
+      if (entry.shape && entry.shape->getObjectClass() == clasp &&
+          entry.shape->proto() == proto) {
         *shape = entry.shape;
         return true;
       }
     }
     return false;
   }
-  void add(ObjectGroup* group, Shape* shape) {
-    MOZ_ASSERT(group && shape);
+  void add(Shape* shape) {
+    MOZ_ASSERT(shape);
     if (!entries_) {
       entries_.reset(js_pod_calloc<Entry>(NumEntries));
       if (!entries_) {
@@ -122,7 +120,6 @@ class NewProxyCache {
         entries_[i] = entries_[i - 1];
       }
     }
-    entries_[0].group = group;
     entries_[0].shape = shape;
   }
   void purge() { entries_.reset(); }
@@ -192,8 +189,6 @@ using NewObjectMetadataState =
     mozilla::Variant<ImmediateMetadata, DelayMetadata, PendingMetadata>;
 
 class MOZ_RAII AutoSetNewObjectMetadata {
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER;
-
   JSContext* cx_;
   Rooted<NewObjectMetadataState> prevState_;
 
@@ -201,8 +196,7 @@ class MOZ_RAII AutoSetNewObjectMetadata {
   void operator=(const AutoSetNewObjectMetadata& aOther) = delete;
 
  public:
-  explicit AutoSetNewObjectMetadata(
-      JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+  explicit AutoSetNewObjectMetadata(JSContext* cx);
   ~AutoSetNewObjectMetadata();
 };
 
@@ -210,16 +204,16 @@ class PropertyIteratorObject;
 
 struct IteratorHashPolicy {
   struct Lookup {
-    ReceiverGuard* guards;
-    size_t numGuards;
-    uint32_t key;
+    Shape** shapes;
+    size_t numShapes;
+    HashNumber shapesHash;
 
-    Lookup(ReceiverGuard* guards, size_t numGuards, uint32_t key)
-        : guards(guards), numGuards(numGuards), key(key) {
-      MOZ_ASSERT(numGuards > 0);
+    Lookup(Shape** shapes, size_t numShapes, HashNumber shapesHash)
+        : shapes(shapes), numShapes(numShapes), shapesHash(shapesHash) {
+      MOZ_ASSERT(numShapes > 0);
     }
   };
-  static HashNumber hash(const Lookup& lookup) { return lookup.key; }
+  static HashNumber hash(const Lookup& lookup) { return lookup.shapesHash; }
   static bool match(PropertyIteratorObject* obj, const Lookup& lookup);
 };
 
@@ -265,7 +259,7 @@ class ObjectRealm {
   explicit ObjectRealm(JS::Zone* zone);
   ~ObjectRealm();
 
-  MOZ_MUST_USE bool init(JSContext* cx);
+  [[nodiscard]] bool init(JSContext* cx);
 
   void finishRoots();
   void trace(JSTracer* trc);
@@ -279,12 +273,15 @@ class ObjectRealm {
 
   MOZ_ALWAYS_INLINE bool objectMaybeInIteration(JSObject* obj);
 
-  js::LexicalEnvironmentObject* getOrCreateNonSyntacticLexicalEnvironment(
-      JSContext* cx, js::HandleObject enclosing);
-  js::LexicalEnvironmentObject* getOrCreateNonSyntacticLexicalEnvironment(
-      JSContext* cx, js::HandleObject enclosing, js::HandleObject key,
-      js::HandleObject thisv);
-  js::LexicalEnvironmentObject* getNonSyntacticLexicalEnvironment(
+  js::NonSyntacticLexicalEnvironmentObject*
+  getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
+                                            js::HandleObject enclosing);
+  js::NonSyntacticLexicalEnvironmentObject*
+  getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
+                                            js::HandleObject enclosing,
+                                            js::HandleObject key,
+                                            js::HandleObject thisv);
+  js::NonSyntacticLexicalEnvironmentObject* getNonSyntacticLexicalEnvironment(
       JSObject* key) const;
 };
 
@@ -311,19 +308,11 @@ class JS::Realm : public JS::shadow::Realm {
 
   // The global lexical environment. This is stored here instead of in
   // GlobalObject for easier/faster JIT access.
-  js::WeakHeapPtr<js::LexicalEnvironmentObject*> lexicalEnv_;
+  js::WeakHeapPtr<js::GlobalLexicalEnvironmentObject*> lexicalEnv_;
 
   // Note: this is private to enforce use of ObjectRealm::get(obj).
   js::ObjectRealm objects_;
   friend js::ObjectRealm& js::ObjectRealm::get(const JSObject*);
-
-  // Object group tables and other state in the realm. This is private to
-  // enforce use of ObjectGroupRealm::get(group)/getForNewObject(cx).
-  js::ObjectGroupRealm objectGroups_;
-  friend js::ObjectGroupRealm& js::ObjectGroupRealm::get(
-      const js::ObjectGroup* group);
-  friend js::ObjectGroupRealm& js::ObjectGroupRealm::getForNewObject(
-      JSContext* cx);
 
   // The global environment record's [[VarNames]] list that contains all
   // names declared using FunctionDeclaration, GeneratorDeclaration, and
@@ -360,11 +349,6 @@ class JS::Realm : public JS::shadow::Realm {
   const js::AllocationMetadataBuilder* allocationMetadataBuilder_ = nullptr;
   void* realmPrivate_ = nullptr;
 
-  // This pointer is controlled by the embedder. If it is non-null, and if
-  // cx->enableAccessValidation is true, then we assert that *validAccessPtr
-  // is true before running any code in this realm.
-  bool* validAccessPtr_ = nullptr;
-
   js::WeakHeapPtr<js::ArgumentsObject*> mappedArgumentsTemplate_{nullptr};
   js::WeakHeapPtr<js::ArgumentsObject*> unmappedArgumentsTemplate_{nullptr};
   js::WeakHeapPtr<js::PlainObject*> iterResultTemplate_{nullptr};
@@ -388,6 +372,10 @@ class JS::Realm : public JS::shadow::Realm {
   unsigned enterRealmDepthIgnoringJit_ = 0;
 
  public:
+  // Various timers for collecting time spent delazifying, jit compiling,
+  // executing, etc
+  JS::JSTimers timers;
+
   struct DebuggerVectorEntry {
     // The debugger relies on iterating through the DebuggerVector to know what
     // debuggers to notify about certain actions, which it does using this
@@ -417,11 +405,7 @@ class JS::Realm : public JS::shadow::Realm {
     DebuggerObservesAllExecution = 1 << 1,
     DebuggerObservesAsmJS = 1 << 2,
     DebuggerObservesCoverage = 1 << 3,
-    DebuggerNeedsDelazification = 1 << 4
   };
-  static const unsigned DebuggerObservesMask =
-      IsDebuggee | DebuggerObservesAllExecution | DebuggerObservesCoverage |
-      DebuggerObservesAsmJS;
   unsigned debugModeBits_ = 0;
   friend class js::AutoRestoreRealmDebugMode;
 
@@ -478,15 +462,13 @@ class JS::Realm : public JS::shadow::Realm {
   Realm(JS::Compartment* comp, const JS::RealmOptions& options);
   ~Realm();
 
-  MOZ_MUST_USE bool init(JSContext* cx, JSPrincipals* principals);
+  [[nodiscard]] bool init(JSContext* cx, JSPrincipals* principals);
   void destroy(JSFreeOp* fop);
   void clearTables();
 
   void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
-                              size_t* tiAllocationSiteTables,
-                              size_t* tiArrayTypeTables,
-                              size_t* tiObjectTypeTables, size_t* realmObject,
-                              size_t* realmTables, size_t* innerViewsArg,
+                              size_t* realmObject, size_t* realmTables,
+                              size_t* innerViewsArg,
                               size_t* objectMetadataTablesArg,
                               size_t* savedStacksSet, size_t* varNamesSet,
                               size_t* nonSyntacticLexicalEnvironmentsArg,
@@ -507,8 +489,13 @@ class JS::Realm : public JS::shadow::Realm {
   const JS::RealmCreationOptions& creationOptions() const {
     return creationOptions_;
   }
-  JS::RealmBehaviors& behaviors() { return behaviors_; }
+
+  // NOTE: Do not provide accessor for mutable reference.
+  // Modifying RealmBehaviors after creating a realm can result in
+  // inconsistency.
   const JS::RealmBehaviors& behaviors() const { return behaviors_; }
+
+  void setNonLive() { behaviors_.setNonLive(); }
 
   /* Whether to preserve JIT code on non-shrinking GCs. */
   bool preserveJitCode() { return creationOptions_.preserveJitCode(); }
@@ -532,7 +519,8 @@ class JS::Realm : public JS::shadow::Realm {
     return global_.unbarrieredGet();
   }
 
-  inline js::LexicalEnvironmentObject* unbarrieredLexicalEnvironment() const;
+  inline js::GlobalLexicalEnvironmentObject* unbarrieredLexicalEnvironment()
+      const;
 
   /* True if a global object exists, but it's being collected. */
   inline bool globalIsAboutToBeFinalized();
@@ -541,7 +529,7 @@ class JS::Realm : public JS::shadow::Realm {
   inline bool hasLiveGlobal() const;
 
   inline void initGlobal(js::GlobalObject& global,
-                         js::LexicalEnvironmentObject& lexicalEnv);
+                         js::GlobalLexicalEnvironmentObject& lexicalEnv);
 
   /*
    * This method traces data that is live iff we know that this realm's
@@ -570,8 +558,6 @@ class JS::Realm : public JS::shadow::Realm {
   void traceWeakSelfHostingScriptSource(JSTracer* trc);
   void traceWeakTemplateObjects(JSTracer* trc);
 
-  void traceWeakObjectGroups(JSTracer* trc) { objectGroups_.traceWeak(trc); }
-
   void clearScriptCounts();
   void clearScriptLCov();
 
@@ -579,14 +565,8 @@ class JS::Realm : public JS::shadow::Realm {
 
   void fixupAfterMovingGC(JSTracer* trc);
 
-#ifdef JSGC_HASH_TABLE_CHECKS
-  void checkObjectGroupTablesAfterMovingGC() {
-    objectGroups_.checkTablesAfterMovingGC();
-  }
-#endif
-
   // Add a name to [[VarNames]].  Reports OOM on failure.
-  MOZ_MUST_USE bool addToVarNames(JSContext* cx, JS::Handle<JSAtom*> name);
+  [[nodiscard]] bool addToVarNames(JSContext* cx, JS::Handle<JSAtom*> name);
   void tracekWeakVarNames(JSTracer* trc);
 
   void removeFromVarNames(JS::Handle<JSAtom*> name) { varNames_.remove(name); }
@@ -761,24 +741,9 @@ class JS::Realm : public JS::shadow::Realm {
   }
   void updateDebuggerObservesCoverage();
 
-  // The code coverage can be enabled either for each realm, with the
-  // Debugger API, or for the entire runtime.
-  bool collectCoverage() const;
+  // Returns true if the Debugger API is collecting code coverage data for this
+  // realm or if the process-wide LCov option is enabled.
   bool collectCoverageForDebug() const;
-  bool collectCoverageForPGO() const;
-
-  bool needsDelazificationForDebugger() const {
-    return debugModeBits_ & DebuggerNeedsDelazification;
-  }
-
-  // Schedule the realm to be delazified. Called from BaseScript::CreateLazy.
-  void scheduleDelazificationForDebugger() {
-    debugModeBits_ |= DebuggerNeedsDelazification;
-  }
-
-  // If we scheduled delazification for turning on debug mode, delazify all
-  // scripts.
-  bool ensureDelazifyScriptsForDebugger(JSContext* cx);
 
   // Get or allocate the associated LCovRealm.
   js::coverage::LCovRealm* lcovRealm();
@@ -792,11 +757,6 @@ class JS::Realm : public JS::shadow::Realm {
   }
 
   mozilla::HashCodeScrambler randomHashCodeScrambler();
-
-  bool isAccessValid() const {
-    return validAccessPtr_ ? *validAccessPtr_ : true;
-  }
-  void setValidAccessPtr(bool* accessp) { validAccessPtr_ = accessp; }
 
   bool ensureJitRealmExists(JSContext* cx);
   void traceWeakEdgesInJitRealm(JSTracer* trc);
@@ -839,31 +799,27 @@ class JS::Realm : public JS::shadow::Realm {
 
 inline js::Handle<js::GlobalObject*> JSContext::global() const {
   /*
-   * It's safe to use |unsafeGet()| here because any realm that is
-   * on-stack will be marked automatically, so there's no need for a read
-   * barrier on it. Once the realm is popped, the handle is no longer
-   * safe to use.
+   * It's safe to use |unbarrieredGet()| here because any realm that is on-stack
+   * will be marked automatically, so there's no need for a read barrier on
+   * it. Once the realm is popped, the handle is no longer safe to use.
    */
   MOZ_ASSERT(realm_, "Caller needs to enter a realm first");
   return js::Handle<js::GlobalObject*>::fromMarkedLocation(
-      realm_->global_.unsafeGet());
+      realm_->global_.unbarrieredAddress());
 }
 
 namespace js {
 
 class MOZ_RAII AssertRealmUnchanged {
  public:
-  explicit AssertRealmUnchanged(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : cx(cx), oldRealm(cx->realm()) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  explicit AssertRealmUnchanged(JSContext* cx)
+      : cx(cx), oldRealm(cx->realm()) {}
 
   ~AssertRealmUnchanged() { MOZ_ASSERT(cx->realm() == oldRealm); }
 
  protected:
   JSContext* const cx;
   JS::Realm* const oldRealm;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 // AutoRealm can be used to enter the realm of a JSObject, JSScript or

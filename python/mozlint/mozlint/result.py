@@ -3,13 +3,16 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from collections import defaultdict
-from json import dumps, JSONEncoder
+from json import JSONEncoder
 import os
 import mozpack.path as mozpath
+
+import attr
 
 
 class ResultSummary(object):
     """Represents overall result state from an entire lint run."""
+
     root = None
 
     def __init__(self, root):
@@ -25,6 +28,7 @@ class ResultSummary(object):
         self.failed_run = set()
         self.failed_setup = set()
         self.suppressed_warnings = defaultdict(int)
+        self.fixed = 0
 
     @property
     def returncode(self):
@@ -44,6 +48,10 @@ class ResultSummary(object):
     def total_suppressed_warnings(self):
         return sum(self.suppressed_warnings.values())
 
+    @property
+    def total_fixed(self):
+        return self.fixed
+
     def update(self, other):
         """Merge results from another ResultSummary into this one."""
         for path, obj in other.issues.items():
@@ -51,10 +59,12 @@ class ResultSummary(object):
 
         self.failed_run |= other.failed_run
         self.failed_setup |= other.failed_setup
+        self.fixed += other.fixed
         for k, v in other.suppressed_warnings.items():
             self.suppressed_warnings[k] += v
 
 
+@attr.s(slots=True, kw_only=True)
 class Issue(object):
     """Represents a single lint issue and its related metadata.
 
@@ -72,62 +82,32 @@ class Issue(object):
     :param diff: a diff describing the changes that need to be made to the code
     """
 
-    __slots__ = (
-        "linter",
-        "path",
-        "message",
-        "lineno",
-        "column",
-        "hint",
-        "source",
-        "level",
-        "rule",
-        "lineoffset",
-        "diff",
-        "relpath",
+    linter = attr.ib()
+    path = attr.ib()
+    lineno = attr.ib(
+        default=None, converter=lambda lineno: int(lineno) if lineno else 0
     )
+    column = attr.ib(
+        default=None, converter=lambda column: int(column) if column else column
+    )
+    message = attr.ib()
+    hint = attr.ib(default=None)
+    source = attr.ib(default=None)
+    level = attr.ib(default=None, converter=lambda level: level or "error")
+    rule = attr.ib(default=None)
+    lineoffset = attr.ib(default=None)
+    diff = attr.ib(default=None)
+    relpath = attr.ib(init=False, default=None)
 
-    def __init__(
-        self,
-        linter,
-        path,
-        message,
-        lineno,
-        column=None,
-        hint=None,
-        source=None,
-        level=None,
-        rule=None,
-        lineoffset=None,
-        diff=None,
-        relpath=None,
-    ):
-        self.message = message
-        self.lineno = int(lineno) if lineno else 0
-        self.column = int(column) if column else column
-        self.hint = hint
-        self.source = source
-        self.level = level or "error"
-        self.linter = linter
-        self.rule = rule
-        self.lineoffset = lineoffset
-        self.diff = diff
-
+    def __attrs_post_init__(self):
         root = ResultSummary.root
-        assert root is not None, 'Missing ResultSummary.root'
-        if os.path.isabs(path):
-            self.path = mozpath.normpath(path)
-            if self.path.startswith(root):
-                self.relpath = mozpath.relpath(self.path, root)
-            else:
-                self.relpath = self.path
+        assert root is not None, "Missing ResultSummary.root"
+        if os.path.isabs(self.path):
+            self.path = mozpath.normpath(self.path)
+            self.relpath = mozpath.relpath(self.path, root)
         else:
-            self.path = mozpath.join(root, path)
-            self.relpath = mozpath.normpath(path)
-
-    def __repr__(self):
-        s = dumps(self, cls=IssueEncoder, indent=2)
-        return "Issue({})".format(s)
+            self.relpath = mozpath.normpath(self.path)
+            self.path = mozpath.join(root, self.path)
 
 
 class IssueEncoder(JSONEncoder):
@@ -140,7 +120,7 @@ class IssueEncoder(JSONEncoder):
 
     def default(self, o):
         if isinstance(o, Issue):
-            return {a: getattr(o, a) for a in o.__slots__}
+            return attr.asdict(o)
         return JSONEncoder.default(self, o)
 
 
@@ -154,14 +134,15 @@ def from_config(config, **kwargs):
     :param kwargs: same as :class:`~result.Issue`
     :returns: :class:`~result.Issue` object
     """
-    attrs = {}
-    for attr in Issue.__slots__:
-        attrs[attr] = kwargs.get(attr, config.get(attr))
+    args = {}
+    for arg in attr.fields(Issue):
+        if arg.init:
+            args[arg.name] = kwargs.get(arg.name, config.get(arg.name))
 
-    if not attrs["linter"]:
-        attrs["linter"] = config.get("name")
+    if not args["linter"]:
+        args["linter"] = config.get("name")
 
-    if not attrs["message"]:
-        attrs["message"] = config.get("description")
+    if not args["message"]:
+        args["message"] = config.get("description")
 
-    return Issue(**attrs)
+    return Issue(**args)

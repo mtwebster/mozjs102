@@ -259,14 +259,14 @@ static const dtTypeElem dtTypes[] = {
 
 static const char* const CLDR_FIELD_APPEND[] = {
     "Era", "Year", "Quarter", "Month", "Week", "*", "Day-Of-Week",
-    "*", "*", "Day", "*", // The UDATPG_x_FIELD constants and these fields have a different order than in ICU4J
-    "Hour", "Minute", "Second", "*", "Timezone"
+    "*", "*", "Day", "DayPeriod", // The UDATPG_x_FIELD constants and these fields have a different order than in ICU4J
+    "Hour", "Minute", "Second", "FractionalSecond", "Timezone"
 };
 
 static const char* const CLDR_FIELD_NAME[UDATPG_FIELD_COUNT] = {
     "era", "year", "quarter", "month", "week", "weekOfMonth", "weekday",
     "dayOfYear", "weekdayOfMonth", "day", "dayperiod", // The UDATPG_x_FIELD constants and these fields have a different order than in ICU4J
-    "hour", "minute", "second", "*", "zone"
+    "hour", "minute", "second", "fractionalSecond", "zone"
 };
 
 static const char* const CLDR_FIELD_WIDTH[] = { // [UDATPG_WIDTH_COUNT]
@@ -311,6 +311,16 @@ DateTimePatternGenerator::createInstance(const Locale& locale, UErrorCode& statu
     return U_SUCCESS(status) ? result.orphan() : nullptr;
 }
 
+DateTimePatternGenerator* U_EXPORT2
+DateTimePatternGenerator::createInstanceNoStdPat(const Locale& locale, UErrorCode& status) {
+    if (U_FAILURE(status)) {
+        return nullptr;
+    }
+    LocalPointer<DateTimePatternGenerator> result(
+            new DateTimePatternGenerator(locale, status, true), status);
+    return U_SUCCESS(status) ? result.orphan() : nullptr;
+}
+
 DateTimePatternGenerator*  U_EXPORT2
 DateTimePatternGenerator::createEmptyInstance(UErrorCode& status) {
     if (U_FAILURE(status)) {
@@ -336,7 +346,7 @@ DateTimePatternGenerator::DateTimePatternGenerator(UErrorCode &status) :
     }
 }
 
-DateTimePatternGenerator::DateTimePatternGenerator(const Locale& locale, UErrorCode &status) :
+DateTimePatternGenerator::DateTimePatternGenerator(const Locale& locale, UErrorCode &status, UBool skipStdPatterns) :
     skipMatcher(nullptr),
     fAvailableFormatKeyHash(nullptr),
     fDefaultHourFormatChar(0),
@@ -350,7 +360,7 @@ DateTimePatternGenerator::DateTimePatternGenerator(const Locale& locale, UErrorC
         internalErrorCode = status = U_MEMORY_ALLOCATION_ERROR;
     }
     else {
-        initData(locale, status);
+        initData(locale, status, skipStdPatterns);
     }
 }
 
@@ -489,13 +499,15 @@ enum AllowedHourFormat{
 }  // namespace
 
 void
-DateTimePatternGenerator::initData(const Locale& locale, UErrorCode &status) {
+DateTimePatternGenerator::initData(const Locale& locale, UErrorCode &status, UBool skipStdPatterns) {
     //const char *baseLangName = locale.getBaseName(); // unused
 
     skipMatcher = nullptr;
     fAvailableFormatKeyHash=nullptr;
     addCanonicalItems(status);
-    addICUPatterns(locale, status);
+    if (!skipStdPatterns) { // skip to prevent circular dependency when called from SimpleDateFormat::construct
+        addICUPatterns(locale, status);
+    }
     addCLDRData(locale, status);
     setDateTimeFromCalendar(locale, status);
     setDecimalSymbols(locale, status);
@@ -893,7 +905,7 @@ DateTimePatternGenerator::getCalendarTypeToUse(const Locale& locale, CharString&
             err = localStatus;
             return;
         }
-        if (calendarTypeLen < ULOC_KEYWORDS_CAPACITY) {
+        if (calendarTypeLen > 0 && calendarTypeLen < ULOC_KEYWORDS_CAPACITY) {
             destination.clear().append(calendarType, -1, err);
             if (U_FAILURE(err)) { return; }
         }
@@ -961,6 +973,15 @@ struct DateTimePatternGenerator::AppendItemNamesSink : public ResourceSink {
             UDateTimePGDisplayWidth width;
             UDateTimePatternField field = dtpg.getFieldAndWidthIndices(key, &width);
             if (field == UDATPG_FIELD_COUNT) { continue; }
+
+            UResType type = value.getType();
+            U_ASSERT(type == URES_TABLE || type == URES_ALIAS);
+
+            // TODO: Implement support for alias types.
+            if (type == URES_ALIAS) {
+                continue;
+            }
+
             ResourceTable detailsTable = value.getTable(errorCode);
             if (U_FAILURE(errorCode)) { return; }
             for (int32_t j = 0; detailsTable.getKeyAndValue(j, key, value); ++j) {

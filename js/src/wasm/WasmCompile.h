@@ -19,6 +19,7 @@
 #ifndef wasm_compile_h
 #define wasm_compile_h
 
+#include "vm/Runtime.h"
 #include "wasm/WasmModule.h"
 
 namespace js {
@@ -29,65 +30,6 @@ namespace wasm {
 // later, the ObservedCPUFeatures() must be ensured to be the same.
 
 uint32_t ObservedCPUFeatures();
-
-// Describes the JS scripted caller of a request to compile a wasm module.
-
-struct ScriptedCaller {
-  UniqueChars filename;
-  bool filenameIsURL;
-  unsigned line;
-
-  ScriptedCaller() : filenameIsURL(false), line(0) {}
-};
-
-// Describes all the parameters that control wasm compilation.
-
-struct CompileArgs;
-using MutableCompileArgs = RefPtr<CompileArgs>;
-using SharedCompileArgs = RefPtr<const CompileArgs>;
-
-struct CompileArgs : ShareableBase<CompileArgs> {
-  ScriptedCaller scriptedCaller;
-  UniqueChars sourceMapURL;
-
-  bool baselineEnabled;
-  bool ionEnabled;
-  bool craneliftEnabled;
-  bool debugEnabled;
-  bool sharedMemoryEnabled;
-  bool forceTiering;
-  bool reftypesEnabled;
-  bool gcEnabled;
-  bool hugeMemory;
-  bool multiValuesEnabled;
-  bool v128Enabled;
-
-  // CompileArgs has two constructors:
-  //
-  // - one through a factory function `build`, which checks that flags are
-  // consistent with each other.
-  // - one that gives complete access to underlying fields.
-  //
-  // You should use the first one in general, unless you have a very good
-  // reason (i.e. no JSContext around and you know which flags have been used).
-
-  static SharedCompileArgs build(JSContext* cx,
-                                 ScriptedCaller&& scriptedCaller);
-
-  explicit CompileArgs(ScriptedCaller&& scriptedCaller)
-      : scriptedCaller(std::move(scriptedCaller)),
-        baselineEnabled(false),
-        ionEnabled(false),
-        craneliftEnabled(false),
-        debugEnabled(false),
-        sharedMemoryEnabled(false),
-        forceTiering(false),
-        reftypesEnabled(false),
-        gcEnabled(false),
-        hugeMemory(false),
-        multiValuesEnabled(false),
-        v128Enabled(false) {}
-};
 
 // Return the estimated compiled (machine) code size for the given bytecode size
 // compiled at the given tier.

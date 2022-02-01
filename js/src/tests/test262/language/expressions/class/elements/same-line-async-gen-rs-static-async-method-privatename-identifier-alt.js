@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-static-methods-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-static-async-method-privatename-identifier-alt.case
 // - src/class-elements/productions/cls-expr-after-same-line-async-gen.template
@@ -138,8 +138,8 @@ c.m().next().then(function(v) {
       assert.sameValue(results[4], 1);
       assert.sameValue(results[5], 1);
 
-    }, $DONE).then($DONE, $DONE);
+    }).then($DONE, $DONE);
   }
 
   return Promise.resolve(assertions());
-}, $DONE).then($DONE, $DONE);
+}).then($DONE, $DONE);

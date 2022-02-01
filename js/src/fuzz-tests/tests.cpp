@@ -31,7 +31,8 @@ static const JSClass* getGlobalClass() {
 static JSObject* jsfuzz_createGlobal(JSContext* cx, JSPrincipals* principals) {
   /* Create the global object. */
   JS::RealmOptions options;
-  options.creationOptions().setStreamsEnabled(true).setWeakRefsEnabled(true);
+  options.creationOptions().setStreamsEnabled(true).setWeakRefsEnabled(
+      JS::WeakRefSpecifier::EnabledWithCleanupSome);
   return JS_NewGlobalObject(cx, getGlobalClass(), principals,
                             JS::FireOnNewGlobalHook, options);
 }
@@ -61,6 +62,7 @@ static bool jsfuzz_init(JSContext** cx, JS::PersistentRootedObject* global) {
 
 static void jsfuzz_uninit(JSContext* cx) {
   if (cx) {
+    JS::LeaveRealm(cx, nullptr);
     JS_DestroyContext(cx);
     cx = nullptr;
   }

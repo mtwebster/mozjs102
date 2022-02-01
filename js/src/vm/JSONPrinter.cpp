@@ -12,15 +12,9 @@
 
 #include <stdarg.h>
 
-#include "util/DoubleToString.h"
+#include "jsnum.h"
 
 using namespace js;
-
-JSONPrinter::~JSONPrinter() {
-  if (dtoaState_) {
-    DestroyDtoaState(dtoaState_);
-  }
-}
 
 void JSONPrinter::indent() {
   MOZ_ASSERT(indentLevel_ >= 0);
@@ -38,14 +32,17 @@ void JSONPrinter::propertyName(const char* name) {
   }
   indent();
   out_.printf("\"%s\":", name);
+  if (indent_) {
+    out_.put(" ");
+  }
   first_ = false;
 }
 
 void JSONPrinter::beginObject() {
   if (!first_) {
     out_.putChar(',');
-    indent();
   }
+  indent();
   out_.putChar('{');
   indentLevel_++;
   first_ = true;
@@ -55,7 +52,9 @@ void JSONPrinter::beginList() {
   if (!first_) {
     out_.putChar(',');
   }
+  indent();
   out_.putChar('[');
+  indentLevel_++;
   first_ = true;
 }
 
@@ -69,15 +68,36 @@ void JSONPrinter::beginObjectProperty(const char* name) {
 void JSONPrinter::beginListProperty(const char* name) {
   propertyName(name);
   out_.putChar('[');
+  indentLevel_++;
   first_ = true;
 }
 
-void JSONPrinter::beginStringProperty(const char* name) {
+GenericPrinter& JSONPrinter::beginStringProperty(const char* name) {
   propertyName(name);
   out_.putChar('"');
+  return out_;
 }
 
-void JSONPrinter::endStringProperty() { out_.putChar('"'); }
+void JSONPrinter::endStringProperty() {
+  endString();
+  first_ = false;
+}
+
+GenericPrinter& JSONPrinter::beginString() {
+  if (!first_) {
+    out_.putChar(',');
+  }
+  indent();
+  out_.putChar('"');
+  return out_;
+}
+
+void JSONPrinter::endString() { out_.putChar('"'); }
+
+void JSONPrinter::boolProperty(const char* name, bool value) {
+  propertyName(name);
+  out_.put(value ? "true" : "false");
+}
 
 void JSONPrinter::property(const char* name, const char* value) {
   beginStringProperty(name);
@@ -110,6 +130,7 @@ void JSONPrinter::value(const char* format, ...) {
   if (!first_) {
     out_.putChar(',');
   }
+  indent();
   out_.putChar('"');
   out_.vprintf(format, ap);
   out_.putChar('"');
@@ -127,6 +148,7 @@ void JSONPrinter::value(int val) {
   if (!first_) {
     out_.putChar(',');
   }
+  indent();
   out_.printf("%d", val);
   first_ = false;
 }
@@ -146,7 +168,7 @@ void JSONPrinter::property(const char* name, uint64_t value) {
   out_.printf("%" PRIu64, value);
 }
 
-#if defined(XP_DARWIN) || defined(__OpenBSD__)
+#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__)
 void JSONPrinter::property(const char* name, size_t value) {
   propertyName(name);
   out_.printf("%zu", value);
@@ -161,21 +183,10 @@ void JSONPrinter::floatProperty(const char* name, double value,
     return;
   }
 
-  if (!dtoaState_) {
-    dtoaState_ = NewDtoaState();
-    if (!dtoaState_) {
-      out_.reportOutOfMemory();
-      return;
-    }
-  }
-
-  char buffer[DTOSTR_STANDARD_BUFFER_SIZE];
-  char* str = js_dtostr(dtoaState_, buffer, sizeof(buffer), DTOSTR_STANDARD,
-                        precision, value);
-  if (!str) {
-    out_.reportOutOfMemory();
-    return;
-  }
+  // Note: NumberToCString does not use the |cx| argument for base 10.
+  ToCStringBuf cbuf;
+  const char* str = NumberToCString(nullptr, &cbuf, value);
+  MOZ_ASSERT(str);
 
   property(name, str);
 }
@@ -202,6 +213,20 @@ void JSONPrinter::property(const char* name, const mozilla::TimeDuration& dur,
   out_.printf("%lld.%03lld", split.quot, split.rem);
 }
 
+void JSONPrinter::nullProperty(const char* name) {
+  propertyName(name);
+  out_.put("null");
+}
+
+void JSONPrinter::nullValue() {
+  if (!first_) {
+    out_.putChar(',');
+  }
+  indent();
+  out_.put("null");
+  first_ = false;
+}
+
 void JSONPrinter::endObject() {
   indentLevel_--;
   indent();
@@ -210,6 +235,8 @@ void JSONPrinter::endObject() {
 }
 
 void JSONPrinter::endList() {
+  indentLevel_--;
+  indent();
   out_.putChar(']');
   first_ = false;
 }

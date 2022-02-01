@@ -7,8 +7,6 @@
 #ifndef builtin_intl_DisplayNames_h
 #define builtin_intl_DisplayNames_h
 
-#include "mozilla/Attributes.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,13 +14,12 @@
 #include "NamespaceImports.h"
 
 #include "builtin/SelfHostingDefines.h"
+#include "js/Class.h"  // JSClass, JSClassOps, js::ClassSpec
 #include "js/Value.h"
 #include "vm/JSObject.h"
 #include "vm/List.h"
 #include "vm/NativeObject.h"
 
-struct JS_PUBLIC_API JSClass;
-struct JSClassOps;
 struct JS_PUBLIC_API JSContext;
 class JS_PUBLIC_API JSFreeOp;
 
@@ -45,7 +42,7 @@ class DisplayNamesObject : public NativeObject {
                 "INTERNALS_SLOT must match self-hosting define for internals "
                 "object slot");
 
-  // Estimated memory use for ULocaleDisplayNames.
+  // Estimated memory use for ULocaleDisplayNames (see IcuMemoryUsage).
   static constexpr size_t EstimatedMemoryUse = 1256;
 
   ULocaleDisplayNames* getLocaleDisplayNames() const {
@@ -80,14 +77,15 @@ class DisplayNamesObject : public NativeObject {
 };
 
 /**
- * Return the display name for the requested code or the empty string if no
- * applicable display name was found.
+ * Return the display name for the requested code or undefined if no applicable
+ * display name was found.
  *
  * Usage: result = intl_ComputeDisplayName(displayNames, locale, calendar,
- *                                         style, type, code)
+ *                                         style, languageDisplay, fallback,
+ *                                         type, code)
  */
-extern MOZ_MUST_USE bool intl_ComputeDisplayName(JSContext* cx, unsigned argc,
-                                                 Value* vp);
+[[nodiscard]] extern bool intl_ComputeDisplayName(JSContext* cx, unsigned argc,
+                                                  Value* vp);
 
 }  // namespace js
 

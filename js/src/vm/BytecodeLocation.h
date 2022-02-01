@@ -9,9 +9,12 @@
 
 #include "frontend/NameAnalysisTypes.h"
 #include "js/TypeDecls.h"
+#include "vm/AsyncFunctionResolveKind.h"
+#include "vm/BuiltinObjectKind.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/CheckIsObjectKind.h"   // CheckIsObjectKind
 #include "vm/FunctionPrefixKind.h"  // FunctionPrefixKind
+#include "vm/GeneratorResumeKind.h"
 #include "vm/StringType.h"
 
 namespace js {
@@ -77,6 +80,8 @@ class BytecodeLocation {
   // Return true if this bytecode location is within the bounds of the
   // bytecode for a given script.
   bool isInBounds(const JSScript* script) const;
+
+  const JSScript* getDebugOnlyScript() const;
 #endif
 
   inline uint32_t bytecodeToOffset(const JSScript* script) const;
@@ -96,7 +101,6 @@ class BytecodeLocation {
   inline uint32_t defCount() const;
 
   int32_t jumpOffset() const { return GET_JUMP_OFFSET(rawBytecode_); }
-  int32_t codeOffset() const { return GET_CODE_OFFSET(rawBytecode_); }
 
   inline JSAtom* getAtom(const JSScript* script) const;
   inline PropertyName* getPropertyName(const JSScript* script) const;
@@ -179,7 +183,6 @@ class BytecodeLocation {
   }
 
   bool opHasIC() const { return BytecodeOpHasIC(getOp()); }
-  bool opHasTypeSet() const { return BytecodeOpHasTypeSet(getOp()); }
 
   bool fallsThrough() const { return BytecodeFallsThrough(getOp()); }
 
@@ -199,6 +202,16 @@ class BytecodeLocation {
 
   bool isSpreadOp() const { return IsSpreadOp(getOp()); }
 
+  bool isInvokeOp() const { return IsInvokeOp(getOp()); }
+
+  bool isGetPropOp() const { return IsGetPropOp(getOp()); }
+
+  bool isSetPropOp() const { return IsSetPropOp(getOp()); }
+
+  AsyncFunctionResolveKind getAsyncFunctionResolveKind() {
+    return AsyncFunctionResolveKind(GET_UINT8(rawBytecode_));
+  }
+
   bool resultIsPopped() const {
     MOZ_ASSERT(StackDefs(rawBytecode_) == 1);
     return BytecodeIsPopped(rawBytecode_);
@@ -211,12 +224,6 @@ class BytecodeLocation {
     MOZ_ASSERT(isJump());
     return BytecodeLocation(*this,
                             rawBytecode_ + GET_JUMP_OFFSET(rawBytecode_));
-  }
-
-  BytecodeLocation getEndOfTryLocation() const {
-    MOZ_ASSERT(is(JSOp::Try));
-    return BytecodeLocation(*this,
-                            rawBytecode_ + GET_CODE_OFFSET(rawBytecode_));
   }
 
   // Return the 'low' parameter to the tableswitch opcode
@@ -284,6 +291,11 @@ class BytecodeLocation {
     return CheckIsObjectKind(GET_UINT8(rawBytecode_));
   }
 
+  BuiltinObjectKind getBuiltinObjectKind() const {
+    MOZ_ASSERT(is(JSOp::BuiltinObject));
+    return BuiltinObjectKind(GET_UINT8(rawBytecode_));
+  }
+
   uint32_t getNewArrayLength() const {
     MOZ_ASSERT(is(JSOp::NewArray));
     return GET_UINT32(rawBytecode_);
@@ -306,12 +318,20 @@ class BytecodeLocation {
     return GET_INT32(rawBytecode_);
   }
   uint32_t getResumeIndex() const {
-    MOZ_ASSERT(is(JSOp::ResumeIndex));
+    MOZ_ASSERT(is(JSOp::ResumeIndex) || is(JSOp::InitialYield) ||
+               is(JSOp::Yield) || is(JSOp::Await));
     return GET_RESUMEINDEX(rawBytecode_);
   }
   Value getInlineValue() const {
     MOZ_ASSERT(is(JSOp::Double));
     return GET_INLINE_VALUE(rawBytecode_);
+  }
+
+  GeneratorResumeKind resumeKind() { return ResumeKindFromPC(rawBytecode_); }
+
+  ThrowMsgKind throwMsgKind() {
+    MOZ_ASSERT(is(JSOp::ThrowMsg));
+    return static_cast<ThrowMsgKind>(GET_UINT8(rawBytecode_));
   }
 
 #ifdef DEBUG

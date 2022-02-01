@@ -23,9 +23,7 @@
 #include "mozilla/Casting.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Range.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/Sprintf.h"
-#include "mozilla/Unused.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/Variant.h"
 
@@ -45,14 +43,12 @@
 #include "frontend/ModuleSharedContext.h"
 #include "frontend/ParseNode.h"
 #include "frontend/ParseNodeVerify.h"
+#include "frontend/ScriptIndex.h"  // ScriptIndex
 #include "frontend/TokenStream.h"
-#ifndef ENABLE_NEW_REGEXP
-#  include "irregexp/RegExpParser.h"
-#endif
-#include "js/RegExpFlags.h"  // JS::RegExpFlags
-#ifdef ENABLE_NEW_REGEXP
-#  include "new-regexp/RegExpAPI.h"
-#endif
+#include "irregexp/RegExpAPI.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/RegExpFlags.h"           // JS::RegExpFlags
+#include "util/StringBuffer.h"        // StringBuffer
 #include "vm/BigIntType.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/FunctionFlags.h"          // js::FunctionFlags
@@ -63,8 +59,10 @@
 #include "vm/JSScript.h"
 #include "vm/ModuleBuilder.h"  // js::ModuleBuilder
 #include "vm/RegExpObject.h"
+#include "vm/Scope.h"  // GetScopeDataTrailingNames
 #include "vm/SelfHosting.h"
 #include "vm/StringType.h"
+#include "vm/WellKnownAtom.h"  // js_*_str
 #include "wasm/AsmJS.h"
 
 #include "frontend/ParseContext-inl.h"
@@ -75,6 +73,7 @@ using namespace js;
 
 using mozilla::AssertedCast;
 using mozilla::AsVariant;
+using mozilla::DebugOnly;
 using mozilla::Maybe;
 using mozilla::Nothing;
 using mozilla::PointerRangeSize;
@@ -92,7 +91,7 @@ using AddDeclaredNamePtr = ParseContext::Scope::AddDeclaredNamePtr;
 using BindingIter = ParseContext::Scope::BindingIter;
 using UsedNamePtr = UsedNameTracker::UsedNameMap::Ptr;
 
-using BindingNameVector = Vector<BindingName, 6>;
+using ParserBindingNameVector = Vector<ParserBindingName, 6>;
 
 template <class T, class U>
 static inline void PropagateTransitiveParseFlags(const T* inner, U* outer) {
@@ -150,13 +149,13 @@ bool GeneralParser<ParseHandler, Unit>::mustMatchTokenInternal(
 }
 
 ParserSharedBase::ParserSharedBase(JSContext* cx,
-                                   CompilationInfo& compilationInfo, Kind kind)
-    : JS::CustomAutoRooter(cx),
-      cx_(cx),
-      alloc_(compilationInfo.allocScope.alloc()),
-      compilationInfo_(compilationInfo),
+                                   CompilationState& compilationState,
+                                   Kind kind)
+    : cx_(cx),
+      alloc_(compilationState.allocScope.alloc()),
+      compilationState_(compilationState),
       pc_(nullptr),
-      usedNames_(compilationInfo.usedNames) {
+      usedNames_(compilationState.usedNames) {
   cx->frontendCollectionPool().addActiveCompilation();
 }
 
@@ -164,9 +163,15 @@ ParserSharedBase::~ParserSharedBase() {
   cx_->frontendCollectionPool().removeActiveCompilation();
 }
 
+#if defined(DEBUG) || defined(JS_JITSPEW)
+void ParserSharedBase::dumpAtom(TaggedParserAtomIndex index) const {
+  parserAtoms().dump(index);
+}
+#endif
+
 ParserBase::ParserBase(JSContext* cx, const ReadOnlyCompileOptions& options,
-                       bool foldConstants, CompilationInfo& compilationInfo)
-    : ParserSharedBase(cx, compilationInfo, ParserSharedBase::Kind::Parser),
+                       bool foldConstants, CompilationState& compilationState)
+    : ParserSharedBase(cx, compilationState, ParserSharedBase::Kind::Parser),
       anyChars(cx, options, this),
       ss(nullptr),
       foldConstants_(foldConstants),
@@ -191,20 +196,22 @@ ParserBase::~ParserBase() { MOZ_ASSERT(checkOptionsCalled_); }
 template <class ParseHandler>
 PerHandlerParser<ParseHandler>::PerHandlerParser(
     JSContext* cx, const ReadOnlyCompileOptions& options, bool foldConstants,
-    CompilationInfo& compilationInfo, BaseScript* lazyOuterFunction,
-    void* internalSyntaxParser)
-    : ParserBase(cx, options, foldConstants, compilationInfo),
-      handler_(cx, compilationInfo.allocScope.alloc(), lazyOuterFunction),
-      internalSyntaxParser_(internalSyntaxParser) {}
+    CompilationState& compilationState, void* internalSyntaxParser)
+    : ParserBase(cx, options, foldConstants, compilationState),
+      handler_(cx, compilationState.allocScope.alloc(),
+               compilationState.input.lazyOuterScript()),
+      internalSyntaxParser_(internalSyntaxParser) {
+  MOZ_ASSERT(compilationState.isInitialStencil() ==
+             compilationState.input.isInitialStencil());
+}
 
 template <class ParseHandler, typename Unit>
 GeneralParser<ParseHandler, Unit>::GeneralParser(
     JSContext* cx, const ReadOnlyCompileOptions& options, const Unit* units,
-    size_t length, bool foldConstants, CompilationInfo& compilationInfo,
-    SyntaxParser* syntaxParser, BaseScript* lazyOuterFunction)
-    : Base(cx, options, foldConstants, compilationInfo, syntaxParser,
-           lazyOuterFunction),
-      tokenStream(cx, &compilationInfo, options, units, length) {}
+    size_t length, bool foldConstants, CompilationState& compilationState,
+    SyntaxParser* syntaxParser)
+    : Base(cx, options, foldConstants, compilationState, syntaxParser),
+      tokenStream(cx, &compilationState.parserAtoms, options, units, length) {}
 
 template <typename Unit>
 void Parser<SyntaxParseHandler, Unit>::setAwaitHandling(
@@ -250,62 +257,21 @@ inline void GeneralParser<ParseHandler, Unit>::setInParametersOfAsyncFunction(
 
 template <class ParseHandler>
 FunctionBox* PerHandlerParser<ParseHandler>::newFunctionBox(
-    FunctionNodeType funNode, JSFunction* fun, uint32_t toStringStart,
-    Directives inheritedDirectives, GeneratorKind generatorKind,
-    FunctionAsyncKind asyncKind) {
-  MOZ_ASSERT(funNode);
-  MOZ_ASSERT(fun);
-
-  size_t index = this->getCompilationInfo().funcData.length();
-  if (!this->getCompilationInfo().functions.emplaceBack(fun)) {
-    return nullptr;
-  }
-  if (!this->getCompilationInfo().funcData.emplaceBack(cx_)) {
-    return nullptr;
-  }
-
-  // This source extent will be further filled in during the remainder of parse.
-  SourceExtent extent;
-  extent.toStringStart = toStringStart;
-
-  /*
-   * We use JSContext.tempLifoAlloc to allocate parsed objects and place them
-   * on a list in this Parser to ensure GC safety. Thus the tempLifoAlloc
-   * arenas containing the entries must be alive until we are done with
-   * scanning, parsing and code generation for the whole script or top-level
-   * function.
-   */
-  FunctionBox* funbox = alloc_.new_<FunctionBox>(
-      cx_, compilationInfo_.traceListHead, extent, this->getCompilationInfo(),
-      inheritedDirectives, generatorKind, asyncKind, fun->displayAtom(),
-      fun->flags(), index);
-  if (!funbox) {
-    ReportOutOfMemory(cx_);
-    return nullptr;
-  }
-
-  compilationInfo_.traceListHead = funbox;
-  handler_.setFunctionBox(funNode, funbox);
-
-  return funbox;
-}
-
-template <class ParseHandler>
-FunctionBox* PerHandlerParser<ParseHandler>::newFunctionBox(
-    FunctionNodeType funNode, HandleAtom explicitName, FunctionFlags flags,
-    uint32_t toStringStart, Directives inheritedDirectives,
+    FunctionNodeType funNode, TaggedParserAtomIndex explicitName,
+    FunctionFlags flags, uint32_t toStringStart, Directives inheritedDirectives,
     GeneratorKind generatorKind, FunctionAsyncKind asyncKind) {
   MOZ_ASSERT(funNode);
 
-  CompilationInfo& compilationInfo = this->getCompilationInfo();
+  ScriptIndex index = ScriptIndex(compilationState_.scriptData.length());
+  if (uint32_t(index) >= TaggedScriptThingIndex::IndexLimit) {
+    ReportAllocationOverflow(cx_);
+    return nullptr;
+  }
+  if (!compilationState_.appendScriptStencilAndData(cx_)) {
+    return nullptr;
+  }
 
-  size_t index = compilationInfo.funcData.length();
-  if (!compilationInfo.functions.emplaceBack(nullptr)) {
-    return nullptr;
-  }
-  if (!compilationInfo.funcData.emplaceBack(cx_)) {
-    return nullptr;
-  }
+  bool isInitialStencil = compilationState_.isInitialStencil();
 
   // This source extent will be further filled in during the remainder of parse.
   SourceExtent extent;
@@ -319,23 +285,16 @@ FunctionBox* PerHandlerParser<ParseHandler>::newFunctionBox(
    * function.
    */
   FunctionBox* funbox = alloc_.new_<FunctionBox>(
-      cx_, compilationInfo.traceListHead, extent, compilationInfo,
-      inheritedDirectives, generatorKind, asyncKind, explicitName, flags,
-      index);
-
+      cx_, extent, compilationState_, inheritedDirectives, generatorKind,
+      asyncKind, isInitialStencil, explicitName, flags, index);
   if (!funbox) {
     ReportOutOfMemory(cx_);
     return nullptr;
   }
 
-  compilationInfo.traceListHead = funbox;
   handler_.setFunctionBox(funNode, funbox);
 
   return funbox;
-}
-
-void CompilationInfo::trace(JSTracer* trc) {
-  FunctionBox::TraceList(trc, traceListHead);
 }
 
 bool ParserBase::setSourceMapInfo() {
@@ -392,11 +351,11 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::ListNodeType GeneralParser<ParseHandler, Unit>::parse() {
   MOZ_ASSERT(checkOptionsCalled_);
 
-  SourceExtent extent =
-      SourceExtent::makeGlobalExtent(/* len = */ 0, options());
+  SourceExtent extent = SourceExtent::makeGlobalExtent(
+      /* len = */ 0, options().lineno, options().column);
   Directives directives(options().forceStrictMode());
-  GlobalSharedContext globalsc(cx_, ScopeKind::Global,
-                               this->getCompilationInfo(), directives, extent);
+  GlobalSharedContext globalsc(cx_, ScopeKind::Global, options(), directives,
+                               extent);
   SourceParseContext globalpc(this, &globalsc, /* newDirectives = */ nullptr);
   if (!globalpc.init()) {
     return null();
@@ -430,7 +389,7 @@ typename ParseHandler::ListNodeType GeneralParser<ParseHandler, Unit>::parse() {
     // Don't constant-fold inside "use asm" code, as this could create a parse
     // tree that doesn't type-check as asm.js.
     if (!pc_->useAsmOrInsideUseAsm()) {
-      if (!FoldConstants(cx_, &node, &handler_)) {
+      if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
         return null();
       }
     }
@@ -444,10 +403,11 @@ typename ParseHandler::ListNodeType GeneralParser<ParseHandler, Unit>::parse() {
  * Strict mode forbids introducing new definitions for 'eval', 'arguments',
  * 'let', 'static', 'yield', or for any strict mode reserved word.
  */
-bool ParserBase::isValidStrictBinding(PropertyName* name) {
+bool ParserBase::isValidStrictBinding(TaggedParserAtomIndex name) {
   TokenKind tt = ReservedWordTokenKind(name);
-  if (tt == TokenKind::Name) {
-    return name != cx_->names().eval && name != cx_->names().arguments;
+  if (tt == TokenKind::Limit) {
+    return name != TaggedParserAtomIndex::WellKnown::eval() &&
+           name != TaggedParserAtomIndex::WellKnown::arguments();
   }
   return tt != TokenKind::Let && tt != TokenKind::Static &&
          tt != TokenKind::Yield && !TokenKindIsStrictReservedWord(tt);
@@ -465,9 +425,9 @@ bool ParserBase::hasValidSimpleStrictParameterNames() {
     return false;
   }
 
-  for (auto* name : pc_->positionalFormalParameterNames()) {
+  for (auto name : pc_->positionalFormalParameterNames()) {
     MOZ_ASSERT(name);
-    if (!isValidStrictBinding(name->asPropertyName())) {
+    if (!isValidStrictBinding(name)) {
       return false;
     }
   }
@@ -503,9 +463,9 @@ void GeneralParser<ParseHandler, Unit>::reportMissingClosing(
 
 template <class ParseHandler, typename Unit>
 void GeneralParser<ParseHandler, Unit>::reportRedeclaration(
-    HandlePropertyName name, DeclarationKind prevKind, TokenPos pos,
+    TaggedParserAtomIndex name, DeclarationKind prevKind, TokenPos pos,
     uint32_t prevPos) {
-  UniqueChars bytes = AtomToPrintableString(cx_, name);
+  UniqueChars bytes = this->parserAtoms().toPrintableString(cx_, name);
   if (!bytes) {
     return;
   }
@@ -552,7 +512,7 @@ void GeneralParser<ParseHandler, Unit>::reportRedeclaration(
 // forbid duplicates.)
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::notePositionalFormalParameter(
-    FunctionNodeType funNode, HandlePropertyName name, uint32_t beginPos,
+    FunctionNodeType funNode, TaggedParserAtomIndex name, uint32_t beginPos,
     bool disallowDuplicateParams, bool* duplicatedParam) {
   if (AddDeclaredNamePtr p =
           pc_->functionScope().lookupDeclaredNameForAdd(name)) {
@@ -566,7 +526,7 @@ bool GeneralParser<ParseHandler, Unit>::notePositionalFormalParameter(
     // In such cases, report will queue up the potential error and return
     // 'true'.
     if (pc_->sc()->strict()) {
-      UniqueChars bytes = AtomToPrintableString(cx_, name);
+      UniqueChars bytes = this->parserAtoms().toPrintableString(cx_, name);
       if (!bytes) {
         return false;
       }
@@ -583,7 +543,8 @@ bool GeneralParser<ParseHandler, Unit>::notePositionalFormalParameter(
     }
   }
 
-  if (!pc_->positionalFormalParameterNames().append(name)) {
+  if (!pc_->positionalFormalParameterNames().append(
+          TrivialTaggedParserAtomIndex::from(name))) {
     ReportOutOfMemory(cx_);
     return false;
   }
@@ -601,8 +562,9 @@ template <class ParseHandler>
 bool PerHandlerParser<ParseHandler>::noteDestructuredPositionalFormalParameter(
     FunctionNodeType funNode, Node destruct) {
   // Append an empty name to the positional formals vector to keep track of
-  // argument slots when making FunctionScope::Data.
-  if (!pc_->positionalFormalParameterNames().append(nullptr)) {
+  // argument slots when making FunctionScope::ParserData.
+  if (!pc_->positionalFormalParameterNames().append(
+          TrivialTaggedParserAtomIndex::null())) {
     ReportOutOfMemory(cx_);
     return false;
   }
@@ -613,7 +575,8 @@ bool PerHandlerParser<ParseHandler>::noteDestructuredPositionalFormalParameter(
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
-    HandlePropertyName name, DeclarationKind kind, TokenPos pos) {
+    TaggedParserAtomIndex name, DeclarationKind kind, TokenPos pos,
+    ClosedOver isClosedOver) {
   // The asm.js validator does all its own symbol-table management so, as an
   // optimization, avoid doing any work here.
   if (pc_->useAsmOrInsideUseAsm()) {
@@ -625,7 +588,7 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
     case DeclarationKind::BodyLevelFunction: {
       Maybe<DeclarationKind> redeclaredKind;
       uint32_t prevPos;
-      if (!pc_->tryDeclareVar(name, kind, pos.begin, &redeclaredKind,
+      if (!pc_->tryDeclareVar(name, this, kind, pos.begin, &redeclaredKind,
                               &prevPos)) {
         return false;
       }
@@ -647,7 +610,8 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
         return false;
       }
 
-      if (!pc_->varScope().addDeclaredName(pc_, p, name, kind, pos.begin)) {
+      if (!pc_->varScope().addDeclaredName(pc_, p, name, kind, pos.begin,
+                                           isClosedOver)) {
         return false;
       }
 
@@ -668,15 +632,18 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
         return false;
       }
 
-      if (!pc_->functionScope().addDeclaredName(pc_, p, name, kind,
-                                                pos.begin)) {
+      if (!pc_->functionScope().addDeclaredName(pc_, p, name, kind, pos.begin,
+                                                isClosedOver)) {
         return false;
       }
 
       break;
     }
 
-    case DeclarationKind::LexicalFunction: {
+    case DeclarationKind::LexicalFunction:
+    case DeclarationKind::PrivateName:
+    case DeclarationKind::Synthetic:
+    case DeclarationKind::PrivateMethod: {
       ParseContext::Scope* scope = pc_->innermostScope();
       AddDeclaredNamePtr p = scope->lookupDeclaredNameForAdd(name);
       if (p) {
@@ -684,7 +651,8 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
         return false;
       }
 
-      if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin)) {
+      if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin,
+                                  isClosedOver)) {
         return false;
       }
 
@@ -709,7 +677,8 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
           return false;
         }
       } else {
-        if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin)) {
+        if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin,
+                                    isClosedOver)) {
           return false;
         }
       }
@@ -723,7 +692,7 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
       // The BoundNames of LexicalDeclaration and ForDeclaration must not
       // contain 'let'. (CatchParameter is the only lexical binding form
       // without this restriction.)
-      if (name == cx_->names().let) {
+      if (name == TaggedParserAtomIndex::WellKnown::let()) {
         errorAt(pos.begin, JSMSG_LEXICAL_DECL_DEFINES_LET);
         return false;
       }
@@ -745,7 +714,7 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
     case DeclarationKind::Import:
       // Module code is always strict, so 'let' is always a keyword and never a
       // name.
-      MOZ_ASSERT(name != cx_->names().let);
+      MOZ_ASSERT(name != TaggedParserAtomIndex::WellKnown::let());
       [[fallthrough]];
 
     case DeclarationKind::SimpleCatchParameter:
@@ -760,7 +729,8 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
         return false;
       }
 
-      if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin)) {
+      if (!scope->addDeclaredName(pc_, p, name, kind, pos.begin,
+                                  isClosedOver)) {
         return false;
       }
 
@@ -787,7 +757,86 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredName(
   return true;
 }
 
-bool ParserBase::noteUsedNameInternal(HandlePropertyName name) {
+template <class ParseHandler, typename Unit>
+bool GeneralParser<ParseHandler, Unit>::noteDeclaredPrivateName(
+    Node nameNode, TaggedParserAtomIndex name, PropertyType propType,
+    FieldPlacement placement, TokenPos pos) {
+  ParseContext::Scope* scope = pc_->innermostScope();
+  AddDeclaredNamePtr p = scope->lookupDeclaredNameForAdd(name);
+
+  DeclarationKind declKind = DeclarationKind::PrivateName;
+  ClosedOver closedOver = ClosedOver::No;
+  PrivateNameKind kind;
+  switch (propType) {
+    case PropertyType::Field:
+      kind = PrivateNameKind::Field;
+      break;
+    case PropertyType::Method:
+    case PropertyType::GeneratorMethod:
+    case PropertyType::AsyncMethod:
+    case PropertyType::AsyncGeneratorMethod:
+      if (placement == FieldPlacement::Instance) {
+        // Optimized private method. Non-optimized paths still get
+        // DeclarationKind::Synthetic.
+        declKind = DeclarationKind::PrivateMethod;
+      }
+
+      // Methods must be marked closed-over so that
+      // EmitterScope::lookupPrivate() works even if the method is used, but not
+      // within any method (from a computed property name, or debugger frame)
+      closedOver = ClosedOver::Yes;
+      kind = PrivateNameKind::Method;
+      break;
+    case PropertyType::Getter:
+      kind = PrivateNameKind::Getter;
+      break;
+    case PropertyType::Setter:
+      kind = PrivateNameKind::Setter;
+      break;
+    default:
+      kind = PrivateNameKind::None;
+  }
+
+  if (p) {
+    PrivateNameKind prevKind = p->value()->privateNameKind();
+    if ((prevKind == PrivateNameKind::Getter &&
+         kind == PrivateNameKind::Setter) ||
+        (prevKind == PrivateNameKind::Setter &&
+         kind == PrivateNameKind::Getter)) {
+      // Private methods demands that
+      //
+      // class A {
+      //   static set #x(_) {}
+      //   get #x() { }
+      // }
+      //
+      // Report a SyntaxError.
+      if (placement == p->value()->placement()) {
+        p->value()->setPrivateNameKind(PrivateNameKind::GetterSetter);
+        handler_.setPrivateNameKind(nameNode, PrivateNameKind::GetterSetter);
+        return true;
+      }
+    }
+
+    reportRedeclaration(name, p->value()->kind(), pos, p->value()->pos());
+    return false;
+  }
+
+  if (!scope->addDeclaredName(pc_, p, name, declKind, pos.begin, closedOver)) {
+    return false;
+  }
+
+  DeclaredNamePtr declared = scope->lookupDeclaredName(name);
+  declared->value()->setPrivateNameKind(kind);
+  declared->value()->setFieldPlacement(placement);
+  handler_.setPrivateNameKind(nameNode, kind);
+
+  return true;
+}
+
+bool ParserBase::noteUsedNameInternal(TaggedParserAtomIndex name,
+                                      NameVisibility visibility,
+                                      mozilla::Maybe<TokenPos> tokenPosition) {
   // The asm.js validator does all its own symbol-table management so, as an
   // optimization, avoid doing any work here.
   if (pc_->useAsmOrInsideUseAsm()) {
@@ -798,12 +847,18 @@ bool ParserBase::noteUsedNameInternal(HandlePropertyName name) {
   // to know if they are closed over. So no need to track used name at the
   // global scope. It is not incorrect to track them, this is an
   // optimization.
+  //
+  // As an exception however, we continue to track private name references,
+  // as the used names tracker is used to provide early errors for undeclared
+  // private name references
   ParseContext::Scope* scope = pc_->innermostScope();
-  if (pc_->sc()->isGlobalContext() && scope == &pc_->varScope()) {
+  if (pc_->sc()->isGlobalContext() && scope == &pc_->varScope() &&
+      visibility == NameVisibility::Public) {
     return true;
   }
 
-  return usedNames_.noteUse(cx_, name, pc_->scriptId(), scope->id());
+  return usedNames_.noteUse(cx_, name, visibility, pc_->scriptId(), scope->id(),
+                            tokenPosition);
 }
 
 template <class ParseHandler>
@@ -811,15 +866,33 @@ bool PerHandlerParser<ParseHandler>::
     propagateFreeNamesAndMarkClosedOverBindings(ParseContext::Scope& scope) {
   // Now that we have all the declared names in the scope, check which
   // functions should exhibit Annex B semantics.
-  if (!scope.propagateAndMarkAnnexBFunctionBoxes(pc_)) {
+  if (!scope.propagateAndMarkAnnexBFunctionBoxes(pc_, this)) {
     return false;
   }
 
   if (handler_.canSkipLazyClosedOverBindings()) {
+    MOZ_ASSERT(pc_->isOutermostOfCurrentCompile());
+
     // Scopes are nullptr-delimited in the BaseScript closed over bindings
     // array.
+    uint32_t slotCount = scope.declaredCount();
     while (JSAtom* name = handler_.nextLazyClosedOverBinding()) {
-      scope.lookupDeclaredName(name)->value()->setClosedOver();
+      // TODO-Stencil
+      //   After closed-over-bindings are snapshotted in the handler,
+      //   remove this.
+      auto parserAtom = this->parserAtoms().internJSAtom(
+          cx_, this->getCompilationState().input.atomCache, name);
+      if (!parserAtom) {
+        return false;
+      }
+
+      scope.lookupDeclaredName(parserAtom)->value()->setClosedOver();
+      MOZ_ASSERT(slotCount > 0);
+      slotCount--;
+    }
+
+    if (pc_->isGeneratorOrAsync()) {
+      scope.setOwnStackSlotCount(slotCount);
     }
     return true;
   }
@@ -829,26 +902,40 @@ bool PerHandlerParser<ParseHandler>::
   uint32_t scriptId = pc_->scriptId();
   uint32_t scopeId = scope.id();
 
+  uint32_t slotCount = 0;
   for (BindingIter bi = scope.bindings(pc_); bi; bi++) {
+    bool closedOver = false;
     if (UsedNamePtr p = usedNames_.lookup(bi.name())) {
-      bool closedOver;
       p->value().noteBoundInScope(scriptId, scopeId, &closedOver);
       if (closedOver) {
         bi.setClosedOver();
 
         if constexpr (isSyntaxParser) {
-          if (!pc_->closedOverBindingsForLazy().append(bi.name())) {
+          if (!pc_->closedOverBindingsForLazy().append(
+                  TrivialTaggedParserAtomIndex::from(bi.name()))) {
             ReportOutOfMemory(cx_);
             return false;
           }
         }
       }
     }
+
+    if constexpr (!isSyntaxParser) {
+      if (!closedOver) {
+        slotCount++;
+      }
+    }
+  }
+  if constexpr (!isSyntaxParser) {
+    if (pc_->isGeneratorOrAsync()) {
+      scope.setOwnStackSlotCount(slotCount);
+    }
   }
 
   // Append a nullptr to denote end-of-scope.
   if constexpr (isSyntaxParser) {
-    if (!pc_->closedOverBindingsForLazy().append(nullptr)) {
+    if (!pc_->closedOverBindingsForLazy().append(
+            TrivialTaggedParserAtomIndex::null())) {
       ReportOutOfMemory(cx_);
       return false;
     }
@@ -875,11 +962,12 @@ bool Parser<FullParseHandler, Unit>::checkStatementsEOF() {
   return true;
 }
 
-template <typename Scope>
-typename Scope::Data* NewEmptyBindingData(JSContext* cx, LifoAlloc& alloc,
-                                          uint32_t numBindings) {
-  using Data = typename Scope::Data;
-  size_t allocSize = SizeOfData<typename Scope::Data>(numBindings);
+template <typename ScopeT>
+typename ScopeT::ParserData* NewEmptyBindingData(JSContext* cx,
+                                                 LifoAlloc& alloc,
+                                                 uint32_t numBindings) {
+  using Data = typename ScopeT::ParserData;
+  size_t allocSize = SizeOfScopeData<Data>(numBindings);
   auto* bindings = alloc.newWithSize<Data>(allocSize, numBindings);
   if (!bindings) {
     ReportOutOfMemory(cx);
@@ -887,75 +975,85 @@ typename Scope::Data* NewEmptyBindingData(JSContext* cx, LifoAlloc& alloc,
   return bindings;
 }
 
-GlobalScope::Data* NewEmptyGlobalScopeData(JSContext* cx, LifoAlloc& alloc,
-                                           uint32_t numBindings) {
+GlobalScope::ParserData* NewEmptyGlobalScopeData(JSContext* cx,
+                                                 LifoAlloc& alloc,
+                                                 uint32_t numBindings) {
   return NewEmptyBindingData<GlobalScope>(cx, alloc, numBindings);
 }
 
-LexicalScope::Data* NewEmptyLexicalScopeData(JSContext* cx, LifoAlloc& alloc,
-                                             uint32_t numBindings) {
+LexicalScope::ParserData* NewEmptyLexicalScopeData(JSContext* cx,
+                                                   LifoAlloc& alloc,
+                                                   uint32_t numBindings) {
   return NewEmptyBindingData<LexicalScope>(cx, alloc, numBindings);
+}
+
+FunctionScope::ParserData* NewEmptyFunctionScopeData(JSContext* cx,
+                                                     LifoAlloc& alloc,
+                                                     uint32_t numBindings) {
+  return NewEmptyBindingData<FunctionScope>(cx, alloc, numBindings);
 }
 
 namespace detail {
 
-template <class Data>
-static MOZ_ALWAYS_INLINE BindingName* InitializeIndexedBindings(
-    Data* data, BindingName* start, BindingName* cursor) {
+template <class SlotInfo>
+static MOZ_ALWAYS_INLINE ParserBindingName* InitializeIndexedBindings(
+    SlotInfo& slotInfo, ParserBindingName* start, ParserBindingName* cursor) {
   return cursor;
 }
 
-template <class Data, typename UnsignedInteger, typename... Step>
-static MOZ_ALWAYS_INLINE BindingName* InitializeIndexedBindings(
-    Data* data, BindingName* start, BindingName* cursor,
-    UnsignedInteger Data::*field, const BindingNameVector& bindings,
+template <class SlotInfo, typename UnsignedInteger, typename... Step>
+static MOZ_ALWAYS_INLINE ParserBindingName* InitializeIndexedBindings(
+    SlotInfo& slotInfo, ParserBindingName* start, ParserBindingName* cursor,
+    UnsignedInteger SlotInfo::*field, const ParserBindingNameVector& bindings,
     Step&&... step) {
-  data->*field = AssertedCast<UnsignedInteger>(PointerRangeSize(start, cursor));
+  slotInfo.*field =
+      AssertedCast<UnsignedInteger>(PointerRangeSize(start, cursor));
 
-  BindingName* newCursor =
+  ParserBindingName* newCursor =
       std::uninitialized_copy(bindings.begin(), bindings.end(), cursor);
 
-  return InitializeIndexedBindings(data, start, newCursor,
+  return InitializeIndexedBindings(slotInfo, start, newCursor,
                                    std::forward<Step>(step)...);
 }
 
 }  // namespace detail
 
-// Initialize |data->trailingNames| bindings, then set |data->length| to the
-// count of bindings added (which must equal |count|).
+// Initialize the trailing name bindings of |data|, then set |data->length| to
+// the count of bindings added (which must equal |count|).
 //
-// First, |firstBindings| are added to |data->trailingNames|.  Then any "steps"
-// present are performed first to last.  Each step is 1) a pointer to a member
-// of |data| to be set to the current number of bindings added, and 2) a vector
-// of |BindingName|s to then copy into |data->trailingNames|.  (Thus each
-// |data| member field indicates where the corresponding vector's names start.)
+// First, |firstBindings| are added to the trailing names.  Then any
+// "steps" present are performed first to last.  Each step is 1) a pointer to a
+// member of |data| to be set to the current number of bindings added, and 2) a
+// vector of |ParserBindingName|s to then copy into |data->trailingNames|.
+// (Thus each |data| member field indicates where the corresponding vector's
+//  names start.)
 template <class Data, typename... Step>
 static MOZ_ALWAYS_INLINE void InitializeBindingData(
-    Data* data, uint32_t count, const BindingNameVector& firstBindings,
+    Data* data, uint32_t count, const ParserBindingNameVector& firstBindings,
     Step&&... step) {
   MOZ_ASSERT(data->length == 0, "data shouldn't be filled yet");
 
-  BindingName* start = data->trailingNames.start();
-  BindingName* cursor = std::uninitialized_copy(firstBindings.begin(),
-                                                firstBindings.end(), start);
+  ParserBindingName* start = GetScopeDataTrailingNamesPointer(data);
+  ParserBindingName* cursor = std::uninitialized_copy(
+      firstBindings.begin(), firstBindings.end(), start);
 
 #ifdef DEBUG
-  BindingName* end =
+  ParserBindingName* end =
 #endif
-      detail::InitializeIndexedBindings(data, start, cursor,
+      detail::InitializeIndexedBindings(data->slotInfo, start, cursor,
                                         std::forward<Step>(step)...);
 
   MOZ_ASSERT(PointerRangeSize(start, end) == count);
   data->length = count;
 }
 
-Maybe<GlobalScope::Data*> NewGlobalScopeData(JSContext* cx,
-                                             ParseContext::Scope& scope,
-                                             LifoAlloc& alloc,
-                                             ParseContext* pc) {
-  BindingNameVector vars(cx);
-  BindingNameVector lets(cx);
-  BindingNameVector consts(cx);
+Maybe<GlobalScope::ParserData*> NewGlobalScopeData(JSContext* cx,
+                                                   ParseContext::Scope& scope,
+                                                   LifoAlloc& alloc,
+                                                   ParseContext* pc) {
+  ParserBindingNameVector vars(cx);
+  ParserBindingNameVector lets(cx);
+  ParserBindingNameVector consts(cx);
 
   bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
@@ -965,21 +1063,22 @@ Maybe<GlobalScope::Data*> NewGlobalScopeData(JSContext* cx,
       case BindingKind::Var: {
         bool isTopLevelFunction =
             bi.declarationKind() == DeclarationKind::BodyLevelFunction;
-        BindingName binding(bi.name(), closedOver, isTopLevelFunction);
+
+        ParserBindingName binding(bi.name(), closedOver, isTopLevelFunction);
         if (!vars.append(binding)) {
           return Nothing();
         }
         break;
       }
       case BindingKind::Let: {
-        BindingName binding(bi.name(), closedOver);
+        ParserBindingName binding(bi.name(), closedOver);
         if (!lets.append(binding)) {
           return Nothing();
         }
         break;
       }
       case BindingKind::Const: {
-        BindingName binding(bi.name(), closedOver);
+        ParserBindingName binding(bi.name(), closedOver);
         if (!consts.append(binding)) {
           return Nothing();
         }
@@ -990,7 +1089,7 @@ Maybe<GlobalScope::Data*> NewGlobalScopeData(JSContext* cx,
     }
   }
 
-  GlobalScope::Data* bindings = nullptr;
+  GlobalScope::ParserData* bindings = nullptr;
   uint32_t numBindings = vars.length() + lets.length() + consts.length();
 
   if (numBindings > 0) {
@@ -1001,32 +1100,33 @@ Maybe<GlobalScope::Data*> NewGlobalScopeData(JSContext* cx,
 
     // The ordering here is important. See comments in GlobalScope.
     InitializeBindingData(bindings, numBindings, vars,
-                          &GlobalScope::Data::letStart, lets,
-                          &GlobalScope::Data::constStart, consts);
+                          &ParserGlobalScopeSlotInfo::letStart, lets,
+                          &ParserGlobalScopeSlotInfo::constStart, consts);
   }
 
   return Some(bindings);
 }
 
-Maybe<GlobalScope::Data*> ParserBase::newGlobalScopeData(
+Maybe<GlobalScope::ParserData*> ParserBase::newGlobalScopeData(
     ParseContext::Scope& scope) {
-  return NewGlobalScopeData(cx_, scope, alloc_, pc_);
+  return NewGlobalScopeData(cx_, scope, stencilAlloc(), pc_);
 }
 
-Maybe<ModuleScope::Data*> NewModuleScopeData(JSContext* cx,
-                                             ParseContext::Scope& scope,
-                                             LifoAlloc& alloc,
-                                             ParseContext* pc) {
-  BindingNameVector imports(cx);
-  BindingNameVector vars(cx);
-  BindingNameVector lets(cx);
-  BindingNameVector consts(cx);
+Maybe<ModuleScope::ParserData*> NewModuleScopeData(JSContext* cx,
+                                                   ParseContext::Scope& scope,
+                                                   LifoAlloc& alloc,
+                                                   ParseContext* pc) {
+  ParserBindingNameVector imports(cx);
+  ParserBindingNameVector vars(cx);
+  ParserBindingNameVector lets(cx);
+  ParserBindingNameVector consts(cx);
 
   bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
     // Imports are indirect bindings and must not be given known slots.
-    BindingName binding(bi.name(), (allBindingsClosedOver || bi.closedOver()) &&
-                                       bi.kind() != BindingKind::Import);
+    ParserBindingName binding(bi.name(),
+                              (allBindingsClosedOver || bi.closedOver()) &&
+                                  bi.kind() != BindingKind::Import);
     switch (bi.kind()) {
       case BindingKind::Import:
         if (!imports.append(binding)) {
@@ -1053,7 +1153,7 @@ Maybe<ModuleScope::Data*> NewModuleScopeData(JSContext* cx,
     }
   }
 
-  ModuleScope::Data* bindings = nullptr;
+  ModuleScope::ParserData* bindings = nullptr;
   uint32_t numBindings =
       imports.length() + vars.length() + lets.length() + consts.length();
 
@@ -1065,37 +1165,42 @@ Maybe<ModuleScope::Data*> NewModuleScopeData(JSContext* cx,
 
     // The ordering here is important. See comments in ModuleScope.
     InitializeBindingData(bindings, numBindings, imports,
-                          &ModuleScope::Data::varStart, vars,
-                          &ModuleScope::Data::letStart, lets,
-                          &ModuleScope::Data::constStart, consts);
+                          &ParserModuleScopeSlotInfo::varStart, vars,
+                          &ParserModuleScopeSlotInfo::letStart, lets,
+                          &ParserModuleScopeSlotInfo::constStart, consts);
   }
 
   return Some(bindings);
 }
 
-Maybe<ModuleScope::Data*> ParserBase::newModuleScopeData(
+Maybe<ModuleScope::ParserData*> ParserBase::newModuleScopeData(
     ParseContext::Scope& scope) {
-  return NewModuleScopeData(cx_, scope, alloc_, pc_);
+  return NewModuleScopeData(cx_, scope, stencilAlloc(), pc_);
 }
 
-Maybe<EvalScope::Data*> NewEvalScopeData(JSContext* cx,
-                                         ParseContext::Scope& scope,
-                                         LifoAlloc& alloc, ParseContext* pc) {
-  BindingNameVector vars(cx);
+Maybe<EvalScope::ParserData*> NewEvalScopeData(JSContext* cx,
+                                               ParseContext::Scope& scope,
+                                               LifoAlloc& alloc,
+                                               ParseContext* pc) {
+  ParserBindingNameVector vars(cx);
 
+  // Treat all bindings as closed over in non-strict eval.
+  bool allBindingsClosedOver =
+      !pc->sc()->strict() || pc->sc()->allBindingsClosedOver();
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
-    // Eval scopes only contain 'var' bindings. Make all bindings aliased
-    // for now.
+    // Eval scopes only contain 'var' bindings.
     MOZ_ASSERT(bi.kind() == BindingKind::Var);
     bool isTopLevelFunction =
         bi.declarationKind() == DeclarationKind::BodyLevelFunction;
-    BindingName binding(bi.name(), true, isTopLevelFunction);
+    bool closedOver = allBindingsClosedOver || bi.closedOver();
+
+    ParserBindingName binding(bi.name(), closedOver, isTopLevelFunction);
     if (!vars.append(binding)) {
       return Nothing();
     }
   }
 
-  EvalScope::Data* bindings = nullptr;
+  EvalScope::ParserData* bindings = nullptr;
   uint32_t numBindings = vars.length();
 
   if (numBindings > 0) {
@@ -1110,29 +1215,30 @@ Maybe<EvalScope::Data*> NewEvalScopeData(JSContext* cx,
   return Some(bindings);
 }
 
-Maybe<EvalScope::Data*> ParserBase::newEvalScopeData(
+Maybe<EvalScope::ParserData*> ParserBase::newEvalScopeData(
     ParseContext::Scope& scope) {
-  return NewEvalScopeData(cx_, scope, alloc_, pc_);
+  return NewEvalScopeData(cx_, scope, stencilAlloc(), pc_);
 }
 
-Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
-                                                 ParseContext::Scope& scope,
-                                                 bool hasParameterExprs,
-                                                 LifoAlloc& alloc,
-                                                 ParseContext* pc) {
-  BindingNameVector positionalFormals(cx);
-  BindingNameVector formals(cx);
-  BindingNameVector vars(cx);
+Maybe<FunctionScope::ParserData*> NewFunctionScopeData(
+    JSContext* cx, ParseContext::Scope& scope, bool hasParameterExprs,
+    LifoAlloc& alloc, ParseContext* pc) {
+  ParserBindingNameVector positionalFormals(cx);
+  ParserBindingNameVector formals(cx);
+  ParserBindingNameVector vars(cx);
 
-  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
+  bool allBindingsClosedOver =
+      pc->sc()->allBindingsClosedOver() || scope.tooBigToOptimize();
+  bool argumentBindingsClosedOver =
+      allBindingsClosedOver || pc->isGeneratorOrAsync();
   bool hasDuplicateParams = pc->functionBox()->hasDuplicateParameters;
 
   // Positional parameter names must be added in order of appearance as they are
   // referenced using argument slots.
   for (size_t i = 0; i < pc->positionalFormalParameterNames().length(); i++) {
-    JSAtom* name = pc->positionalFormalParameterNames()[i];
+    TaggedParserAtomIndex name = pc->positionalFormalParameterNames()[i];
 
-    BindingName bindName;
+    ParserBindingName bindName;
     if (name) {
       DeclaredNamePtr p = scope.lookupDeclaredName(name);
 
@@ -1140,7 +1246,7 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
       // there are parameter defaults. It is the binding in the defaults
       // scope that is closed over instead.
       bool closedOver =
-          allBindingsClosedOver || (p && p->value()->closedOver());
+          argumentBindingsClosedOver || (p && p->value()->closedOver());
 
       // If the parameter name has duplicates, only the final parameter
       // name should be on the environment, as otherwise the environment
@@ -1148,14 +1254,15 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
       if (hasDuplicateParams) {
         for (size_t j = pc->positionalFormalParameterNames().length() - 1;
              j > i; j--) {
-          if (pc->positionalFormalParameterNames()[j] == name) {
+          if (TaggedParserAtomIndex(pc->positionalFormalParameterNames()[j]) ==
+              name) {
             closedOver = false;
             break;
           }
         }
       }
 
-      bindName = BindingName(name, closedOver);
+      bindName = ParserBindingName(name, closedOver);
     }
 
     if (!positionalFormals.append(bindName)) {
@@ -1164,7 +1271,8 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
   }
 
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
-    BindingName binding(bi.name(), allBindingsClosedOver || bi.closedOver());
+    ParserBindingName binding(bi.name(),
+                              allBindingsClosedOver || bi.closedOver());
     switch (bi.kind()) {
       case BindingKind::FormalParameter:
         // Positional parameter names are already handled above.
@@ -1184,12 +1292,16 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
           return Nothing();
         }
         break;
+      case BindingKind::Let:
+      case BindingKind::Const:
+        break;
       default:
+        MOZ_CRASH("bad function scope BindingKind");
         break;
     }
   }
 
-  FunctionScope::Data* bindings = nullptr;
+  FunctionScope::ParserData* bindings = nullptr;
   uint32_t numBindings =
       positionalFormals.length() + formals.length() + vars.length();
 
@@ -1200,9 +1312,10 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
     }
 
     // The ordering here is important. See comments in FunctionScope.
-    InitializeBindingData(bindings, numBindings, positionalFormals,
-                          &FunctionScope::Data::nonPositionalFormalStart,
-                          formals, &FunctionScope::Data::varStart, vars);
+    InitializeBindingData(
+        bindings, numBindings, positionalFormals,
+        &ParserFunctionScopeSlotInfo::nonPositionalFormalStart, formals,
+        &ParserFunctionScopeSlotInfo::varStart, vars);
   }
 
   return Some(bindings);
@@ -1212,7 +1325,8 @@ Maybe<FunctionScope::Data*> NewFunctionScopeData(JSContext* cx,
 // entry marked as closed-over. This is done without the need to allocate the
 // binding list. If true, an EnvironmentObject will be needed at runtime.
 bool FunctionScopeHasClosedOverBindings(ParseContext* pc) {
-  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
+  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver() ||
+                               pc->functionScope().tooBigToOptimize();
 
   for (BindingIter bi = pc->functionScope().bindings(pc); bi; bi++) {
     switch (bi.kind()) {
@@ -1231,28 +1345,41 @@ bool FunctionScopeHasClosedOverBindings(ParseContext* pc) {
   return false;
 }
 
-Maybe<FunctionScope::Data*> ParserBase::newFunctionScopeData(
+Maybe<FunctionScope::ParserData*> ParserBase::newFunctionScopeData(
     ParseContext::Scope& scope, bool hasParameterExprs) {
-  return NewFunctionScopeData(cx_, scope, hasParameterExprs, alloc_, pc_);
+  return NewFunctionScopeData(cx_, scope, hasParameterExprs, stencilAlloc(),
+                              pc_);
 }
 
-Maybe<VarScope::Data*> NewVarScopeData(JSContext* cx,
-                                       ParseContext::Scope& scope,
-                                       LifoAlloc& alloc, ParseContext* pc) {
-  BindingNameVector vars(cx);
+VarScope::ParserData* NewEmptyVarScopeData(JSContext* cx, LifoAlloc& alloc,
+                                           uint32_t numBindings) {
+  return NewEmptyBindingData<VarScope>(cx, alloc, numBindings);
+}
 
-  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
+Maybe<VarScope::ParserData*> NewVarScopeData(JSContext* cx,
+                                             ParseContext::Scope& scope,
+                                             LifoAlloc& alloc,
+                                             ParseContext* pc) {
+  ParserBindingNameVector vars(cx);
+
+  bool allBindingsClosedOver =
+      pc->sc()->allBindingsClosedOver() || scope.tooBigToOptimize();
 
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
     if (bi.kind() == BindingKind::Var) {
-      BindingName binding(bi.name(), allBindingsClosedOver || bi.closedOver());
+      ParserBindingName binding(bi.name(),
+                                allBindingsClosedOver || bi.closedOver());
       if (!vars.append(binding)) {
         return Nothing();
       }
+    } else {
+      MOZ_ASSERT(
+          bi.kind() == BindingKind::Let || bi.kind() == BindingKind::Const,
+          "bad var scope BindingKind");
     }
   }
 
-  VarScope::Data* bindings = nullptr;
+  VarScope::ParserData* bindings = nullptr;
   uint32_t numBindings = vars.length();
 
   if (numBindings > 0) {
@@ -1279,21 +1406,24 @@ static bool VarScopeHasBindings(ParseContext* pc) {
   return false;
 }
 
-Maybe<VarScope::Data*> ParserBase::newVarScopeData(ParseContext::Scope& scope) {
-  return NewVarScopeData(cx_, scope, alloc_, pc_);
+Maybe<VarScope::ParserData*> ParserBase::newVarScopeData(
+    ParseContext::Scope& scope) {
+  return NewVarScopeData(cx_, scope, stencilAlloc(), pc_);
 }
 
-Maybe<LexicalScope::Data*> NewLexicalScopeData(JSContext* cx,
-                                               ParseContext::Scope& scope,
-                                               LifoAlloc& alloc,
-                                               ParseContext* pc) {
-  BindingNameVector lets(cx);
-  BindingNameVector consts(cx);
+Maybe<LexicalScope::ParserData*> NewLexicalScopeData(JSContext* cx,
+                                                     ParseContext::Scope& scope,
+                                                     LifoAlloc& alloc,
+                                                     ParseContext* pc) {
+  ParserBindingNameVector lets(cx);
+  ParserBindingNameVector consts(cx);
 
-  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
+  bool allBindingsClosedOver =
+      pc->sc()->allBindingsClosedOver() || scope.tooBigToOptimize();
 
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
-    BindingName binding(bi.name(), allBindingsClosedOver || bi.closedOver());
+    ParserBindingName binding(bi.name(),
+                              allBindingsClosedOver || bi.closedOver());
     switch (bi.kind()) {
       case BindingKind::Let:
         if (!lets.append(binding)) {
@@ -1305,12 +1435,16 @@ Maybe<LexicalScope::Data*> NewLexicalScopeData(JSContext* cx,
           return Nothing();
         }
         break;
+      case BindingKind::Var:
+      case BindingKind::FormalParameter:
+        break;
       default:
+        MOZ_CRASH("Bad lexical scope BindingKind");
         break;
     }
   }
 
-  LexicalScope::Data* bindings = nullptr;
+  LexicalScope::ParserData* bindings = nullptr;
   uint32_t numBindings = lets.length() + consts.length();
 
   if (numBindings > 0) {
@@ -1321,7 +1455,7 @@ Maybe<LexicalScope::Data*> NewLexicalScopeData(JSContext* cx,
 
     // The ordering here is important. See comments in LexicalScope.
     InitializeBindingData(bindings, numBindings, lets,
-                          &LexicalScope::Data::constStart, consts);
+                          &ParserLexicalScopeSlotInfo::constStart, consts);
   }
 
   return Some(bindings);
@@ -1332,7 +1466,8 @@ Maybe<LexicalScope::Data*> NewLexicalScopeData(JSContext* cx,
 // list. If true, an EnvironmentObject will be needed at runtime.
 bool LexicalScopeHasClosedOverBindings(ParseContext* pc,
                                        ParseContext::Scope& scope) {
-  bool allBindingsClosedOver = pc->sc()->allBindingsClosedOver();
+  bool allBindingsClosedOver =
+      pc->sc()->allBindingsClosedOver() || scope.tooBigToOptimize();
 
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
     switch (bi.kind()) {
@@ -1351,9 +1486,93 @@ bool LexicalScopeHasClosedOverBindings(ParseContext* pc,
   return false;
 }
 
-Maybe<LexicalScope::Data*> ParserBase::newLexicalScopeData(
+Maybe<LexicalScope::ParserData*> ParserBase::newLexicalScopeData(
     ParseContext::Scope& scope) {
-  return NewLexicalScopeData(cx_, scope, alloc_, pc_);
+  return NewLexicalScopeData(cx_, scope, stencilAlloc(), pc_);
+}
+
+Maybe<ClassBodyScope::ParserData*> NewClassBodyScopeData(
+    JSContext* cx, ParseContext::Scope& scope, LifoAlloc& alloc,
+    ParseContext* pc) {
+  ParserBindingNameVector privateBrand(cx);
+  ParserBindingNameVector synthetics(cx);
+  ParserBindingNameVector privateMethods(cx);
+
+  bool allBindingsClosedOver =
+      pc->sc()->allBindingsClosedOver() || scope.tooBigToOptimize();
+
+  for (BindingIter bi = scope.bindings(pc); bi; bi++) {
+    ParserBindingName binding(bi.name(),
+                              allBindingsClosedOver || bi.closedOver());
+    switch (bi.kind()) {
+      case BindingKind::Synthetic:
+        if (bi.name() == TaggedParserAtomIndex::WellKnown::dotPrivateBrand()) {
+          MOZ_ASSERT(privateBrand.empty());
+          if (!privateBrand.append(binding)) {
+            return Nothing();
+          }
+        } else {
+          if (!synthetics.append(binding)) {
+            return Nothing();
+          }
+        }
+        break;
+
+      case BindingKind::PrivateMethod:
+        if (!privateMethods.append(binding)) {
+          return Nothing();
+        }
+        break;
+
+      default:
+        MOZ_CRASH("bad class body scope BindingKind");
+        break;
+    }
+  }
+
+  // We should have zero or one private brands.
+  MOZ_ASSERT(privateBrand.length() == 0 || privateBrand.length() == 1);
+
+  ClassBodyScope::ParserData* bindings = nullptr;
+  uint32_t numBindings =
+      privateBrand.length() + synthetics.length() + privateMethods.length();
+
+  if (numBindings > 0) {
+    bindings = NewEmptyBindingData<ClassBodyScope>(cx, alloc, numBindings);
+    if (!bindings) {
+      return Nothing();
+    }
+    // To simplify initialization of the bindings, we concatenate the
+    // synthetics+privateBrand vector such that the private brand is always the
+    // first element, as ordering is important. See comments in ClassBodyScope.
+    ParserBindingNameVector brandAndSynthetics(cx);
+    if (!brandAndSynthetics.appendAll(privateBrand)) {
+      return Nothing();
+    }
+    if (!brandAndSynthetics.appendAll(synthetics)) {
+      return Nothing();
+    }
+
+    // The ordering here is important. See comments in ClassBodyScope.
+    InitializeBindingData(bindings, numBindings, brandAndSynthetics,
+                          &ParserClassBodyScopeSlotInfo::privateMethodStart,
+                          privateMethods);
+  }
+
+  // `EmitterScope::lookupPrivate()` requires `.privateBrand` to be stored in a
+  // predictable slot: the first slot available in the environment object,
+  // `ClassBodyLexicalEnvironmentObject::privateBrandSlot()`. We assume that
+  // if `.privateBrand` is first in the scope, it will be stored there.
+  MOZ_ASSERT_IF(!privateBrand.empty(),
+                GetScopeDataTrailingNames(bindings)[0].name() ==
+                    TaggedParserAtomIndex::WellKnown::dotPrivateBrand());
+
+  return Some(bindings);
+}
+
+Maybe<ClassBodyScope::ParserData*> ParserBase::newClassBodyScopeData(
+    ParseContext::Scope& scope) {
+  return NewClassBodyScopeData(cx_, scope, stencilAlloc(), pc_);
 }
 
 template <>
@@ -1374,12 +1593,99 @@ LexicalScopeNode* PerHandlerParser<FullParseHandler>::finishLexicalScope(
     return nullptr;
   }
 
-  Maybe<LexicalScope::Data*> bindings = newLexicalScopeData(scope);
+  Maybe<LexicalScope::ParserData*> bindings = newLexicalScopeData(scope);
   if (!bindings) {
     return nullptr;
   }
 
   return handler_.newLexicalScope(*bindings, body, kind);
+}
+
+template <>
+SyntaxParseHandler::ClassBodyScopeNodeType
+PerHandlerParser<SyntaxParseHandler>::finishClassBodyScope(
+    ParseContext::Scope& scope, ListNodeType body) {
+  if (!propagateFreeNamesAndMarkClosedOverBindings(scope)) {
+    return null();
+  }
+
+  return handler_.newClassBodyScope(body);
+}
+
+template <>
+ClassBodyScopeNode* PerHandlerParser<FullParseHandler>::finishClassBodyScope(
+    ParseContext::Scope& scope, ListNode* body) {
+  if (!propagateFreeNamesAndMarkClosedOverBindings(scope)) {
+    return nullptr;
+  }
+
+  Maybe<ClassBodyScope::ParserData*> bindings = newClassBodyScopeData(scope);
+  if (!bindings) {
+    return nullptr;
+  }
+
+  return handler_.newClassBodyScope(*bindings, body);
+}
+
+template <class ParseHandler>
+bool PerHandlerParser<ParseHandler>::checkForUndefinedPrivateFields(
+    EvalSharedContext* evalSc) {
+  if (!this->compilationState_.isInitialStencil()) {
+    // We're delazifying -- so we already checked private names during first
+    // parse.
+    return true;
+  }
+
+  if (!this->compilationState_.input.options.privateClassFields) {
+    return true;
+  }
+
+  Vector<UnboundPrivateName, 8> unboundPrivateNames(cx_);
+  if (!usedNames_.getUnboundPrivateNames(unboundPrivateNames)) {
+    return false;
+  }
+
+  // No unbound names, let's get out of here!
+  if (unboundPrivateNames.empty()) {
+    return true;
+  }
+
+  // It is an early error if there's private name references unbound,
+  // unless it's an eval, in which case we need to check the scope
+  // chain.
+  if (!evalSc) {
+    // The unbound private names are sorted, so just grab the first one.
+    UnboundPrivateName minimum = unboundPrivateNames[0];
+    UniqueChars str = this->parserAtoms().toPrintableString(cx_, minimum.atom);
+    if (!str) {
+      return false;
+    }
+
+    errorAt(minimum.position.begin, JSMSG_MISSING_PRIVATE_DECL, str.get());
+    return false;
+  }
+
+  // It's important that the unbound private names are sorted, as we
+  // want our errors to always be issued to the first textually.
+  for (UnboundPrivateName unboundName : unboundPrivateNames) {
+    // If the enclosingScope is non-syntactic, then we are in a
+    // Debugger.Frame.prototype.eval call. In order to find the declared private
+    // names, we must use the effective scope that was determined when creating
+    // the scopeContext.
+    if (!this->compilationState_.scopeContext
+             .effectiveScopePrivateFieldCacheHas(unboundName.atom)) {
+      UniqueChars str =
+          this->parserAtoms().toPrintableString(cx_, unboundName.atom);
+      if (!str) {
+        return false;
+      }
+      errorAt(unboundName.position.begin, JSMSG_MISSING_PRIVATE_DECL,
+              str.get());
+      return false;
+    }
+  }
+
+  return true;
 }
 
 template <typename Unit>
@@ -1412,6 +1718,11 @@ LexicalScopeNode* Parser<FullParseHandler, Unit>::evalBody(
       return nullptr;
     }
 
+    // Private names not lexically defined must trigger a syntax error.
+    if (!checkForUndefinedPrivateFields(evalsc)) {
+      return nullptr;
+    }
+
     body = finishLexicalScope(lexicalScope, list);
     if (!body) {
       return nullptr;
@@ -1420,26 +1731,15 @@ LexicalScopeNode* Parser<FullParseHandler, Unit>::evalBody(
 
 #ifdef DEBUG
   if (evalpc.superScopeNeedsHomeObject() &&
-      evalsc->compilationEnclosingScope()) {
+      this->compilationState_.input.enclosingScope) {
     // If superScopeNeedsHomeObject_ is set and we are an entry-point
     // ParseContext, then we must be emitting an eval script, and the
     // outer function must already be marked as needing a home object
     // since it contains an eval.
-    ScopeIter si(evalsc->compilationEnclosingScope());
-    for (; si; si++) {
-      if (si.kind() == ScopeKind::Function) {
-        JSFunction* fun = si.scope()->as<FunctionScope>().canonicalFunction();
-        if (fun->isArrow()) {
-          continue;
-        }
-        MOZ_ASSERT(fun->allowSuperProperty());
-        MOZ_ASSERT(fun->baseScript()->needsHomeObject());
-        break;
-      }
-    }
-    MOZ_ASSERT(!si.done(),
-               "Eval must have found an enclosing function box scope that "
-               "allows super.property");
+    MOZ_ASSERT(
+        this->compilationState_.scopeContext.hasFunctionNeedsHomeObjectOnChain,
+        "Eval must have found an enclosing function box scope that "
+        "allows super.property");
   }
 #endif
 
@@ -1451,7 +1751,7 @@ LexicalScopeNode* Parser<FullParseHandler, Unit>::evalBody(
   // Don't constant-fold inside "use asm" code, as this could create a parse
   // tree that doesn't type-check as asm.js.
   if (!pc_->useAsmOrInsideUseAsm()) {
-    if (!FoldConstants(cx_, &node, &handler_)) {
+    if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
       return null();
     }
   }
@@ -1461,14 +1761,21 @@ LexicalScopeNode* Parser<FullParseHandler, Unit>::evalBody(
     return nullptr;
   }
 
-  // For eval scripts, since all bindings are automatically considered
-  // closed over, we don't need to call propagateFreeNamesAndMarkClosed-
-  // OverBindings. However, Annex B.3.3 functions still need to be marked.
-  if (!varScope.propagateAndMarkAnnexBFunctionBoxes(pc_)) {
-    return nullptr;
+  if (pc_->sc()->strict()) {
+    if (!propagateFreeNamesAndMarkClosedOverBindings(varScope)) {
+      return nullptr;
+    }
+  } else {
+    // For non-strict eval scripts, since all bindings are automatically
+    // considered closed over, we don't need to call propagateFreeNames-
+    // AndMarkClosedOverBindings. However, Annex B.3.3 functions still need to
+    // be marked.
+    if (!varScope.propagateAndMarkAnnexBFunctionBoxes(pc_, this)) {
+      return nullptr;
+    }
   }
 
-  Maybe<EvalScope::Data*> bindings = newEvalScopeData(pc_->varScope());
+  Maybe<EvalScope::ParserData*> bindings = newEvalScopeData(pc_->varScope());
   if (!bindings) {
     return nullptr;
   }
@@ -1503,11 +1810,15 @@ ListNode* Parser<FullParseHandler, Unit>::globalBody(
     return null();
   }
 
+  if (!checkForUndefinedPrivateFields()) {
+    return null();
+  }
+
   ParseNode* node = body;
   // Don't constant-fold inside "use asm" code, as this could create a parse
   // tree that doesn't type-check as asm.js.
   if (!pc_->useAsmOrInsideUseAsm()) {
-    if (!FoldConstants(cx_, &node, &handler_)) {
+    if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
       return null();
     }
   }
@@ -1520,11 +1831,12 @@ ListNode* Parser<FullParseHandler, Unit>::globalBody(
   // For global scripts, whether bindings are closed over or not doesn't
   // matter, so no need to call propagateFreeNamesAndMarkClosedOver-
   // Bindings. However, Annex B.3.3 functions still need to be marked.
-  if (!varScope.propagateAndMarkAnnexBFunctionBoxes(pc_)) {
+  if (!varScope.propagateAndMarkAnnexBFunctionBoxes(pc_, this)) {
     return nullptr;
   }
 
-  Maybe<GlobalScope::Data*> bindings = newGlobalScopeData(pc_->varScope());
+  Maybe<GlobalScope::ParserData*> bindings =
+      newGlobalScopeData(pc_->varScope());
   if (!bindings) {
     return nullptr;
   }
@@ -1538,6 +1850,12 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
     ModuleSharedContext* modulesc) {
   MOZ_ASSERT(checkOptionsCalled_);
 
+  this->compilationState_.moduleMetadata =
+      cx_->template new_<StencilModuleMetadata>();
+  if (!this->compilationState_.moduleMetadata) {
+    return null();
+  }
+
   SourceParseContext modulepc(this, modulesc, nullptr);
   if (!modulepc.init()) {
     return null();
@@ -1545,7 +1863,7 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
 
   ParseContext::VarScope varScope(this);
   if (!varScope.init(pc_)) {
-    return nullptr;
+    return null();
   }
 
   ModuleNodeType moduleNode = handler_.newModule(pos());
@@ -1563,6 +1881,16 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
   MOZ_ASSERT(stmtList->isKind(ParseNodeKind::StatementList));
   moduleNode->setBody(&stmtList->as<ListNode>());
 
+  if (pc_->isAsync()) {
+    if (!noteUsedName(TaggedParserAtomIndex::WellKnown::dotGenerator())) {
+      return null();
+    }
+
+    if (!pc_->declareTopLevelDotGeneratorName()) {
+      return null();
+    }
+  }
+
   TokenKind tt;
   if (!tokenStream.getToken(&tt, TokenStream::SlashIsRegExp)) {
     return null();
@@ -1572,18 +1900,25 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
     return null();
   }
 
-  if (!modulesc->builder.buildTables()) {
+  // Set the module to async if an await keyword was found at the top level.
+  if (pc_->isAsync()) {
+    pc_->sc()->asModuleContext()->builder.noteAsync(
+        *this->compilationState_.moduleMetadata);
+  }
+
+  // Generate the Import/Export tables and store in CompilationState.
+  if (!modulesc->builder.buildTables(*this->compilationState_.moduleMetadata)) {
     return null();
   }
 
   // Check exported local bindings exist and mark them as closed over.
-  for (auto entry : modulesc->builder.localExportEntries()) {
-    JSAtom* name = entry->localName();
-    MOZ_ASSERT(name);
-
-    DeclaredNamePtr p = modulepc.varScope().lookupDeclaredName(name);
+  StencilModuleMetadata& moduleMetadata =
+      *this->compilationState_.moduleMetadata;
+  for (auto entry : moduleMetadata.localExportEntries) {
+    DeclaredNamePtr p = modulepc.varScope().lookupDeclaredName(entry.localName);
     if (!p) {
-      UniqueChars str = AtomToPrintableString(cx_, name);
+      UniqueChars str =
+          this->parserAtoms().toPrintableString(cx_, entry.localName);
       if (!str) {
         return null();
       }
@@ -1595,6 +1930,17 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
     p->value()->setClosedOver();
   }
 
+  // Reserve an environment slot for a "*namespace*" psuedo-binding and mark as
+  // closed-over. We do not know until module linking if this will be used.
+  if (!noteDeclaredName(TaggedParserAtomIndex::WellKnown::starNamespaceStar(),
+                        DeclarationKind::Const, pos())) {
+    return nullptr;
+  }
+  modulepc.varScope()
+      .lookupDeclaredName(TaggedParserAtomIndex::WellKnown::starNamespaceStar())
+      ->value()
+      ->setClosedOver();
+
   if (!CheckParseTree(cx_, alloc_, stmtList)) {
     return null();
   }
@@ -1603,7 +1949,7 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
   // Don't constant-fold inside "use asm" code, as this could create a parse
   // tree that doesn't type-check as asm.js.
   if (!pc_->useAsmOrInsideUseAsm()) {
-    if (!FoldConstants(cx_, &node, &handler_)) {
+    if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
       return null();
     }
   }
@@ -1613,11 +1959,17 @@ ModuleNode* Parser<FullParseHandler, Unit>::moduleBody(
     return null();
   }
 
+  // Private names not lexically defined must trigger a syntax error.
+  if (!checkForUndefinedPrivateFields()) {
+    return null();
+  }
+
   if (!propagateFreeNamesAndMarkClosedOverBindings(modulepc.varScope())) {
     return null();
   }
 
-  Maybe<ModuleScope::Data*> bindings = newModuleScopeData(modulepc.varScope());
+  Maybe<ModuleScope::ParserData*> bindings =
+      newModuleScopeData(modulepc.varScope());
   if (!bindings) {
     return nullptr;
   }
@@ -1635,7 +1987,7 @@ SyntaxParseHandler::ModuleNodeType Parser<SyntaxParseHandler, Unit>::moduleBody(
 
 template <class ParseHandler>
 typename ParseHandler::NameNodeType
-PerHandlerParser<ParseHandler>::newInternalDotName(HandlePropertyName name) {
+PerHandlerParser<ParseHandler>::newInternalDotName(TaggedParserAtomIndex name) {
   NameNodeType nameNode = newName(name);
   if (!nameNode) {
     return null();
@@ -1649,13 +2001,13 @@ PerHandlerParser<ParseHandler>::newInternalDotName(HandlePropertyName name) {
 template <class ParseHandler>
 typename ParseHandler::NameNodeType
 PerHandlerParser<ParseHandler>::newThisName() {
-  return newInternalDotName(cx_->names().dotThis);
+  return newInternalDotName(TaggedParserAtomIndex::WellKnown::dotThis());
 }
 
 template <class ParseHandler>
 typename ParseHandler::NameNodeType
 PerHandlerParser<ParseHandler>::newDotGeneratorName() {
-  return newInternalDotName(cx_->names().dotGenerator);
+  return newInternalDotName(TaggedParserAtomIndex::WellKnown::dotGenerator());
 }
 
 template <class ParseHandler>
@@ -1707,20 +2059,22 @@ bool PerHandlerParser<FullParseHandler>::finishFunction(
   }
 
   FunctionBox* funbox = pc_->functionBox();
+  ScriptStencil& script = funbox->functionStencil();
 
   if (funbox->isInterpreted()) {
     // BCE will need to generate bytecode for this.
     funbox->emitBytecode = true;
+    this->compilationState_.nonLazyFunctionCount++;
   }
 
   bool hasParameterExprs = funbox->hasParameterExprs;
 
   if (hasParameterExprs) {
-    Maybe<VarScope::Data*> bindings = newVarScopeData(pc_->varScope());
+    Maybe<VarScope::ParserData*> bindings = newVarScopeData(pc_->varScope());
     if (!bindings) {
       return false;
     }
-    funbox->extraVarScopeBindings().set(*bindings);
+    funbox->setExtraVarScopeBindings(*bindings);
 
     MOZ_ASSERT(bool(*bindings) == VarScopeHasBindings(pc_));
     MOZ_ASSERT_IF(!funbox->needsExtraBodyVarEnvironmentRegardlessOfBindings(),
@@ -1728,21 +2082,30 @@ bool PerHandlerParser<FullParseHandler>::finishFunction(
   }
 
   {
-    Maybe<FunctionScope::Data*> bindings =
+    Maybe<FunctionScope::ParserData*> bindings =
         newFunctionScopeData(pc_->functionScope(), hasParameterExprs);
     if (!bindings) {
       return false;
     }
-    funbox->functionScopeBindings().set(*bindings);
+    funbox->setFunctionScopeBindings(*bindings);
   }
 
   if (funbox->isNamedLambda() && !isStandaloneFunction) {
-    Maybe<LexicalScope::Data*> bindings =
+    Maybe<LexicalScope::ParserData*> bindings =
         newLexicalScopeData(pc_->namedLambdaScope());
     if (!bindings) {
       return false;
     }
-    funbox->namedLambdaBindings().set(*bindings);
+    funbox->setNamedLambdaBindings(*bindings);
+  }
+
+  funbox->finishScriptFlags();
+  funbox->copyFunctionFields(script);
+
+  if (this->compilationState_.isInitialStencil()) {
+    ScriptStencilExtra& scriptExtra = funbox->functionExtraStencil();
+    funbox->copyFunctionExtraFields(scriptExtra);
+    funbox->copyScriptExtraFields(scriptExtra);
   }
 
   return true;
@@ -1761,22 +2124,21 @@ bool PerHandlerParser<SyntaxParseHandler>::finishFunction(
   }
 
   FunctionBox* funbox = pc_->functionBox();
-  ScriptStencil& stencil = funbox->functionStencil().get();
+  ScriptStencil& script = funbox->functionStencil();
 
-  // Compute the flags for the BaseScript.
-  using ImmutableFlags = ImmutableScriptFlagsEnum;
-  stencil.immutableFlags = funbox->immutableFlags();
-  stencil.immutableFlags.setFlag(ImmutableFlags::HasMappedArgsObj,
-                                 funbox->hasMappedArgsObj());
-  stencil.immutableFlags.setFlag(ImmutableFlags::IsLikelyConstructorWrapper,
-                                 funbox->isLikelyConstructorWrapper());
+  funbox->finishScriptFlags();
+  funbox->copyFunctionFields(script);
+
+  ScriptStencilExtra& scriptExtra = funbox->functionExtraStencil();
+  funbox->copyFunctionExtraFields(scriptExtra);
+  funbox->copyScriptExtraFields(scriptExtra);
 
   // Elide nullptr sentinels from end of binding list. These are inserted for
   // each scope regardless of if any bindings are actually closed over.
   {
-    AtomVector& COB = pc_->closedOverBindingsForLazy();
-    while (!COB.empty() && (COB.back() == nullptr)) {
-      COB.popBack();
+    AtomVector& closedOver = pc_->closedOverBindingsForLazy();
+    while (!closedOver.empty() && !closedOver.back()) {
+      closedOver.popBack();
     }
   }
 
@@ -1789,8 +2151,15 @@ bool PerHandlerParser<SyntaxParseHandler>::finishFunction(
     return false;
   }
 
-  ScriptThingsVector& gcthings = stencil.gcThings;
-  if (!gcthings.reserve(ngcthings.value())) {
+  // If there are no script-things, we can return early without allocating.
+  if (ngcthings.value() == 0) {
+    MOZ_ASSERT(!script.hasGCThings());
+    return true;
+  }
+
+  TaggedScriptThingIndex* cursor = nullptr;
+  if (!this->compilationState_.allocateGCThingsUninitialized(
+          cx_, funbox->index(), ngcthings.value(), &cursor)) {
     return false;
   }
 
@@ -1801,208 +2170,18 @@ bool PerHandlerParser<SyntaxParseHandler>::finishFunction(
   //
   // See: FullParseHandler::nextLazyInnerFunction(),
   //      FullParseHandler::nextLazyClosedOverBinding()
-  for (const FunctionIndex& index : pc_->innerFunctionIndexesForLazy) {
-    gcthings.infallibleAppend(AsVariant(index));
+  for (const ScriptIndex& index : pc_->innerFunctionIndexesForLazy) {
+    void* raw = &(*cursor++);
+    new (raw) TaggedScriptThingIndex(index);
   }
-  for (const ScriptAtom& binding : pc_->closedOverBindingsForLazy()) {
+  for (auto binding : pc_->closedOverBindingsForLazy()) {
+    void* raw = &(*cursor++);
     if (binding) {
-      gcthings.infallibleAppend(AsVariant(binding));
+      this->parserAtoms().markUsedByStencil(binding);
+      new (raw) TaggedScriptThingIndex(binding);
     } else {
-      gcthings.infallibleAppend(AsVariant(NullScriptThing()));
+      new (raw) TaggedScriptThingIndex();
     }
-  }
-
-  MOZ_ASSERT(gcthings.length() == ngcthings.value());
-
-  return true;
-}
-
-static bool CreateLazyScript(JSContext* cx, CompilationInfo& compilationInfo,
-                             FunctionBox* funbox) {
-  RootedFunction function(cx, funbox->function());
-
-  ScriptStencil& stencil = funbox->functionStencil().get();
-  const ScriptThingsVector& gcthings = stencil.gcThings;
-
-  Rooted<BaseScript*> lazy(
-      cx, BaseScript::CreateRawLazy(cx, gcthings.length(), function,
-                                    compilationInfo.sourceObject,
-                                    funbox->extent, stencil.immutableFlags));
-  if (!lazy) {
-    return false;
-  }
-
-  if (!EmitScriptThingsVector(cx, compilationInfo, gcthings,
-                              lazy->gcthingsForInit())) {
-    return false;
-  }
-
-  function->initScript(lazy);
-
-  return true;
-}
-
-// Instantiate JSFunctions for each FunctionBox.
-static bool InstantiateFunctions(JSContext* cx,
-                                 CompilationInfo& compilationInfo,
-                                 FunctionBox* listHead) {
-  for (FunctionBox* funbox = listHead; funbox; funbox = funbox->traceLink()) {
-    if (funbox->hasFunction()) {
-      continue;
-    }
-
-    RootedFunction fun(cx, funbox->createFunction(cx));
-    if (!fun) {
-      return false;
-    }
-    funbox->initializeFunction(fun);
-  }
-
-  return true;
-}
-
-// JSFunctions have a default ObjectGroup when they are created. Once their
-// enclosing script is compiled, we have more precise heuristic information and
-// now compute their final group. These functions have not been exposed to
-// script before this point.
-static bool SetTypeForExposedFunctions(JSContext* cx, FunctionBox* listHead) {
-  for (FunctionBox* funbox = listHead; funbox; funbox = funbox->traceLink()) {
-    if (!funbox->isInterpreted()) {
-      continue;
-    }
-
-    // If the function was not referenced by enclosing script's bytecode, we do
-    // not generate a BaseScript for it. For example, `(function(){});`.
-    if (!funbox->wasEmitted) {
-      continue;
-    }
-
-    if (!funbox->setTypeForScriptedFunction(cx)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-// Instantiate js::BaseScripts from ScriptStencils for inner functions of the
-// compilation. Note that standalone functions and functions being delazified
-// are handled below with other top-levels.
-static bool InstantiateScriptStencils(JSContext* cx,
-                                      CompilationInfo& compilationInfo,
-                                      FunctionBox* listHead) {
-  for (FunctionBox* funbox = listHead; funbox; funbox = funbox->traceLink()) {
-    if (funbox->emitBytecode) {
-      // If the function was not referenced by enclosing script's bytecode, we
-      // do not generate a BaseScript for it. For example, `(function(){});`.
-      if (!funbox->wasEmitted) {
-        continue;
-      }
-
-      RootedScript script(cx,
-                          JSScript::fromStencil(cx, compilationInfo,
-                                                funbox->functionStencil().get(),
-                                                funbox->extent));
-      if (!script) {
-        return false;
-      }
-    } else if (funbox->isAsmJSModule()) {
-      MOZ_ASSERT(funbox->function()->isAsmJSNative());
-    } else if (funbox->function()->isIncomplete()) {
-      // Lazy functions are generally only allocated in the initial parse. The
-      // exception to this is BinAST which does not allocate lazy functions
-      // inside lazy functions until delazification occurs.
-      MOZ_ASSERT(compilationInfo.lazy == nullptr ||
-                 compilationInfo.lazy->isBinAST());
-
-      if (!CreateLazyScript(cx, compilationInfo, funbox)) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-// Instantiate the Stencil for the top-level script of the compilation. This
-// includes standalone functions and functions being delazified.
-static bool InstantiateTopLevel(JSContext* cx,
-                                CompilationInfo& compilationInfo) {
-  ScriptStencil& stencil = compilationInfo.topLevel.get();
-  MOZ_ASSERT(stencil.immutableScriptData);
-
-  if (compilationInfo.lazy) {
-    compilationInfo.script = JSScript::CastFromLazy(compilationInfo.lazy);
-    return JSScript::fullyInitFromStencil(cx, compilationInfo,
-                                          compilationInfo.script, stencil);
-  }
-
-  compilationInfo.script = JSScript::fromStencil(
-      cx, compilationInfo, stencil, compilationInfo.topLevelExtent);
-  return !!compilationInfo.script;
-}
-
-// When a function is first referenced by enclosing script's bytecode, we need
-// to update it with information determined by the BytecodeEmitter. This applies
-// to both initial and delazification parses. The functions being update may or
-// may not have bytecode at this point.
-static void UpdateEmittedInnerFunctions(FunctionBox* listHead) {
-  for (FunctionBox* funbox = listHead; funbox; funbox = funbox->traceLink()) {
-    if (!funbox->wasEmitted) {
-      continue;
-    }
-
-    funbox->finish();
-  }
-}
-
-// During initial parse we must link lazy-functions-inside-lazy-functions to
-// their enclosing script.
-static void LinkEnclosingLazyScript(FunctionBox* listHead) {
-  for (FunctionBox* funbox = listHead; funbox; funbox = funbox->traceLink()) {
-    if (!funbox->isInterpreted()) {
-      continue;
-    }
-
-    if (funbox->emitBytecode) {
-      continue;
-    }
-
-    BaseScript* script = funbox->function()->baseScript();
-    MOZ_ASSERT(!script->hasBytecode());
-
-    for (auto inner : script->gcthings()) {
-      if (!inner.is<JSObject>()) {
-        continue;
-      }
-      inner.as<JSObject>().as<JSFunction>().setEnclosingLazyScript(script);
-    }
-  }
-}
-
-bool CompilationInfo::instantiateStencils() {
-  if (!InstantiateFunctions(cx, *this, traceListHead)) {
-    return false;
-  }
-
-  if (!SetTypeForExposedFunctions(cx, traceListHead)) {
-    return false;
-  }
-
-  if (!InstantiateScriptStencils(cx, *this, traceListHead)) {
-    return false;
-  }
-
-  if (!InstantiateTopLevel(cx, *this)) {
-    return false;
-  }
-
-  // Must be infallible from here forward.
-
-  UpdateEmittedInnerFunctions(traceListHead);
-
-  if (lazy == nullptr) {
-    LinkEnclosingLazyScript(traceListHead);
   }
 
   return true;
@@ -2022,12 +2201,72 @@ static AwaitHandling GetAwaitHandling(FunctionAsyncKind asyncKind) {
   return AwaitIsKeyword;
 }
 
+FunctionFlags InitialFunctionFlags(FunctionSyntaxKind kind,
+                                   GeneratorKind generatorKind,
+                                   FunctionAsyncKind asyncKind,
+                                   bool isSelfHosting, bool forceExtended) {
+  FunctionFlags flags = {};
+  gc::AllocKind allocKind = gc::AllocKind::FUNCTION;
+
+  // Only normal function statements/expressions may force extended mode. Other
+  // types of functions use extended slots for their own purposes.
+  MOZ_ASSERT_IF(forceExtended, kind == FunctionSyntaxKind::Statement ||
+                                   kind == FunctionSyntaxKind::Expression);
+
+  switch (kind) {
+    case FunctionSyntaxKind::Expression:
+      flags = (generatorKind == GeneratorKind::NotGenerator &&
+                       asyncKind == FunctionAsyncKind::SyncFunction
+                   ? FunctionFlags::INTERPRETED_LAMBDA
+                   : FunctionFlags::INTERPRETED_LAMBDA_GENERATOR_OR_ASYNC);
+      break;
+    case FunctionSyntaxKind::Arrow:
+      flags = FunctionFlags::INTERPRETED_LAMBDA_ARROW;
+      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
+      break;
+    case FunctionSyntaxKind::Method:
+    case FunctionSyntaxKind::FieldInitializer:
+    case FunctionSyntaxKind::StaticClassBlock:
+      flags = FunctionFlags::INTERPRETED_METHOD;
+      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
+      break;
+    case FunctionSyntaxKind::ClassConstructor:
+    case FunctionSyntaxKind::DerivedClassConstructor:
+      flags = FunctionFlags::INTERPRETED_CLASS_CTOR;
+      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
+      break;
+    case FunctionSyntaxKind::Getter:
+      flags = FunctionFlags::INTERPRETED_GETTER;
+      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
+      break;
+    case FunctionSyntaxKind::Setter:
+      flags = FunctionFlags::INTERPRETED_SETTER;
+      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
+      break;
+    default:
+      MOZ_ASSERT(kind == FunctionSyntaxKind::Statement);
+      flags = (generatorKind == GeneratorKind::NotGenerator &&
+                       asyncKind == FunctionAsyncKind::SyncFunction
+                   ? FunctionFlags::INTERPRETED_NORMAL
+                   : FunctionFlags::INTERPRETED_GENERATOR_OR_ASYNC);
+  }
+
+  if (isSelfHosting) {
+    flags.setIsSelfHostedBuiltin();
+  }
+
+  if ((allocKind == gc::AllocKind::FUNCTION_EXTENDED) || forceExtended) {
+    flags.setIsExtended();
+  }
+
+  return flags;
+}
+
 template <typename Unit>
 FunctionNode* Parser<FullParseHandler, Unit>::standaloneFunction(
-    HandleFunction fun, HandleScope enclosingScope,
-    const Maybe<uint32_t>& parameterListEnd, GeneratorKind generatorKind,
-    FunctionAsyncKind asyncKind, Directives inheritedDirectives,
-    Directives* newDirectives) {
+    const Maybe<uint32_t>& parameterListEnd, FunctionSyntaxKind syntaxKind,
+    GeneratorKind generatorKind, FunctionAsyncKind asyncKind,
+    Directives inheritedDirectives, Directives* newDirectives) {
   MOZ_ASSERT(checkOptionsCalled_);
   // Skip prelude.
   TokenKind tt;
@@ -2053,14 +2292,13 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneFunction(
   }
 
   // Skip function name, if present.
+  TaggedParserAtomIndex explicitName;
   if (TokenKindIsPossibleIdentifierName(tt)) {
-    MOZ_ASSERT(anyChars.currentName() == fun->explicitName());
+    explicitName = anyChars.currentName();
   } else {
-    MOZ_ASSERT(fun->explicitName() == nullptr);
     anyChars.ungetToken();
   }
 
-  FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::Statement;
   FunctionNodeType funNode = handler_.newFunction(syntaxKind, pos());
   if (!funNode) {
     return null();
@@ -2072,20 +2310,21 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneFunction(
   }
   funNode->setBody(argsbody);
 
+  bool isSelfHosting = options().selfHostingMode;
+  FunctionFlags flags =
+      InitialFunctionFlags(syntaxKind, generatorKind, asyncKind, isSelfHosting);
   FunctionBox* funbox =
-      newFunctionBox(funNode, fun, /* toStringStart = */ 0, inheritedDirectives,
-                     generatorKind, asyncKind);
+      newFunctionBox(funNode, explicitName, flags, /* toStringStart = */ 0,
+                     inheritedDirectives, generatorKind, asyncKind);
   if (!funbox) {
     return null();
   }
 
-  // Standalone functions are always scoped to the global. Note: HTML form event
-  // handlers are standalone functions, but have a non-syntactic global scope
-  // chain here.
-  MOZ_ASSERT(enclosingScope->is<GlobalScope>());
+  // Function is not syntactically part of another script.
+  MOZ_ASSERT(funbox->index() == CompilationStencil::TopLevelIndex);
 
-  funbox->initWithEnclosingScope(this->compilationInfo_.scopeContext,
-                                 enclosingScope, fun->flags(), syntaxKind);
+  funbox->initStandalone(this->compilationState_.scopeContext, flags,
+                         syntaxKind);
 
   SourceParseContext funpc(this, funbox, newDirectives);
   if (!funpc.init()) {
@@ -2118,11 +2357,15 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneFunction(
   // Don't constant-fold inside "use asm" code, as this could create a parse
   // tree that doesn't type-check as asm.js.
   if (!pc_->useAsmOrInsideUseAsm()) {
-    if (!FoldConstants(cx_, &node, &handler_)) {
+    if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
       return null();
     }
   }
   funNode = &node->as<FunctionNode>();
+
+  if (!checkForUndefinedPrivateFields(nullptr)) {
+    return null();
+  }
 
   if (!this->setSourceMapInfo()) {
     return null();
@@ -2232,67 +2475,6 @@ GeneralParser<ParseHandler, Unit>::functionBody(InHandling inHandling,
   return finishLexicalScope(pc_->varScope(), body, ScopeKind::FunctionLexical);
 }
 
-FunctionFlags InitialFunctionFlags(FunctionSyntaxKind kind,
-                                   GeneratorKind generatorKind,
-                                   FunctionAsyncKind asyncKind,
-                                   bool isSelfHosting, bool hasUnclonedName) {
-  FunctionFlags flags = {};
-  gc::AllocKind allocKind = gc::AllocKind::FUNCTION;
-
-  // The SetCanonicalName mechanism is only allowed on normal functions.
-  MOZ_ASSERT_IF(hasUnclonedName, kind == FunctionSyntaxKind::Statement);
-
-  switch (kind) {
-    case FunctionSyntaxKind::Expression:
-      flags = (generatorKind == GeneratorKind::NotGenerator &&
-                       asyncKind == FunctionAsyncKind::SyncFunction
-                   ? FunctionFlags::INTERPRETED_LAMBDA
-                   : FunctionFlags::INTERPRETED_LAMBDA_GENERATOR_OR_ASYNC);
-      break;
-    case FunctionSyntaxKind::Arrow:
-      flags = FunctionFlags::INTERPRETED_LAMBDA_ARROW;
-      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      break;
-    case FunctionSyntaxKind::Method:
-    case FunctionSyntaxKind::FieldInitializer:
-      flags = FunctionFlags::INTERPRETED_METHOD;
-      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      break;
-    case FunctionSyntaxKind::ClassConstructor:
-    case FunctionSyntaxKind::DerivedClassConstructor:
-      flags = FunctionFlags::INTERPRETED_CLASS_CTOR;
-      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      break;
-    case FunctionSyntaxKind::Getter:
-      flags = FunctionFlags::INTERPRETED_GETTER;
-      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      break;
-    case FunctionSyntaxKind::Setter:
-      flags = FunctionFlags::INTERPRETED_SETTER;
-      allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      break;
-    default:
-      MOZ_ASSERT(kind == FunctionSyntaxKind::Statement);
-      if (hasUnclonedName) {
-        allocKind = gc::AllocKind::FUNCTION_EXTENDED;
-      }
-      flags = (generatorKind == GeneratorKind::NotGenerator &&
-                       asyncKind == FunctionAsyncKind::SyncFunction
-                   ? FunctionFlags::INTERPRETED_NORMAL
-                   : FunctionFlags::INTERPRETED_GENERATOR_OR_ASYNC);
-  }
-
-  if (isSelfHosting) {
-    flags.setIsSelfHostedBuiltin();
-  }
-
-  if (allocKind == gc::AllocKind::FUNCTION_EXTENDED) {
-    flags.setIsExtended();
-  }
-
-  return flags;
-}
-
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::matchOrInsertSemicolon(
     Modifier modifier /* = TokenStream::SlashIsRegExp */) {
@@ -2315,7 +2497,11 @@ bool GeneralParser<ParseHandler, Unit>::matchOrInsertSemicolon(
      * we'd throw a confusing "unexpected token: (unexpected token)" error.
      */
     if (!pc_->isAsync() && anyChars.currentToken().type == TokenKind::Await) {
-      error(JSMSG_AWAIT_OUTSIDE_ASYNC);
+      if (!options().topLevelAwait) {
+        error(JSMSG_AWAIT_OUTSIDE_ASYNC);
+        return false;
+      }
+      error(JSMSG_AWAIT_OUTSIDE_ASYNC_OR_MODULE);
       return false;
     }
     if (!yieldExpressionsSupported() &&
@@ -2336,7 +2522,6 @@ bool GeneralParser<ParseHandler, Unit>::matchOrInsertSemicolon(
 bool ParserBase::leaveInnerFunction(ParseContext* outerpc) {
   MOZ_ASSERT(pc_ != outerpc);
 
-  // See: CompilationInfo::publishDeferredFunctions()
   MOZ_ASSERT_IF(outerpc->isFunctionBox(),
                 outerpc->functionBox()->index() < pc_->functionBox()->index());
 
@@ -2368,33 +2553,39 @@ bool ParserBase::leaveInnerFunction(ParseContext* outerpc) {
   return true;
 }
 
-JSAtom* ParserBase::prefixAccessorName(PropertyType propType,
-                                       HandleAtom propAtom) {
-  RootedAtom prefix(cx_);
+TaggedParserAtomIndex ParserBase::prefixAccessorName(
+    PropertyType propType, TaggedParserAtomIndex propAtom) {
+  StringBuffer prefixed(cx_);
   if (propType == PropertyType::Setter) {
-    prefix = cx_->names().setPrefix;
+    if (!prefixed.append("set ", 4)) {
+      return TaggedParserAtomIndex::null();
+    }
   } else {
-    MOZ_ASSERT(propType == PropertyType::Getter);
-    prefix = cx_->names().getPrefix;
+    if (!prefixed.append("get ", 4)) {
+      return TaggedParserAtomIndex::null();
+    }
   }
-
-  RootedString str(cx_, ConcatStrings<CanGC>(cx_, prefix, propAtom));
-  if (!str) {
-    return nullptr;
+  if (!prefixed.append(this->parserAtoms(), propAtom)) {
+    return TaggedParserAtomIndex::null();
   }
+  return prefixed.finishParserAtom(this->parserAtoms());
+}
 
-  return AtomizeString(cx_, str);
+template <class ParseHandler, typename Unit>
+void GeneralParser<ParseHandler, Unit>::setFunctionStartAtPosition(
+    FunctionBox* funbox, TokenPos pos) const {
+  uint32_t startLine, startColumn;
+  tokenStream.computeLineAndColumn(pos.begin, &startLine, &startColumn);
+
+  // NOTE: `Debugger::CallData::findScripts` relies on sourceStart and
+  //       lineno/column referring to the same location.
+  funbox->setStart(pos.begin, startLine, startColumn);
 }
 
 template <class ParseHandler, typename Unit>
 void GeneralParser<ParseHandler, Unit>::setFunctionStartAtCurrentToken(
     FunctionBox* funbox) const {
-  uint32_t bufStart = anyChars.currentToken().pos.begin;
-
-  uint32_t startLine, startColumn;
-  tokenStream.computeLineAndColumn(bufStart, &startLine, &startColumn);
-
-  funbox->setStart(bufStart, startLine, startColumn);
+  setFunctionStartAtPosition(funbox, anyChars.currentToken().pos);
 }
 
 template <class ParseHandler, typename Unit>
@@ -2581,7 +2772,7 @@ bool GeneralParser<ParseHandler, Unit>::functionArguments(
             setFunctionStartAtCurrentToken(funbox);
           }
 
-          RootedPropertyName name(cx_, bindingIdentifier(yieldHandling));
+          TaggedParserAtomIndex name = bindingIdentifier(yieldHandling);
           if (!name) {
             return false;
           }
@@ -2641,7 +2832,7 @@ bool GeneralParser<ParseHandler, Unit>::functionArguments(
 
           // The Function.length property is the number of formals
           // before the first default argument.
-          funbox->length = positionalFormals.length() - 1;
+          funbox->setLength(positionalFormals.length() - 1);
         }
         funbox->hasParameterExprs = true;
 
@@ -2695,7 +2886,7 @@ bool GeneralParser<ParseHandler, Unit>::functionArguments(
     }
 
     if (!hasDefault) {
-      funbox->length = positionalFormals.length() - hasRest;
+      funbox->setLength(positionalFormals.length() - hasRest);
     }
 
     funbox->setArgCount(positionalFormals.length());
@@ -2709,24 +2900,46 @@ bool GeneralParser<ParseHandler, Unit>::functionArguments(
 
 template <typename Unit>
 bool Parser<FullParseHandler, Unit>::skipLazyInnerFunction(
-    FunctionNode* funNode, uint32_t toStringStart, FunctionSyntaxKind kind,
-    bool tryAnnexB) {
+    FunctionNode* funNode, uint32_t toStringStart, bool tryAnnexB) {
   // When a lazily-parsed function is called, we only fully parse (and emit)
   // that function, not any of its nested children. The initial syntax-only
   // parse recorded the free variables of nested functions and their extents,
   // so we can skip over them after accounting for their free variables.
 
+  MOZ_ASSERT(pc_->isOutermostOfCurrentCompile());
+
   RootedFunction fun(cx_, handler_.nextLazyInnerFunction());
-  FunctionBox* funbox = newFunctionBox(funNode, fun, toStringStart,
-                                       Directives(/* strict = */ false),
-                                       fun->generatorKind(), fun->asyncKind());
+
+  // TODO-Stencil: Consider for snapshotting.
+  TaggedParserAtomIndex displayAtom;
+  if (fun->displayAtom()) {
+    displayAtom = this->parserAtoms().internJSAtom(
+        cx_, this->compilationState_.input.atomCache, fun->displayAtom());
+    if (!displayAtom) {
+      return false;
+    }
+  }
+
+  FunctionBox* funbox = newFunctionBox(
+      funNode, displayAtom, fun->flags(), toStringStart,
+      Directives(/* strict = */ false), fun->generatorKind(), fun->asyncKind());
   if (!funbox) {
     return false;
   }
 
-  funbox->initFromLazyFunction(fun);
+  ScriptStencil& script = funbox->functionStencil();
+  funbox->initFromLazyFunctionToSkip(fun);
+  funbox->copyFunctionFields(script);
 
-  // See: CompilationInfo::publishDeferredFunctions()
+  // If the inner lazy function is class constructor, connect it to the class
+  // statement/expression we are parsing.
+  if (funbox->isClassConstructor()) {
+    auto classStmt =
+        pc_->template findInnermostStatement<ParseContext::ClassStatement>();
+    MOZ_ASSERT(!classStmt->constructorBox);
+    classStmt->constructorBox = funbox;
+  }
+
   MOZ_ASSERT_IF(pc_->isFunctionBox(),
                 pc_->functionBox()->index() < funbox->index());
 
@@ -2734,12 +2947,10 @@ bool Parser<FullParseHandler, Unit>::skipLazyInnerFunction(
   // lazy functions. Instead that info will be updated when we finish our
   // compilation.
   MOZ_ASSERT(fun->baseScript()->hasEnclosingScript());
-  MOZ_ASSERT_IF(fun->isClassConstructor(),
-                !fun->baseScript()->getFieldInitializers().valid);
 
   PropagateTransitiveParseFlags(funbox, pc_->sc());
 
-  if (!tokenStream.advance(funbox->extent.sourceEnd)) {
+  if (!tokenStream.advance(funbox->extent().sourceEnd)) {
     return false;
   }
 
@@ -2754,16 +2965,14 @@ bool Parser<FullParseHandler, Unit>::skipLazyInnerFunction(
 
 template <typename Unit>
 bool Parser<SyntaxParseHandler, Unit>::skipLazyInnerFunction(
-    FunctionNodeType funNode, uint32_t toStringStart, FunctionSyntaxKind kind,
-    bool tryAnnexB) {
+    FunctionNodeType funNode, uint32_t toStringStart, bool tryAnnexB) {
   MOZ_CRASH("Cannot skip lazy inner functions when syntax parsing");
 }
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::skipLazyInnerFunction(
-    FunctionNodeType funNode, uint32_t toStringStart, FunctionSyntaxKind kind,
-    bool tryAnnexB) {
-  return asFinalParser()->skipLazyInnerFunction(funNode, toStringStart, kind,
+    FunctionNodeType funNode, uint32_t toStringStart, bool tryAnnexB) {
+  return asFinalParser()->skipLazyInnerFunction(funNode, toStringStart,
                                                 tryAnnexB);
 }
 
@@ -2850,9 +3059,9 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::FunctionNodeType
 GeneralParser<ParseHandler, Unit>::functionDefinition(
     FunctionNodeType funNode, uint32_t toStringStart, InHandling inHandling,
-    YieldHandling yieldHandling, HandleAtom funName, FunctionSyntaxKind kind,
-    GeneratorKind generatorKind, FunctionAsyncKind asyncKind,
-    bool tryAnnexB /* = false */) {
+    YieldHandling yieldHandling, TaggedParserAtomIndex funName,
+    FunctionSyntaxKind kind, GeneratorKind generatorKind,
+    FunctionAsyncKind asyncKind, bool tryAnnexB /* = false */) {
   MOZ_ASSERT_IF(kind == FunctionSyntaxKind::Statement, funName);
 
   // If we see any inner function, note it on our current context. The bytecode
@@ -2864,20 +3073,22 @@ GeneralParser<ParseHandler, Unit>::functionDefinition(
   // functions, which are also lazy. Instead, their free variables and source
   // extents are recorded and may be skipped.
   if (handler_.canSkipLazyInnerFunctions()) {
-    if (!skipLazyInnerFunction(funNode, toStringStart, kind, tryAnnexB)) {
+    if (!skipLazyInnerFunction(funNode, toStringStart, tryAnnexB)) {
       return null();
     }
 
     return funNode;
   }
 
+  // Self-hosted functions with special function names require extended slots
+  // for various purposes.
   bool isSelfHosting = options().selfHostingMode;
-  bool hasUnclonedName = isSelfHosting && funName &&
-                         IsExtendedUnclonedSelfHostedFunctionName(funName);
-  MOZ_ASSERT_IF(hasUnclonedName, !pc_->isFunctionBox());
+  bool forceExtended =
+      isSelfHosting && funName &&
+      this->parserAtoms().isExtendedUnclonedSelfHostedFunctionName(funName);
 
   FunctionFlags flags = InitialFunctionFlags(kind, generatorKind, asyncKind,
-                                             isSelfHosting, hasUnclonedName);
+                                             isSelfHosting, forceExtended);
 
   // Speculatively parse using the directives of the parent parsing context.
   // If a directive is encountered (e.g., "use strict") that changes how the
@@ -2886,9 +3097,8 @@ GeneralParser<ParseHandler, Unit>::functionDefinition(
   Directives directives(pc_);
   Directives newDirectives = directives;
 
-  Position start(this->compilationInfo_.keepAtoms, tokenStream);
-  CompilationInfo::RewindToken startObj =
-      this->compilationInfo_.getRewindToken();
+  Position start(tokenStream);
+  auto startObj = this->compilationState_.getPosition();
 
   // Parse the inner function. The following is a loop as we may attempt to
   // reparse a function due to failed syntax parsing and encountering new
@@ -2914,7 +3124,7 @@ GeneralParser<ParseHandler, Unit>::functionDefinition(
 
     // Rewind to retry parsing with new directives applied.
     tokenStream.rewind(start);
-    this->compilationInfo_.rewind(startObj);
+    this->compilationState_.rewind(startObj);
 
     // functionFormalParametersAndBody may have already set body before
     // failing.
@@ -2926,12 +3136,11 @@ GeneralParser<ParseHandler, Unit>::functionDefinition(
 
 template <typename Unit>
 bool Parser<FullParseHandler, Unit>::advancePastSyntaxParsedFunction(
-    AutoKeepAtoms& keepAtoms, SyntaxParser* syntaxParser) {
+    SyntaxParser* syntaxParser) {
   MOZ_ASSERT(getSyntaxParser() == syntaxParser);
 
   // Advance this parser over tokens processed by the syntax parser.
-  Position currentSyntaxPosition(this->compilationInfo_.keepAtoms,
-                                 syntaxParser->tokenStream);
+  Position currentSyntaxPosition(syntaxParser->tokenStream);
   if (!tokenStream.fastForward(currentSyntaxPosition, syntaxParser->anyChars)) {
     return false;
   }
@@ -2943,11 +3152,11 @@ bool Parser<FullParseHandler, Unit>::advancePastSyntaxParsedFunction(
 
 template <typename Unit>
 bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
-    FunctionNode** funNode, HandleAtom explicitName, FunctionFlags flags,
-    uint32_t toStringStart, InHandling inHandling, YieldHandling yieldHandling,
-    FunctionSyntaxKind kind, GeneratorKind generatorKind,
-    FunctionAsyncKind asyncKind, bool tryAnnexB, Directives inheritedDirectives,
-    Directives* newDirectives) {
+    FunctionNode** funNode, TaggedParserAtomIndex explicitName,
+    FunctionFlags flags, uint32_t toStringStart, InHandling inHandling,
+    YieldHandling yieldHandling, FunctionSyntaxKind kind,
+    GeneratorKind generatorKind, FunctionAsyncKind asyncKind, bool tryAnnexB,
+    Directives inheritedDirectives, Directives* newDirectives) {
   // Try a syntax parse for this inner function.
   do {
     // If we're assuming this function is an IIFE, always perform a full
@@ -2966,8 +3175,7 @@ bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
     }
 
     UsedNameTracker::RewindToken token = usedNames_.getRewindToken();
-    CompilationInfo::RewindToken startObj =
-        this->compilationInfo_.getRewindToken();
+    auto statePosition = this->compilationState_.getPosition();
 
     // Move the syntax parser to the current position in the stream.  In the
     // common case this seeks forward, but it'll also seek backward *at least*
@@ -2978,7 +3186,7 @@ bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
     //   var x = (y = z => 2) => q;
     //   //           ^ we first seek to here to syntax-parse this function
     //   //      ^ then we seek back to here to syntax-parse the outer function
-    Position currentPosition(this->compilationInfo_.keepAtoms, tokenStream);
+    Position currentPosition(tokenStream);
     if (!syntaxParser->tokenStream.seekTo(currentPosition, anyChars)) {
       return false;
     }
@@ -3005,7 +3213,7 @@ bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
         // correctness.
         syntaxParser->clearAbortedSyntaxParse();
         usedNames_.rewind(token);
-        this->compilationInfo_.rewind(startObj);
+        this->compilationState_.rewind(statePosition);
         MOZ_ASSERT_IF(!syntaxParser->cx_->isHelperThreadContext(),
                       !syntaxParser->cx_->isExceptionPending());
         break;
@@ -3013,8 +3221,7 @@ bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
       return false;
     }
 
-    if (!advancePastSyntaxParsedFunction(this->compilationInfo_.keepAtoms,
-                                         syntaxParser)) {
+    if (!advancePastSyntaxParsedFunction(syntaxParser)) {
       return false;
     }
 
@@ -3046,11 +3253,11 @@ bool Parser<FullParseHandler, Unit>::trySyntaxParseInnerFunction(
 
 template <typename Unit>
 bool Parser<SyntaxParseHandler, Unit>::trySyntaxParseInnerFunction(
-    FunctionNodeType* funNode, HandleAtom explicitName, FunctionFlags flags,
-    uint32_t toStringStart, InHandling inHandling, YieldHandling yieldHandling,
-    FunctionSyntaxKind kind, GeneratorKind generatorKind,
-    FunctionAsyncKind asyncKind, bool tryAnnexB, Directives inheritedDirectives,
-    Directives* newDirectives) {
+    FunctionNodeType* funNode, TaggedParserAtomIndex explicitName,
+    FunctionFlags flags, uint32_t toStringStart, InHandling inHandling,
+    YieldHandling yieldHandling, FunctionSyntaxKind kind,
+    GeneratorKind generatorKind, FunctionAsyncKind asyncKind, bool tryAnnexB,
+    Directives inheritedDirectives, Directives* newDirectives) {
   // This is already a syntax parser, so just parse the inner function.
   FunctionNodeType innerFunc =
       innerFunction(*funNode, pc_, explicitName, flags, toStringStart,
@@ -3067,11 +3274,11 @@ bool Parser<SyntaxParseHandler, Unit>::trySyntaxParseInnerFunction(
 
 template <class ParseHandler, typename Unit>
 inline bool GeneralParser<ParseHandler, Unit>::trySyntaxParseInnerFunction(
-    FunctionNodeType* funNode, HandleAtom explicitName, FunctionFlags flags,
-    uint32_t toStringStart, InHandling inHandling, YieldHandling yieldHandling,
-    FunctionSyntaxKind kind, GeneratorKind generatorKind,
-    FunctionAsyncKind asyncKind, bool tryAnnexB, Directives inheritedDirectives,
-    Directives* newDirectives) {
+    FunctionNodeType* funNode, TaggedParserAtomIndex explicitName,
+    FunctionFlags flags, uint32_t toStringStart, InHandling inHandling,
+    YieldHandling yieldHandling, FunctionSyntaxKind kind,
+    GeneratorKind generatorKind, FunctionAsyncKind asyncKind, bool tryAnnexB,
+    Directives inheritedDirectives, Directives* newDirectives) {
   return asFinalParser()->trySyntaxParseInnerFunction(
       funNode, explicitName, flags, toStringStart, inHandling, yieldHandling,
       kind, generatorKind, asyncKind, tryAnnexB, inheritedDirectives,
@@ -3110,11 +3317,12 @@ GeneralParser<ParseHandler, Unit>::innerFunctionForFunctionBox(
 template <class ParseHandler, typename Unit>
 typename ParseHandler::FunctionNodeType
 GeneralParser<ParseHandler, Unit>::innerFunction(
-    FunctionNodeType funNode, ParseContext* outerpc, HandleAtom explicitName,
-    FunctionFlags flags, uint32_t toStringStart, InHandling inHandling,
-    YieldHandling yieldHandling, FunctionSyntaxKind kind,
-    GeneratorKind generatorKind, FunctionAsyncKind asyncKind, bool tryAnnexB,
-    Directives inheritedDirectives, Directives* newDirectives) {
+    FunctionNodeType funNode, ParseContext* outerpc,
+    TaggedParserAtomIndex explicitName, FunctionFlags flags,
+    uint32_t toStringStart, InHandling inHandling, YieldHandling yieldHandling,
+    FunctionSyntaxKind kind, GeneratorKind generatorKind,
+    FunctionAsyncKind asyncKind, bool tryAnnexB, Directives inheritedDirectives,
+    Directives* newDirectives) {
   // Note that it is possible for outerpc != this->pc_, as we may be
   // attempting to syntax parse an inner function from an outer full
   // parser. In that case, outerpc is a SourceParseContext from the full parser
@@ -3152,7 +3360,7 @@ bool GeneralParser<ParseHandler, Unit>::appendToCallSiteObj(
     return false;
   }
 
-  JSAtom* atom = tokenStream.getRawTemplateStringAtom();
+  auto atom = tokenStream.getRawTemplateStringAtom();
   if (!atom) {
     return false;
   }
@@ -3179,8 +3387,11 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneLazyFunction(
       syntaxKind = FunctionSyntaxKind::ClassConstructor;
     }
   } else if (fun->isMethod()) {
-    if (fun->isFieldInitializer()) {
+    if (fun->isSyntheticFunction()) {
+      MOZ_ASSERT(!fun->isClassConstructor());
       syntaxKind = FunctionSyntaxKind::FieldInitializer;
+      MOZ_ASSERT_UNREACHABLE(
+          "Lazy parsing of class field initializers not supported (yet)");
     } else {
       syntaxKind = FunctionSyntaxKind::Method;
     }
@@ -3197,16 +3408,28 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneLazyFunction(
     return null();
   }
 
+  // TODO-Stencil: Consider for snapshotting.
+  TaggedParserAtomIndex displayAtom;
+  if (fun->displayAtom()) {
+    displayAtom = this->parserAtoms().internJSAtom(
+        cx_, this->compilationState_.input.atomCache, fun->displayAtom());
+    if (!displayAtom) {
+      return null();
+    }
+  }
+
   Directives directives(strict);
-  FunctionBox* funbox = newFunctionBox(funNode, fun, toStringStart, directives,
-                                       generatorKind, asyncKind);
+  FunctionBox* funbox =
+      newFunctionBox(funNode, displayAtom, fun->flags(), toStringStart,
+                     directives, generatorKind, asyncKind);
   if (!funbox) {
     return null();
   }
-  funbox->initFromLazyFunction(fun);
-  funbox->initWithEnclosingScope(this->getCompilationInfo().scopeContext,
-                                 fun->enclosingScope(), fun->flags(),
-                                 syntaxKind);
+  funbox->initFromLazyFunction(fun, this->compilationState_.scopeContext,
+                               fun->flags(), syntaxKind);
+  if (funbox->useMemberInitializers()) {
+    funbox->setMemberInitializers(fun->baseScript()->getMemberInitializers());
+  }
 
   Directives newDirectives = directives;
   SourceParseContext funpc(this, funbox, &newDirectives);
@@ -3229,10 +3452,31 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneLazyFunction(
 
   YieldHandling yieldHandling = GetYieldHandling(generatorKind);
 
-  if (!functionFormalParametersAndBody(InAllowed, yieldHandling, &funNode,
-                                       syntaxKind)) {
-    MOZ_ASSERT(directives == newDirectives);
-    return null();
+  if (funbox->isSyntheticFunction()) {
+    // Currently default class constructors are the only synthetic function that
+    // supports delazification.
+    MOZ_ASSERT(funbox->isClassConstructor());
+    MOZ_ASSERT(funbox->extent().toStringStart == funbox->extent().sourceStart);
+
+    HasHeritage hasHeritage = funbox->isDerivedClassConstructor()
+                                  ? HasHeritage::Yes
+                                  : HasHeritage::No;
+    TokenPos synthesizedBodyPos(funbox->extent().toStringStart,
+                                funbox->extent().toStringEnd);
+
+    // Reset pos() to the `class` keyword for predictable results.
+    tokenStream.consumeKnownToken(TokenKind::Class);
+
+    if (!this->synthesizeConstructorBody(synthesizedBodyPos, hasHeritage,
+                                         funNode, funbox)) {
+      return null();
+    }
+  } else {
+    if (!functionFormalParametersAndBody(InAllowed, yieldHandling, &funNode,
+                                         syntaxKind)) {
+      MOZ_ASSERT(directives == newDirectives);
+      return null();
+    }
   }
 
   if (!CheckParseTree(cx_, alloc_, funNode)) {
@@ -3243,7 +3487,7 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneLazyFunction(
   // Don't constant-fold inside "use asm" code, as this could create a parse
   // tree that doesn't type-check as asm.js.
   if (!pc_->useAsmOrInsideUseAsm()) {
-    if (!FoldConstants(cx_, &node, &handler_)) {
+    if (!FoldConstants(cx_, this->parserAtoms(), &node, &handler_)) {
       return null();
     }
   }
@@ -3253,6 +3497,7 @@ FunctionNode* Parser<FullParseHandler, Unit>::standaloneLazyFunction(
 }
 
 void ParserBase::setFunctionEndFromCurrentToken(FunctionBox* funbox) const {
+  MOZ_ASSERT(anyChars.currentToken().type != TokenKind::Eof);
   funbox->setEnd(anyChars.currentToken().pos.end);
 }
 
@@ -3270,7 +3515,7 @@ bool GeneralParser<ParseHandler, Unit>::functionFormalParametersAndBody(
 
   if (kind == FunctionSyntaxKind::ClassConstructor ||
       kind == FunctionSyntaxKind::DerivedClassConstructor) {
-    if (!noteUsedName(cx_->names().dotInitializers)) {
+    if (!noteUsedName(TaggedParserAtomIndex::WellKnown::dotInitializers())) {
       return false;
     }
   }
@@ -3302,14 +3547,22 @@ bool GeneralParser<ParseHandler, Unit>::functionFormalParametersAndBody(
   }
 
   if (kind == FunctionSyntaxKind::Arrow) {
-    bool matched;
-    if (!tokenStream.matchToken(&matched, TokenKind::Arrow)) {
+    TokenKind tt;
+    if (!tokenStream.peekTokenSameLine(&tt)) {
       return false;
     }
-    if (!matched) {
+
+    if (tt == TokenKind::Eol) {
+      error(JSMSG_UNEXPECTED_TOKEN,
+            "'=>' on the same line after an argument list",
+            TokenKindToDesc(tt));
+      return false;
+    }
+    if (tt != TokenKind::Arrow) {
       error(JSMSG_BAD_ARROW_ARGS);
       return false;
     }
+    tokenStream.consumeKnownToken(TokenKind::Arrow);
   }
 
   // When parsing something for new Function() we have to make sure to
@@ -3368,7 +3621,7 @@ bool GeneralParser<ParseHandler, Unit>::functionFormalParametersAndBody(
                "strict mode should only change when a 'use strict' directive "
                "is present");
 
-    PropertyName* propertyName = funbox->explicitName()->asPropertyName();
+    auto propertyName = funbox->explicitName();
     YieldHandling nameYieldHandling;
     if (kind == FunctionSyntaxKind::Expression) {
       // Named lambda has binding inside it.
@@ -3475,14 +3728,14 @@ GeneralParser<ParseHandler, Unit>::functionStmt(uint32_t toStringStart,
     }
   }
 
-  RootedPropertyName name(cx_);
+  TaggedParserAtomIndex name;
   if (TokenKindIsPossibleIdentifier(tt)) {
     name = bindingIdentifier(yieldHandling);
     if (!name) {
       return null();
     }
   } else if (defaultHandling == AllowDefaultName) {
-    name = cx_->names().default_;
+    name = TaggedParserAtomIndex::WellKnown::default_();
     anyChars.ungetToken();
   } else {
     /* Unnamed function expressions are forbidden in statement context. */
@@ -3555,7 +3808,7 @@ GeneralParser<ParseHandler, Unit>::functionExpr(uint32_t toStringStart,
 
   YieldHandling yieldHandling = GetYieldHandling(generatorKind);
 
-  RootedPropertyName name(cx_);
+  TaggedParserAtomIndex name;
   if (TokenKindIsPossibleIdentifier(tt)) {
     name = bindingIdentifier(yieldHandling);
     if (!name) {
@@ -3580,19 +3833,24 @@ GeneralParser<ParseHandler, Unit>::functionExpr(uint32_t toStringStart,
 }
 
 /*
- * Return true if this node, known to be an unparenthesized string literal,
- * could be the string of a directive in a Directive Prologue. Directive
- * strings never contain escape sequences or line continuations.
- * isEscapeFreeStringLiteral, below, checks whether the node itself could be
- * a directive.
+ * Return true if this node, known to be an unparenthesized string literal
+ * that never contain escape sequences, could be the string of a directive in a
+ * Directive Prologue. Directive strings never contain escape sequences or line
+ * continuations.
  */
-static inline bool IsEscapeFreeStringLiteral(const TokenPos& pos, JSAtom* str) {
-  /*
-   * If the string's length in the source code is its length as a value,
-   * accounting for the quotes, then it must not contain any escape
-   * sequences or line continuations.
-   */
-  return pos.begin + str->length() + 2 == pos.end;
+static inline bool IsUseStrictDirective(const TokenPos& pos,
+                                        TaggedParserAtomIndex atom) {
+  // the length of "use strict", including quotation.
+  static constexpr size_t useStrictLength = 12;
+  return atom == TaggedParserAtomIndex::WellKnown::useStrict() &&
+         pos.begin + useStrictLength == pos.end;
+}
+static inline bool IsUseAsmDirective(const TokenPos& pos,
+                                     TaggedParserAtomIndex atom) {
+  // the length of "use asm", including quotation.
+  static constexpr size_t useAsmLength = 9;
+  return atom == TaggedParserAtomIndex::WellKnown::useAsm() &&
+         pos.begin + useAsmLength == pos.end;
 }
 
 template <typename Unit>
@@ -3642,7 +3900,7 @@ bool Parser<FullParseHandler, Unit>::asmJS(ListNodeType list) {
   // function from the beginning. Reparsing is triggered by marking that a
   // new directive has been encountered and returning 'false'.
   bool validated;
-  if (!CompileAsmJS(cx_, *this, list, &validated)) {
+  if (!CompileAsmJS(cx_, this->parserAtoms(), *this, list, &validated)) {
     return false;
   }
   if (!validated) {
@@ -3681,7 +3939,7 @@ template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::maybeParseDirective(
     ListNodeType list, Node possibleDirective, bool* cont) {
   TokenPos directivePos;
-  JSAtom* directive =
+  TaggedParserAtomIndex directive =
       handler_.isStringExprStatement(possibleDirective, &directivePos);
 
   *cont = !!directive;
@@ -3689,43 +3947,90 @@ bool GeneralParser<ParseHandler, Unit>::maybeParseDirective(
     return true;
   }
 
-  if (IsEscapeFreeStringLiteral(directivePos, directive)) {
-    if (directive == cx_->names().useStrict) {
-      // Functions with non-simple parameter lists (destructuring,
-      // default or rest parameters) must not contain a "use strict"
-      // directive.
-      if (pc_->isFunctionBox()) {
-        FunctionBox* funbox = pc_->functionBox();
-        if (!funbox->hasSimpleParameterList()) {
-          const char* parameterKind =
-              funbox->hasDestructuringArgs
-                  ? "destructuring"
-                  : funbox->hasParameterExprs ? "default" : "rest";
-          errorAt(directivePos.begin, JSMSG_STRICT_NON_SIMPLE_PARAMS,
-                  parameterKind);
+  if (IsUseStrictDirective(directivePos, directive)) {
+    // Functions with non-simple parameter lists (destructuring,
+    // default or rest parameters) must not contain a "use strict"
+    // directive.
+    if (pc_->isFunctionBox()) {
+      FunctionBox* funbox = pc_->functionBox();
+      if (!funbox->hasSimpleParameterList()) {
+        const char* parameterKind = funbox->hasDestructuringArgs
+                                        ? "destructuring"
+                                    : funbox->hasParameterExprs ? "default"
+                                                                : "rest";
+        errorAt(directivePos.begin, JSMSG_STRICT_NON_SIMPLE_PARAMS,
+                parameterKind);
+        return false;
+      }
+    }
+
+    // We're going to be in strict mode. Note that this scope explicitly
+    // had "use strict";
+    pc_->sc()->setExplicitUseStrict();
+    if (!pc_->sc()->strict()) {
+      // Some strict mode violations can appear before a Use Strict Directive
+      // is applied.  (See the |DeprecatedContent| enum initializers.)  These
+      // violations can manifest in two ways.
+      //
+      // First, the violation can appear *before* the Use Strict Directive.
+      // Numeric literals (and therefore octal literals) can only precede a
+      // Use Strict Directive if this function's parameter list is not simple,
+      // but we reported an error for non-simple parameter lists above, so
+      // octal literals present no issue.  But octal escapes and \8 and \9 can
+      // appear in the directive prologue before a Use Strict Directive:
+      //
+      //   function f()
+      //   {
+      //     "hell\157 world";  // octal escape
+      //     "\8"; "\9";        // NonOctalDecimalEscape
+      //     "use strict";      // retroactively makes all the above errors
+      //   }
+      //
+      // Second, the violation can appear *after* the Use Strict Directive but
+      // *before* the directive is recognized as terminated.  This only
+      // happens when a directive is terminated by ASI, and the next token
+      // contains a violation:
+      //
+      //   function a()
+      //   {
+      //     "use strict"  // ASI
+      //     0755;
+      //   }
+      //   function b()
+      //   {
+      //     "use strict"  // ASI
+      //     "hell\157 world";
+      //   }
+      //   function c()
+      //   {
+      //     "use strict"  // ASI
+      //     "\8";
+      //   }
+      //
+      // We note such violations when tokenizing.  Then, if a violation has
+      // been observed at the time a "use strict" is applied, we report the
+      // error.
+      switch (anyChars.sawDeprecatedContent()) {
+        case DeprecatedContent::None:
+          break;
+        case DeprecatedContent::OctalLiteral:
+          error(JSMSG_DEPRECATED_OCTAL_LITERAL);
           return false;
-        }
+        case DeprecatedContent::OctalEscape:
+          error(JSMSG_DEPRECATED_OCTAL_ESCAPE);
+          return false;
+        case DeprecatedContent::EightOrNineEscape:
+          error(JSMSG_DEPRECATED_EIGHT_OR_NINE_ESCAPE);
+          return false;
       }
 
-      // We're going to be in strict mode. Note that this scope explicitly
-      // had "use strict";
-      pc_->sc()->setExplicitUseStrict();
-      if (!pc_->sc()->strict()) {
-        // We keep track of the one possible strict violation that could
-        // occur in the directive prologue -- octal escapes -- and
-        // complain now.
-        if (anyChars.sawOctalEscape()) {
-          error(JSMSG_DEPRECATED_OCTAL);
-          return false;
-        }
-        pc_->sc()->setStrictScript();
-      }
-    } else if (directive == cx_->names().useAsm) {
-      if (pc_->isFunctionBox()) {
-        return asmJS(list);
-      }
-      return warningAt(directivePos.begin, JSMSG_USE_ASM_DIRECTIVE_FAIL);
+      pc_->sc()->setStrictScript();
     }
+  } else if (IsUseAsmDirective(directivePos, directive)) {
+    if (pc_->isFunctionBox()) {
+      return asmJS(list);
+    }
+    return warningAt(directivePos.begin, JSMSG_USE_ASM_DIRECTIVE_FAIL);
   }
   return true;
 }
@@ -3733,7 +4038,8 @@ bool GeneralParser<ParseHandler, Unit>::maybeParseDirective(
 template <class ParseHandler, typename Unit>
 typename ParseHandler::ListNodeType
 GeneralParser<ParseHandler, Unit>::statementList(YieldHandling yieldHandling) {
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -3744,7 +4050,9 @@ GeneralParser<ParseHandler, Unit>::statementList(YieldHandling yieldHandling) {
 
   bool canHaveDirectives = pc_->atBodyLevel();
   if (canHaveDirectives) {
-    anyChars.clearSawOctalEscape();
+    // Clear flags for deprecated content that might have been seen in an
+    // enclosing context.
+    anyChars.clearSawDeprecatedContent();
   }
 
   bool canHaveHashbangComment = pc_->atTopLevel();
@@ -3831,7 +4139,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::condition(
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::matchLabel(
-    YieldHandling yieldHandling, MutableHandle<PropertyName*> label) {
+    YieldHandling yieldHandling, TaggedParserAtomIndex* labelOut) {
+  MOZ_ASSERT(labelOut != nullptr);
   TokenKind tt = TokenKind::Eof;
   if (!tokenStream.peekTokenSameLine(&tt, TokenStream::SlashIsRegExp)) {
     return false;
@@ -3840,12 +4149,12 @@ bool GeneralParser<ParseHandler, Unit>::matchLabel(
   if (TokenKindIsPossibleIdentifier(tt)) {
     tokenStream.consumeKnownToken(tt, TokenStream::SlashIsRegExp);
 
-    label.set(labelIdentifier(yieldHandling));
-    if (!label) {
+    *labelOut = labelIdentifier(yieldHandling);
+    if (!*labelOut) {
       return false;
     }
   } else {
-    label.set(nullptr);
+    *labelOut = TaggedParserAtomIndex::null();
   }
   return true;
 }
@@ -4009,7 +4318,7 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::NameNodeType
 GeneralParser<ParseHandler, Unit>::bindingIdentifier(
     DeclarationKind kind, YieldHandling yieldHandling) {
-  RootedPropertyName name(cx_, bindingIdentifier(yieldHandling));
+  TaggedParserAtomIndex name = bindingIdentifier(yieldHandling);
   if (!name) {
     return null();
   }
@@ -4048,7 +4357,8 @@ GeneralParser<ParseHandler, Unit>::objectBindingPattern(
     DeclarationKind kind, YieldHandling yieldHandling) {
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::LeftCurly));
 
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -4059,7 +4369,7 @@ GeneralParser<ParseHandler, Unit>::objectBindingPattern(
   }
 
   Maybe<DeclarationKind> declKind = Some(kind);
-  RootedAtom propAtom(cx_);
+  TaggedParserAtomIndex propAtom;
   for (;;) {
     TokenKind tt;
     if (!tokenStream.peekToken(&tt)) {
@@ -4202,7 +4512,8 @@ GeneralParser<ParseHandler, Unit>::arrayBindingPattern(
     DeclarationKind kind, YieldHandling yieldHandling) {
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::LeftBracket));
 
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -4498,7 +4809,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::declarationName(
     return null();
   }
 
-  RootedPropertyName name(cx_, bindingIdentifier(yieldHandling));
+  TaggedParserAtomIndex name = bindingIdentifier(yieldHandling);
   if (!name) {
     return null();
   }
@@ -4671,147 +4982,179 @@ GeneralParser<ParseHandler, Unit>::lexicalDeclaration(
   return decl;
 }
 
-template <typename Unit>
-bool Parser<FullParseHandler, Unit>::namedImportsOrNamespaceImport(
-    TokenKind tt, ListNodeType importSpecSet) {
-  if (tt == TokenKind::LeftCurly) {
-    while (true) {
-      // Handle the forms |import {} from 'a'| and
-      // |import { ..., } from 'a'| (where ... is non empty), by
-      // escaping the loop early if the next token is }.
-      if (!tokenStream.getToken(&tt)) {
-        return false;
-      }
+template <class ParseHandler, typename Unit>
+typename ParseHandler::NameNodeType
+GeneralParser<ParseHandler, Unit>::moduleExportName() {
+  MOZ_ASSERT(anyChars.currentToken().type == TokenKind::String);
+  TaggedParserAtomIndex name = anyChars.currentToken().atom();
+  if (!this->parserAtoms().isModuleExportName(name)) {
+    error(JSMSG_UNPAIRED_SURROGATE_EXPORT);
+    return null();
+  }
+  return handler_.newStringLiteral(name, pos());
+}
 
-      if (tt == TokenKind::RightCurly) {
-        break;
-      }
+template <class ParseHandler, typename Unit>
+bool GeneralParser<ParseHandler, Unit>::namedImports(
+    ListNodeType importSpecSet) {
+  if (!abortIfSyntaxParser()) {
+    return false;
+  }
 
-      if (!TokenKindIsPossibleIdentifierName(tt)) {
-        error(JSMSG_NO_IMPORT_NAME);
-        return false;
-      }
-
-      Rooted<PropertyName*> importName(cx_, anyChars.currentName());
-      TokenPos importNamePos = pos();
-
-      bool matched;
-      if (!tokenStream.matchToken(&matched, TokenKind::As)) {
-        return false;
-      }
-
-      if (matched) {
-        TokenKind afterAs;
-        if (!tokenStream.getToken(&afterAs)) {
-          return false;
-        }
-
-        if (!TokenKindIsPossibleIdentifierName(afterAs)) {
-          error(JSMSG_NO_BINDING_NAME);
-          return false;
-        }
-      } else {
-        // Keywords cannot be bound to themselves, so an import name
-        // that is a keyword is a syntax error if it is not followed
-        // by the keyword 'as'.
-        // See the ImportSpecifier production in ES6 section 15.2.2.
-        if (IsKeyword(importName)) {
-          error(JSMSG_AS_AFTER_RESERVED_WORD, ReservedWordToCharZ(importName));
-          return false;
-        }
-      }
-
-      RootedPropertyName bindingAtom(cx_, importedBinding());
-      if (!bindingAtom) {
-        return false;
-      }
-
-      NameNodeType bindingName = newName(bindingAtom);
-      if (!bindingName) {
-        return false;
-      }
-      if (!noteDeclaredName(bindingAtom, DeclarationKind::Import, pos())) {
-        return false;
-      }
-
-      NameNodeType importNameNode = newName(importName, importNamePos);
-      if (!importNameNode) {
-        return false;
-      }
-
-      BinaryNodeType importSpec =
-          handler_.newImportSpec(importNameNode, bindingName);
-      if (!importSpec) {
-        return false;
-      }
-
-      handler_.addList(importSpecSet, importSpec);
-
-      TokenKind next;
-      if (!tokenStream.getToken(&next)) {
-        return false;
-      }
-
-      if (next == TokenKind::RightCurly) {
-        break;
-      }
-
-      if (next != TokenKind::Comma) {
-        error(JSMSG_RC_AFTER_IMPORT_SPEC_LIST);
-        return false;
-      }
-    }
-  } else {
-    MOZ_ASSERT(tt == TokenKind::Mul);
-
-    if (!mustMatchToken(TokenKind::As, JSMSG_AS_AFTER_IMPORT_STAR)) {
+  while (true) {
+    // Handle the forms |import {} from 'a'| and
+    // |import { ..., } from 'a'| (where ... is non empty), by
+    // escaping the loop early if the next token is }.
+    TokenKind tt;
+    if (!tokenStream.getToken(&tt)) {
       return false;
     }
 
-    if (!mustMatchToken(TokenKindIsPossibleIdentifierName,
-                        JSMSG_NO_BINDING_NAME)) {
+    if (tt == TokenKind::RightCurly) {
+      break;
+    }
+
+    TaggedParserAtomIndex importName;
+    NameNodeType importNameNode = null();
+    if (TokenKindIsPossibleIdentifierName(tt)) {
+      importName = anyChars.currentName();
+      importNameNode = newName(importName);
+    } else if (tt == TokenKind::String) {
+      importNameNode = moduleExportName();
+    } else {
+      error(JSMSG_NO_IMPORT_NAME);
+    }
+    if (!importNameNode) {
       return false;
     }
 
-    NameNodeType importName = newName(cx_->names().star);
-    if (!importName) {
+    bool matched;
+    if (!tokenStream.matchToken(&matched, TokenKind::As)) {
       return false;
     }
 
-    // Namespace imports are are not indirect bindings but lexical
-    // definitions that hold a module namespace object. They are treated
-    // as const variables which are initialized during the
-    // ModuleInstantiate step.
-    RootedPropertyName bindingName(cx_, importedBinding());
+    if (matched) {
+      TokenKind afterAs;
+      if (!tokenStream.getToken(&afterAs)) {
+        return false;
+      }
+
+      if (!TokenKindIsPossibleIdentifierName(afterAs)) {
+        error(JSMSG_NO_BINDING_NAME);
+        return false;
+      }
+    } else {
+      // String export names can't refer to local bindings.
+      if (tt == TokenKind::String) {
+        error(JSMSG_AS_AFTER_STRING);
+        return false;
+      }
+
+      // Keywords cannot be bound to themselves, so an import name
+      // that is a keyword is a syntax error if it is not followed
+      // by the keyword 'as'.
+      // See the ImportSpecifier production in ES6 section 15.2.2.
+      MOZ_ASSERT(importName);
+      if (IsKeyword(importName)) {
+        error(JSMSG_AS_AFTER_RESERVED_WORD, ReservedWordToCharZ(importName));
+        return false;
+      }
+    }
+
+    TaggedParserAtomIndex bindingAtom = importedBinding();
+    if (!bindingAtom) {
+      return false;
+    }
+
+    NameNodeType bindingName = newName(bindingAtom);
     if (!bindingName) {
       return false;
     }
-    NameNodeType bindingNameNode = newName(bindingName);
-    if (!bindingNameNode) {
+    if (!noteDeclaredName(bindingAtom, DeclarationKind::Import, pos())) {
       return false;
     }
-    if (!noteDeclaredName(bindingName, DeclarationKind::Const, pos())) {
-      return false;
-    }
-
-    // The namespace import name is currently required to live on the
-    // environment.
-    pc_->varScope().lookupDeclaredName(bindingName)->value()->setClosedOver();
 
     BinaryNodeType importSpec =
-        handler_.newImportSpec(importName, bindingNameNode);
+        handler_.newImportSpec(importNameNode, bindingName);
     if (!importSpec) {
       return false;
     }
 
     handler_.addList(importSpecSet, importSpec);
+
+    TokenKind next;
+    if (!tokenStream.getToken(&next)) {
+      return false;
+    }
+
+    if (next == TokenKind::RightCurly) {
+      break;
+    }
+
+    if (next != TokenKind::Comma) {
+      error(JSMSG_RC_AFTER_IMPORT_SPEC_LIST);
+      return false;
+    }
   }
 
   return true;
 }
 
-template <typename Unit>
-BinaryNode* Parser<FullParseHandler, Unit>::importDeclaration() {
+template <class ParseHandler, typename Unit>
+bool GeneralParser<ParseHandler, Unit>::namespaceImport(
+    ListNodeType importSpecSet) {
+  if (!abortIfSyntaxParser()) {
+    return false;
+  }
+
+  if (!mustMatchToken(TokenKind::As, JSMSG_AS_AFTER_IMPORT_STAR)) {
+    return false;
+  }
+  uint32_t begin = pos().begin;
+
+  if (!mustMatchToken(TokenKindIsPossibleIdentifierName,
+                      JSMSG_NO_BINDING_NAME)) {
+    return false;
+  }
+
+  // Namespace imports are not indirect bindings but lexical
+  // definitions that hold a module namespace object. They are treated
+  // as const variables which are initialized during the
+  // ModuleInstantiate step.
+  TaggedParserAtomIndex bindingName = importedBinding();
+  if (!bindingName) {
+    return false;
+  }
+  NameNodeType bindingNameNode = newName(bindingName);
+  if (!bindingNameNode) {
+    return false;
+  }
+  if (!noteDeclaredName(bindingName, DeclarationKind::Const, pos())) {
+    return false;
+  }
+
+  // The namespace import name is currently required to live on the
+  // environment.
+  pc_->varScope().lookupDeclaredName(bindingName)->value()->setClosedOver();
+
+  UnaryNodeType importSpec =
+      handler_.newImportNamespaceSpec(begin, bindingNameNode);
+  if (!importSpec) {
+    return false;
+  }
+
+  handler_.addList(importSpecSet, importSpec);
+
+  return true;
+}
+
+template <class ParseHandler, typename Unit>
+typename ParseHandler::BinaryNodeType
+GeneralParser<ParseHandler, Unit>::importDeclaration() {
+  if (!abortIfSyntaxParser()) {
+    return null();
+  }
+
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::Import));
 
   if (!pc_->atModuleLevel()) {
@@ -4834,10 +5177,14 @@ BinaryNode* Parser<FullParseHandler, Unit>::importDeclaration() {
   if (tt == TokenKind::String) {
     // Handle the form |import 'a'| by leaving the list empty. This is
     // equivalent to |import {} from 'a'|.
-    importSpecSet->pn_pos.end = importSpecSet->pn_pos.begin;
+    handler_.setEndPosition(importSpecSet, pos().begin);
   } else {
-    if (tt == TokenKind::LeftCurly || tt == TokenKind::Mul) {
-      if (!namedImportsOrNamespaceImport(tt, importSpecSet)) {
+    if (tt == TokenKind::LeftCurly) {
+      if (!namedImports(importSpecSet)) {
+        return null();
+      }
+    } else if (tt == TokenKind::Mul) {
+      if (!namespaceImport(importSpecSet)) {
         return null();
       }
     } else if (TokenKindIsPossibleIdentifierName(tt)) {
@@ -4845,12 +5192,13 @@ BinaryNode* Parser<FullParseHandler, Unit>::importDeclaration() {
       // specifier to the list, with 'default' as the import name and
       // 'a' as the binding name. This is equivalent to
       // |import { default as a } from 'b'|.
-      NameNodeType importName = newName(cx_->names().default_);
+      NameNodeType importName =
+          newName(TaggedParserAtomIndex::WellKnown::default_());
       if (!importName) {
         return null();
       }
 
-      RootedPropertyName bindingAtom(cx_, importedBinding());
+      TaggedParserAtomIndex bindingAtom = importedBinding();
       if (!bindingAtom) {
         return null();
       }
@@ -4882,12 +5230,16 @@ BinaryNode* Parser<FullParseHandler, Unit>::importDeclaration() {
           return null();
         }
 
-        if (tt != TokenKind::LeftCurly && tt != TokenKind::Mul) {
+        if (tt == TokenKind::LeftCurly) {
+          if (!namedImports(importSpecSet)) {
+            return null();
+          }
+        } else if (tt == TokenKind::Mul) {
+          if (!namespaceImport(importSpecSet)) {
+            return null();
+          }
+        } else {
           error(JSMSG_NAMED_IMPORTS_OR_NAMESPACE_IMPORT);
-          return null();
-        }
-
-        if (!namedImportsOrNamespaceImport(tt, importSpecSet)) {
           return null();
         }
       }
@@ -4914,26 +5266,13 @@ BinaryNode* Parser<FullParseHandler, Unit>::importDeclaration() {
     return null();
   }
 
-  BinaryNode* node = handler_.newImportDeclaration(importSpecSet, moduleSpec,
-                                                   TokenPos(begin, pos().end));
-  if (!node || !pc_->sc()->asModuleContext()->builder.processImport(node)) {
+  BinaryNodeType node = handler_.newImportDeclaration(
+      importSpecSet, moduleSpec, TokenPos(begin, pos().end));
+  if (!node || !processImport(node)) {
     return null();
   }
 
   return node;
-}
-
-template <typename Unit>
-inline SyntaxParseHandler::BinaryNodeType
-Parser<SyntaxParseHandler, Unit>::importDeclaration() {
-  MOZ_ALWAYS_FALSE(abortIfSyntaxParser());
-  return SyntaxParseHandler::NodeFailure;
-}
-
-template <class ParseHandler, typename Unit>
-inline typename ParseHandler::BinaryNodeType
-GeneralParser<ParseHandler, Unit>::importDeclaration() {
-  return asFinalParser()->importDeclaration();
 }
 
 template <class ParseHandler, typename Unit>
@@ -4955,12 +5294,13 @@ GeneralParser<ParseHandler, Unit>::importDeclarationOrImportExpr(
 }
 
 template <typename Unit>
-bool Parser<FullParseHandler, Unit>::checkExportedName(JSAtom* exportName) {
+bool Parser<FullParseHandler, Unit>::checkExportedName(
+    TaggedParserAtomIndex exportName) {
   if (!pc_->sc()->asModuleContext()->builder.hasExportedName(exportName)) {
     return true;
   }
 
-  UniqueChars str = AtomToPrintableString(cx_, exportName);
+  UniqueChars str = this->parserAtoms().toPrintableString(cx_, exportName);
   if (!str) {
     return false;
   }
@@ -4971,14 +5311,14 @@ bool Parser<FullParseHandler, Unit>::checkExportedName(JSAtom* exportName) {
 
 template <typename Unit>
 inline bool Parser<SyntaxParseHandler, Unit>::checkExportedName(
-    JSAtom* exportName) {
+    TaggedParserAtomIndex exportName) {
   MOZ_ALWAYS_FALSE(abortIfSyntaxParser());
   return false;
 }
 
 template <class ParseHandler, typename Unit>
 inline bool GeneralParser<ParseHandler, Unit>::checkExportedName(
-    JSAtom* exportName) {
+    TaggedParserAtomIndex exportName) {
   return asFinalParser()->checkExportedName(exportName);
 }
 
@@ -5220,6 +5560,19 @@ inline bool PerHandlerParser<SyntaxParseHandler>::processExportFrom(
   return false;
 }
 
+template <>
+inline bool PerHandlerParser<FullParseHandler>::processImport(
+    BinaryNodeType node) {
+  return pc_->sc()->asModuleContext()->builder.processImport(node);
+}
+
+template <>
+inline bool PerHandlerParser<SyntaxParseHandler>::processImport(
+    BinaryNodeType node) {
+  MOZ_ALWAYS_FALSE(abortIfSyntaxParser());
+  return false;
+}
+
 template <class ParseHandler, typename Unit>
 typename ParseHandler::BinaryNodeType
 GeneralParser<ParseHandler, Unit>::exportFrom(uint32_t begin, Node specList) {
@@ -5228,10 +5581,6 @@ GeneralParser<ParseHandler, Unit>::exportFrom(uint32_t begin, Node specList) {
   }
 
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::From));
-
-  if (!abortIfSyntaxParser()) {
-    return null();
-  }
 
   if (!mustMatchToken(TokenKind::String, JSMSG_MODULE_SPEC_AFTER_FROM)) {
     return null();
@@ -5267,20 +5616,57 @@ GeneralParser<ParseHandler, Unit>::exportBatch(uint32_t begin) {
   }
 
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::Mul));
+  uint32_t beginExportSpec = pos().begin;
 
   ListNodeType kid = handler_.newList(ParseNodeKind::ExportSpecList, pos());
   if (!kid) {
     return null();
   }
 
-  // Handle the form |export *| by adding a special export batch
-  // specifier to the list.
-  NullaryNodeType exportSpec = handler_.newExportBatchSpec(pos());
-  if (!exportSpec) {
+  bool foundAs;
+  if (!tokenStream.matchToken(&foundAs, TokenKind::As)) {
     return null();
   }
 
-  handler_.addList(kid, exportSpec);
+  if (foundAs) {
+    TokenKind tt;
+    if (!tokenStream.getToken(&tt)) {
+      return null();
+    }
+
+    NameNodeType exportName = null();
+    if (TokenKindIsPossibleIdentifierName(tt)) {
+      exportName = newName(anyChars.currentName());
+    } else if (tt == TokenKind::String) {
+      exportName = moduleExportName();
+    } else {
+      error(JSMSG_NO_EXPORT_NAME);
+    }
+    if (!exportName) {
+      return null();
+    }
+
+    if (!checkExportedNameForClause(exportName)) {
+      return null();
+    }
+
+    UnaryNodeType exportSpec =
+        handler_.newExportNamespaceSpec(beginExportSpec, exportName);
+    if (!exportSpec) {
+      return null();
+    }
+
+    handler_.addList(kid, exportSpec);
+  } else {
+    // Handle the form |export *| by adding a special export batch
+    // specifier to the list.
+    NullaryNodeType exportSpec = handler_.newExportBatchSpec(pos());
+    if (!exportSpec) {
+      return null();
+    }
+
+    handler_.addList(kid, exportSpec);
+  }
 
   if (!mustMatchToken(TokenKind::From, JSMSG_FROM_AFTER_EXPORT_STAR)) {
     return null();
@@ -5294,10 +5680,15 @@ bool Parser<FullParseHandler, Unit>::checkLocalExportNames(ListNode* node) {
   // ES 2017 draft 15.2.3.1.
   for (ParseNode* next : node->contents()) {
     ParseNode* name = next->as<BinaryNode>().left();
+
+    if (name->isKind(ParseNodeKind::StringExpr)) {
+      errorAt(name->pn_pos.begin, JSMSG_BAD_LOCAL_STRING_EXPORT);
+      return false;
+    }
+
     MOZ_ASSERT(name->isKind(ParseNodeKind::Name));
 
-    RootedPropertyName ident(cx_,
-                             name->as<NameNode>().atom()->asPropertyName());
+    TaggedParserAtomIndex ident = name->as<NameNode>().atom();
     if (!checkLocalExportName(ident, name->pn_pos.begin)) {
       return false;
     }
@@ -5345,12 +5736,14 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::exportClause(
       break;
     }
 
-    if (!TokenKindIsPossibleIdentifierName(tt)) {
+    NameNodeType bindingName = null();
+    if (TokenKindIsPossibleIdentifierName(tt)) {
+      bindingName = newName(anyChars.currentName());
+    } else if (tt == TokenKind::String) {
+      bindingName = moduleExportName();
+    } else {
       error(JSMSG_NO_BINDING_NAME);
-      return null();
     }
-
-    NameNodeType bindingName = newName(anyChars.currentName());
     if (!bindingName) {
       return null();
     }
@@ -5359,14 +5752,28 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::exportClause(
     if (!tokenStream.matchToken(&foundAs, TokenKind::As)) {
       return null();
     }
+
+    NameNodeType exportName = null();
     if (foundAs) {
-      if (!mustMatchToken(TokenKindIsPossibleIdentifierName,
-                          JSMSG_NO_EXPORT_NAME)) {
+      TokenKind tt;
+      if (!tokenStream.getToken(&tt)) {
         return null();
       }
-    }
 
-    NameNodeType exportName = newName(anyChars.currentName());
+      if (TokenKindIsPossibleIdentifierName(tt)) {
+        exportName = newName(anyChars.currentName());
+      } else if (tt == TokenKind::String) {
+        exportName = moduleExportName();
+      } else {
+        error(JSMSG_NO_EXPORT_NAME);
+      }
+    } else {
+      if (tt != TokenKind::String) {
+        exportName = newName(anyChars.currentName());
+      } else {
+        exportName = moduleExportName();
+      }
+    }
     if (!exportName) {
       return null();
     }
@@ -5641,7 +6048,7 @@ GeneralParser<ParseHandler, Unit>::exportDefaultAssignExpr(uint32_t begin) {
     return null();
   }
 
-  HandlePropertyName name = cx_->names().default_;
+  TaggedParserAtomIndex name = TaggedParserAtomIndex::WellKnown::default_();
   NameNodeType nameNode = newName(name);
   if (!nameNode) {
     return null();
@@ -5686,7 +6093,7 @@ GeneralParser<ParseHandler, Unit>::exportDefault(uint32_t begin) {
     return null();
   }
 
-  if (!checkExportedName(cx_->names().default_)) {
+  if (!checkExportedName(TaggedParserAtomIndex::WellKnown::default_())) {
     return null();
   }
 
@@ -6000,8 +6407,9 @@ bool GeneralParser<ParseHandler, Unit>::matchInOrOf(bool* isForInp,
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::forHeadStart(
-    YieldHandling yieldHandling, ParseNodeKind* forHeadKind,
-    Node* forInitialPart, Maybe<ParseContext::Scope>& forLoopLexicalScope,
+    YieldHandling yieldHandling, IteratorKind iterKind,
+    ParseNodeKind* forHeadKind, Node* forInitialPart,
+    Maybe<ParseContext::Scope>& forLoopLexicalScope,
     Node* forInOrOfExpression) {
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::LeftParen));
 
@@ -6035,8 +6443,13 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
   // For-in loop backwards compatibility requires that |let| starting a
   // for-loop that's not a (new to ES6) for-of loop, in non-strict mode code,
   // parse as an identifier.  (|let| in for-of is always a declaration.)
+  //
+  // For-of loops can't start with the token sequence "async of", because that
+  // leads to a shift-reduce conflict when parsing |for (async of => {};;)| or
+  // |for (async of [])|.
   bool parsingLexicalDeclaration = false;
   bool letIsIdentifier = false;
+  bool startsWithForOf = false;
   if (tt == TokenKind::Const) {
     parsingLexicalDeclaration = true;
     tokenStream.consumeKnownToken(tt, TokenStream::SlashIsRegExp);
@@ -6057,6 +6470,18 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
       anyChars.ungetToken();
       letIsIdentifier = true;
     }
+  } else if (tt == TokenKind::Async && iterKind == IteratorKind::Sync) {
+    tokenStream.consumeKnownToken(TokenKind::Async, TokenStream::SlashIsRegExp);
+
+    TokenKind next;
+    if (!tokenStream.peekToken(&next)) {
+      return false;
+    }
+
+    if (next == TokenKind::Of) {
+      startsWithForOf = true;
+    }
+    anyChars.ungetToken();
   }
 
   if (parsingLexicalDeclaration) {
@@ -6122,7 +6547,14 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
   //
   // See ES6 13.7.
   if (isForOf && letIsIdentifier) {
-    errorAt(exprOffset, JSMSG_LET_STARTING_FOROF_LHS);
+    errorAt(exprOffset, JSMSG_BAD_STARTING_FOROF_LHS, "let");
+    return false;
+  }
+
+  // In a for-of loop, the LeftHandSideExpression isn't allowed to be an
+  // identifier named "async" per the [lookahead ≠ async of] restriction.
+  if (isForOf && startsWithForOf) {
+    errorAt(exprOffset, JSMSG_BAD_STARTING_FOROF_LHS, "async of");
     return false;
   }
 
@@ -6140,7 +6572,7 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
         return false;
       }
     }
-  } else if (handler_.isPropertyAccess(*forInitialPart)) {
+  } else if (handler_.isPropertyOrPrivateMemberAccess(*forInitialPart)) {
     // Permitted: no additional testing/fixup needed.
   } else if (handler_.isFunctionCall(*forInitialPart)) {
     if (!strictModeErrorAt(exprOffset, JSMSG_BAD_FOR_LEFTSIDE)) {
@@ -6173,10 +6605,17 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::forStatement(
   IteratorKind iterKind = IteratorKind::Sync;
   unsigned iflags = 0;
 
-  if (pc_->isAsync()) {
+  if (pc_->isAsync() ||
+      (options().topLevelAwait && pc_->sc()->isModuleContext())) {
     bool matched;
     if (!tokenStream.matchToken(&matched, TokenKind::Await)) {
       return null();
+    }
+
+    // If we come across a top level await here, mark the module as async.
+    if (matched && pc_->sc()->isModuleContext() && !pc_->isAsync()) {
+      pc_->sc()->asModuleContext()->setIsAsync();
+      MOZ_ASSERT(pc_->isAsync());
     }
 
     if (matched) {
@@ -6229,8 +6668,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::forStatement(
   //
   // In either case the subsequent token can be consistently accessed using
   // TokenStream::SlashIsDiv semantics.
-  if (!forHeadStart(yieldHandling, &headKind, &startNode, forLoopLexicalScope,
-                    &iteratedExpr)) {
+  if (!forHeadStart(yieldHandling, iterKind, &headKind, &startNode,
+                    forLoopLexicalScope, &iteratedExpr)) {
     return null();
   }
 
@@ -6484,7 +6923,7 @@ GeneralParser<ParseHandler, Unit>::continueStatement(
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::Continue));
   uint32_t begin = pos().begin;
 
-  RootedPropertyName label(cx_);
+  TaggedParserAtomIndex label;
   if (!matchLabel(yieldHandling, &label)) {
     return null();
   }
@@ -6515,7 +6954,7 @@ GeneralParser<ParseHandler, Unit>::breakStatement(YieldHandling yieldHandling) {
   MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::Break));
   uint32_t begin = pos().begin;
 
-  RootedPropertyName label(cx_);
+  TaggedParserAtomIndex label;
   if (!matchLabel(yieldHandling, &label)) {
     return null();
   }
@@ -6547,7 +6986,6 @@ GeneralParser<ParseHandler, Unit>::returnStatement(
   uint32_t begin = pos().begin;
 
   MOZ_ASSERT(pc_->isFunctionBox());
-  pc_->functionBox()->usesReturn = true;
 
   // Parse an optional operand.
   //
@@ -6710,7 +7148,7 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::LabeledStatementType
 GeneralParser<ParseHandler, Unit>::labeledStatement(
     YieldHandling yieldHandling) {
-  RootedPropertyName label(cx_, labelIdentifier(yieldHandling));
+  TaggedParserAtomIndex label = labelIdentifier(yieldHandling);
   if (!label) {
     return null();
   }
@@ -7041,8 +7479,8 @@ static AccessorType ToAccessorType(PropertyType propType) {
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::classMember(
     YieldHandling yieldHandling, const ParseContext::ClassStatement& classStmt,
-    HandlePropertyName className, uint32_t classStartOffset,
-    HasHeritage hasHeritage, ClassFields& classFields,
+    TaggedParserAtomIndex className, uint32_t classStartOffset,
+    HasHeritage hasHeritage, ClassInitializedMembers& classInitializedMembers,
     ListNodeType& classMembers, bool* done) {
   *done = false;
 
@@ -7065,6 +7503,23 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
       return false;
     }
 
+    if (tt == TokenKind::LeftCurly) {
+      /* Parsing static class block: static { ... } */
+      FunctionNodeType staticBlockBody =
+          staticClassBlock(classInitializedMembers);
+      if (!staticBlockBody) {
+        return false;
+      }
+
+      StaticClassBlockType classBlock =
+          handler_.newStaticClassBlock(staticBlockBody);
+      if (!classBlock) {
+        return false;
+      }
+
+      return handler_.addClassMemberDefinition(classMembers, classBlock);
+    }
+
     if (tt != TokenKind::LeftParen && tt != TokenKind::Assign &&
         tt != TokenKind::Semi && tt != TokenKind::RightCurly) {
       isStatic = true;
@@ -7080,7 +7535,7 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
     return false;
   }
 
-  RootedAtom propAtom(cx_);
+  TaggedParserAtomIndex propAtom;
   PropertyType propType;
   Node propName = propertyOrMethodName(yieldHandling, PropertyNameInClass,
                                        /* maybeDecl = */ Nothing(),
@@ -7091,29 +7546,42 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
 
   if (propType == PropertyType::Field) {
     if (isStatic) {
-      if (propAtom == cx_->names().prototype) {
+      if (propAtom == TaggedParserAtomIndex::WellKnown::prototype()) {
         errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
         return false;
       }
     }
 
-    if (propAtom == cx_->names().constructor) {
+    if (propAtom == TaggedParserAtomIndex::WellKnown::constructor()) {
       errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
       return false;
     }
 
-    if (!abortIfSyntaxParser()) {
-      return false;
+    if (handler_.isPrivateName(propName)) {
+      if (propAtom == TaggedParserAtomIndex::WellKnown::hashConstructor()) {
+        errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
+        return false;
+      }
+
+      auto privateName = propAtom;
+      if (!noteDeclaredPrivateName(
+              propName, privateName, propType,
+              isStatic ? FieldPlacement::Static : FieldPlacement::Instance,
+              pos())) {
+        return false;
+      }
     }
 
     if (isStatic) {
-      classFields.staticFields++;
+      classInitializedMembers.staticFields++;
     } else {
-      classFields.instanceFields++;
+      classInitializedMembers.instanceFields++;
     }
 
+    TokenPos propNamePos(propNameOffset, pos().end);
     FunctionNodeType initializer =
-        fieldInitializerOpt(propName, propAtom, classFields, isStatic);
+        fieldInitializerOpt(propNamePos, propName, propAtom,
+                            classInitializedMembers, isStatic, hasHeritage);
     if (!initializer) {
       return false;
     }
@@ -7140,7 +7608,8 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
     return false;
   }
 
-  bool isConstructor = !isStatic && propAtom == cx_->names().constructor;
+  bool isConstructor =
+      !isStatic && propAtom == TaggedParserAtomIndex::WellKnown::constructor();
   if (isConstructor) {
     if (propType != PropertyType::Method) {
       errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
@@ -7153,22 +7622,26 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
     propType = hasHeritage == HasHeritage::Yes
                    ? PropertyType::DerivedConstructor
                    : PropertyType::Constructor;
-  } else if (isStatic && propAtom == cx_->names().prototype) {
+  } else if (isStatic &&
+             propAtom == TaggedParserAtomIndex::WellKnown::prototype()) {
     errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
     return false;
   }
 
-  RootedAtom funName(cx_);
+  TaggedParserAtomIndex funName;
   switch (propType) {
     case PropertyType::Getter:
-    case PropertyType::Setter:
-      if (!anyChars.isCurrentTokenType(TokenKind::RightBracket)) {
+    case PropertyType::Setter: {
+      bool hasStaticName =
+          !anyChars.isCurrentTokenType(TokenKind::RightBracket) && propAtom;
+      if (hasStaticName) {
         funName = prefixAccessorName(propType, propAtom);
         if (!funName) {
           return false;
         }
       }
       break;
+    }
     case PropertyType::Constructor:
     case PropertyType::DerivedConstructor:
       funName = className;
@@ -7205,8 +7678,8 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
       return false;
     }
 
-    if (!noteDeclaredName(cx_->names().dotInitializers, DeclarationKind::Let,
-                          pos())) {
+    if (!noteDeclaredName(TaggedParserAtomIndex::WellKnown::dotInitializers(),
+                          DeclarationKind::Let, pos())) {
       return false;
     }
   }
@@ -7222,8 +7695,72 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
 
   AccessorType atype = ToAccessorType(propType);
 
-  Node method =
-      handler_.newClassMethodDefinition(propName, funNode, atype, isStatic);
+  Maybe<FunctionNodeType> initializerIfPrivate = Nothing();
+  if (handler_.isPrivateName(propName)) {
+    if (!options().privateClassMethods) {
+      // Private methods are not enabled.
+      errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
+      return false;
+    }
+
+    if (propAtom == TaggedParserAtomIndex::WellKnown::hashConstructor()) {
+      // #constructor is an invalid private name.
+      errorAt(propNameOffset, JSMSG_BAD_METHOD_DEF);
+      return false;
+    }
+
+    TaggedParserAtomIndex privateName = propAtom;
+    if (!noteDeclaredPrivateName(
+            propName, privateName, propType,
+            isStatic ? FieldPlacement::Static : FieldPlacement::Instance,
+            pos())) {
+      return false;
+    }
+
+    // Private non-static methods are stored in the class body environment.
+    // Private non-static accessors are stamped onto every instance using
+    // initializers. Private static methods are stamped onto the constructor
+    // during class evaluation; see BytecodeEmitter::emitPropertyList.
+    if (!isStatic) {
+      if (atype == AccessorType::Getter || atype == AccessorType::Setter) {
+        classInitializedMembers.privateAccessors++;
+
+        // Synthesize a name for the lexical variable that will store the
+        // accessor body.
+        StringBuffer storedMethodName(cx_);
+        if (!storedMethodName.append(this->parserAtoms(), propAtom)) {
+          return false;
+        }
+        if (!storedMethodName.append(
+                atype == AccessorType::Getter ? ".getter" : ".setter")) {
+          return false;
+        }
+        auto storedMethodProp =
+            storedMethodName.finishParserAtom(this->parserAtoms());
+        if (!storedMethodProp) {
+          return false;
+        }
+        if (!noteDeclaredName(storedMethodProp, DeclarationKind::Synthetic,
+                              pos())) {
+          return false;
+        }
+
+        TokenPos propNamePos(propNameOffset, pos().end);
+        auto initializerNode =
+            privateMethodInitializer(propNamePos, propAtom, storedMethodProp);
+        if (!initializerNode) {
+          return false;
+        }
+        initializerIfPrivate = Some(initializerNode);
+      } else {
+        MOZ_ASSERT(atype == AccessorType::None);
+        classInitializedMembers.privateMethods++;
+      }
+    }
+  }
+
+  Node method = handler_.newClassMethodDefinition(
+      propName, funNode, atype, isStatic, initializerIfPrivate);
   if (!method) {
     return false;
   }
@@ -7241,14 +7778,12 @@ bool GeneralParser<ParseHandler, Unit>::classMember(
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::finishClassConstructor(
-    const ParseContext::ClassStatement& classStmt, HandlePropertyName className,
-    HasHeritage hasHeritage, uint32_t classStartOffset, uint32_t classEndOffset,
-    const ClassFields& classFields, ListNodeType& classMembers) {
-  // Fields cannot re-use the constructor obtained via JSOp::ClassConstructor or
-  // JSOp::DerivedConstructor due to needing to emit calls to the field
-  // initializers in the constructor. So, synthesize a new one.
-  size_t numFields = classFields.instanceFields;
-  if (classStmt.constructorBox == nullptr && numFields > 0) {
+    const ParseContext::ClassStatement& classStmt,
+    TaggedParserAtomIndex className, HasHeritage hasHeritage,
+    uint32_t classStartOffset, uint32_t classEndOffset,
+    const ClassInitializedMembers& classInitializedMembers,
+    ListNodeType& classMembers) {
+  if (classStmt.constructorBox == nullptr) {
     MOZ_ASSERT(!options().selfHostingMode);
     // Unconditionally create the scope here, because it's always the
     // constructor.
@@ -7257,30 +7792,28 @@ bool GeneralParser<ParseHandler, Unit>::finishClassConstructor(
       return false;
     }
 
-    if (!noteDeclaredName(cx_->names().dotInitializers, DeclarationKind::Let,
-                          pos())) {
+    if (!noteDeclaredName(TaggedParserAtomIndex::WellKnown::dotInitializers(),
+                          DeclarationKind::Let, pos())) {
       return false;
     }
 
     // synthesizeConstructor assigns to classStmt.constructorBox
+    TokenPos synthesizedBodyPos(classStartOffset, classEndOffset);
     FunctionNodeType synthesizedCtor =
-        synthesizeConstructor(className, classStartOffset, hasHeritage);
+        synthesizeConstructor(className, synthesizedBodyPos, hasHeritage);
     if (!synthesizedCtor) {
       return false;
     }
 
-    MOZ_ASSERT(classStmt.constructorBox != nullptr);
-
     // Note: the *function* has the name of the class, but the *property*
     // containing the function has the name "constructor"
-    Node constructorNameNode =
-        handler_.newObjectLiteralPropertyName(cx_->names().constructor, pos());
+    Node constructorNameNode = handler_.newObjectLiteralPropertyName(
+        TaggedParserAtomIndex::WellKnown::constructor(), pos());
     if (!constructorNameNode) {
       return false;
     }
-    ClassMethodType method = handler_.newClassMethodDefinition(
-        constructorNameNode, synthesizedCtor, AccessorType::None,
-        /* isStatic = */ false);
+    ClassMethodType method = handler_.newDefaultClassConstructor(
+        constructorNameNode, synthesizedCtor);
     if (!method) {
       return false;
     }
@@ -7294,19 +7827,23 @@ bool GeneralParser<ParseHandler, Unit>::finishClassConstructor(
     }
   }
 
-  if (FunctionBox* ctorbox = classStmt.constructorBox) {
-    // The ctorbox must not have emitted a JSFunction yet since we are still
-    // updating it.
-    MOZ_ASSERT(!ctorbox->hasFunction());
+  MOZ_ASSERT(classStmt.constructorBox);
+  FunctionBox* ctorbox = classStmt.constructorBox;
 
-    // Amend the toStringEnd offset for the constructor now that we've
-    // finished parsing the class.
-    ctorbox->extent.toStringEnd = classEndOffset;
+  // Amend the toStringEnd offset for the constructor now that we've
+  // finished parsing the class.
+  ctorbox->setCtorToStringEnd(classEndOffset);
 
-    if (numFields > 0) {
-      // Field initialization need access to `this`.
-      ctorbox->setFunctionHasThisBinding();
-    }
+  size_t numMemberInitializers = classInitializedMembers.privateAccessors +
+                                 classInitializedMembers.instanceFields;
+  bool hasPrivateBrand = classInitializedMembers.hasPrivateBrand();
+  if (hasPrivateBrand || numMemberInitializers > 0) {
+    // Now that we have full set of initializers, update the constructor.
+    MemberInitializers initializers(hasPrivateBrand, numMemberInitializers);
+    ctorbox->setMemberInitializers(initializers);
+
+    // Field initialization need access to `this`.
+    ctorbox->setCtorFunctionHasThisBinding();
   }
 
   return true;
@@ -7327,7 +7864,7 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
     return null();
   }
 
-  RootedPropertyName className(cx_);
+  TaggedParserAtomIndex className;
   if (TokenKindIsPossibleIdentifier(tt)) {
     className = bindingIdentifier(yieldHandling);
     if (!className) {
@@ -7335,7 +7872,7 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
     }
   } else if (classContext == ClassStatement) {
     if (defaultHandling == AllowDefaultName) {
-      className = cx_->names().default_;
+      className = TaggedParserAtomIndex::WellKnown::default_();
       anyChars.ungetToken();
     } else {
       // Class statements must have a bound name
@@ -7352,6 +7889,8 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
   // position in order to provide it for the nodes created later.
   TokenPos namePos = pos();
 
+  bool isInClass = pc_->sc()->inClass();
+
   // Push a ParseContext::ClassStatement to keep track of the constructor
   // funbox.
   ParseContext::ClassStatement classStmt(pc_);
@@ -7360,6 +7899,7 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
   Node nameNode = null();
   Node classHeritage = null();
   LexicalScopeNodeType classBlock = null();
+  ClassBodyScopeNodeType classBodyBlock = null();
   uint32_t classEndOffset;
   {
     // A named class creates a new lexical scope with a const binding of the
@@ -7390,49 +7930,81 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
       return null();
     }
 
-    ListNodeType classMembers = handler_.newClassMemberList(pos().begin);
-    if (!classMembers) {
-      return null();
-    }
-
-    ClassFields classFields{};
-    for (;;) {
-      bool done;
-      if (!classMember(yieldHandling, classStmt, className, classStartOffset,
-                       hasHeritage, classFields, classMembers, &done)) {
+    {
+      ParseContext::Statement bodyScopeStmt(pc_, StatementKind::Block);
+      ParseContext::Scope bodyScope(this);
+      if (!bodyScope.init(pc_)) {
         return null();
       }
-      if (done) {
-        break;
-      }
-    }
 
-    if (classFields.instanceFieldKeys > 0) {
-      if (!noteDeclaredName(cx_->names().dotFieldKeys, DeclarationKind::Let,
-                            namePos)) {
+      ListNodeType classMembers = handler_.newClassMemberList(pos().begin);
+      if (!classMembers) {
         return null();
       }
-    }
 
-    if (classFields.staticFields > 0) {
-      if (!noteDeclaredName(cx_->names().dotStaticInitializers,
-                            DeclarationKind::Let, namePos)) {
+      ClassInitializedMembers classInitializedMembers{};
+      for (;;) {
+        bool done;
+        if (!classMember(yieldHandling, classStmt, className, classStartOffset,
+                         hasHeritage, classInitializedMembers, classMembers,
+                         &done)) {
+          return null();
+        }
+        if (done) {
+          break;
+        }
+      }
+
+      if (classInitializedMembers.privateMethods +
+              classInitializedMembers.privateAccessors >
+          0) {
+        // We declare `.privateBrand` as ClosedOver because the constructor
+        // always uses it, even a default constructor. We could equivalently
+        // `noteNameUsed` when parsing the constructor, except that at that
+        // time, we don't necessarily know if the class has a private brand.
+        if (!noteDeclaredName(
+                TaggedParserAtomIndex::WellKnown::dotPrivateBrand(),
+                DeclarationKind::Synthetic, namePos, ClosedOver::Yes)) {
+          return null();
+        }
+      }
+
+      if (classInitializedMembers.instanceFieldKeys > 0) {
+        if (!noteDeclaredName(TaggedParserAtomIndex::WellKnown::dotFieldKeys(),
+                              DeclarationKind::Synthetic, namePos)) {
+          return null();
+        }
+      }
+
+      if (classInitializedMembers.staticFields > 0) {
+        if (!noteDeclaredName(
+                TaggedParserAtomIndex::WellKnown::dotStaticInitializers(),
+                DeclarationKind::Synthetic, namePos)) {
+          return null();
+        }
+      }
+
+      if (classInitializedMembers.staticFieldKeys > 0) {
+        if (!noteDeclaredName(
+                TaggedParserAtomIndex::WellKnown::dotStaticFieldKeys(),
+                DeclarationKind::Synthetic, namePos)) {
+          return null();
+        }
+      }
+
+      classEndOffset = pos().end;
+      if (!finishClassConstructor(classStmt, className, hasHeritage,
+                                  classStartOffset, classEndOffset,
+                                  classInitializedMembers, classMembers)) {
         return null();
       }
-    }
 
-    if (classFields.staticFieldKeys > 0) {
-      if (!noteDeclaredName(cx_->names().dotStaticFieldKeys,
-                            DeclarationKind::Let, namePos)) {
+      classBodyBlock = finishClassBodyScope(bodyScope, classMembers);
+      if (!classBodyBlock) {
         return null();
       }
-    }
 
-    classEndOffset = pos().end;
-    if (!finishClassConstructor(classStmt, className, hasHeritage,
-                                classStartOffset, classEndOffset, classFields,
-                                classMembers)) {
-      return null();
+      // Pop the class body scope
     }
 
     if (className) {
@@ -7447,7 +8019,7 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
       }
     }
 
-    classBlock = finishLexicalScope(innerScope, classMembers);
+    classBlock = finishLexicalScope(innerScope, classBodyBlock);
     if (!classBlock) {
       return null();
     }
@@ -7474,8 +8046,25 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
       return null();
     }
   }
-
   MOZ_ALWAYS_TRUE(setLocalStrictMode(savedStrictness));
+  // We're leaving a class definition that was not itself nested within a class
+  if (!isInClass) {
+    mozilla::Maybe<UnboundPrivateName> maybeUnboundName;
+    if (!usedNames_.hasUnboundPrivateNames(cx_, maybeUnboundName)) {
+      return null();
+    }
+    if (maybeUnboundName) {
+      UniqueChars str =
+          this->parserAtoms().toPrintableString(cx_, maybeUnboundName->atom);
+      if (!str) {
+        return null();
+      }
+
+      errorAt(maybeUnboundName->position.begin, JSMSG_MISSING_PRIVATE_DECL,
+              str.get());
+      return null();
+    }
+  }
 
   return handler_.newClass(nameNode, classHeritage, classBlock,
                            TokenPos(classStartOffset, classEndOffset));
@@ -7484,7 +8073,8 @@ GeneralParser<ParseHandler, Unit>::classDefinition(
 template <class ParseHandler, typename Unit>
 typename ParseHandler::FunctionNodeType
 GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
-    HandleAtom className, uint32_t classNameOffset, HasHeritage hasHeritage) {
+    TaggedParserAtomIndex className, TokenPos synthesizedBodyPos,
+    HasHeritage hasHeritage) {
   FunctionSyntaxKind functionSyntaxKind =
       hasHeritage == HasHeritage::Yes
           ? FunctionSyntaxKind::DerivedClassConstructor
@@ -7496,15 +8086,33 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
                            FunctionAsyncKind::SyncFunction, isSelfHosting);
 
   // Create the top-level field initializer node.
-  FunctionNodeType funNode = handler_.newFunction(functionSyntaxKind, pos());
+  FunctionNodeType funNode =
+      handler_.newFunction(functionSyntaxKind, synthesizedBodyPos);
   if (!funNode) {
     return null();
+  }
+
+  // If we see any inner function, note it on our current context. The bytecode
+  // emitter may eliminate the function later, but we use a conservative
+  // definition for consistency between lazy and full parsing.
+  pc_->sc()->setHasInnerFunctions();
+
+  // When fully parsing a lazy script, we do not fully reparse its inner
+  // functions, which are also lazy. Instead, their free variables and source
+  // extents are recorded and may be skipped.
+  if (handler_.canSkipLazyInnerFunctions()) {
+    if (!skipLazyInnerFunction(funNode, synthesizedBodyPos.begin,
+                               /* tryAnnexB = */ false)) {
+      return null();
+    }
+
+    return funNode;
   }
 
   // Create the FunctionBox and link it to the function object.
   Directives directives(true);
   FunctionBox* funbox = newFunctionBox(
-      funNode, className, flags, classNameOffset, directives,
+      funNode, className, flags, synthesizedBodyPos.begin, directives,
       GeneratorKind::NotGenerator, FunctionAsyncKind::SyncFunction);
   if (!funbox) {
     return null();
@@ -7512,13 +8120,37 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
   funbox->initWithEnclosingParseContext(pc_, flags, functionSyntaxKind);
   setFunctionEndFromCurrentToken(funbox);
 
+  // Mark this function as being synthesized by the parser. This means special
+  // handling in delazification will be used since we don't have typical
+  // function syntax.
+  funbox->setSyntheticFunction();
+
   // Push a SourceParseContext on to the stack.
+  ParseContext* outerpc = pc_;
   SourceParseContext funpc(this, funbox, /* newDirectives = */ nullptr);
   if (!funpc.init()) {
     return null();
   }
 
-  TokenPos synthesizedBodyPos = TokenPos(classNameOffset, classNameOffset + 1);
+  if (!synthesizeConstructorBody(synthesizedBodyPos, hasHeritage, funNode,
+                                 funbox)) {
+    return null();
+  }
+
+  if (!leaveInnerFunction(outerpc)) {
+    return null();
+  }
+
+  return funNode;
+}
+
+template <class ParseHandler, typename Unit>
+typename ParseHandler::FunctionNodeType
+GeneralParser<ParseHandler, Unit>::synthesizeConstructorBody(
+    TokenPos synthesizedBodyPos, HasHeritage hasHeritage,
+    FunctionNodeType funNode, FunctionBox* funbox) {
+  MOZ_ASSERT(funbox->isClassConstructor());
+
   // Create a ListNode for the parameters + body (there are no parameters).
   ListNodeType argsbody =
       handler_.newList(ParseNodeKind::ParamsBody, synthesizedBodyPos);
@@ -7526,15 +8158,16 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
     return null();
   }
   handler_.setFunctionFormalParametersAndBody(funNode, argsbody);
-  setFunctionStartAtCurrentToken(funbox);
+  setFunctionStartAtPosition(funbox, synthesizedBodyPos);
 
   if (hasHeritage == HasHeritage::Yes) {
     // Synthesize the equivalent to `function f(...args)`
     funbox->setHasRest();
-    if (!notePositionalFormalParameter(funNode, cx_->names().args,
-                                       synthesizedBodyPos.begin,
-                                       /* disallowDuplicateParams = */ false,
-                                       /* duplicatedParam = */ nullptr)) {
+    if (!notePositionalFormalParameter(
+            funNode, TaggedParserAtomIndex::WellKnown::dotArgs(),
+            synthesizedBodyPos.begin,
+            /* disallowDuplicateParams = */ false,
+            /* duplicatedParam = */ nullptr)) {
       return null();
     }
     funbox->setArgCount(1);
@@ -7549,11 +8182,11 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
     return null();
   }
 
-  if (!noteUsedName(cx_->names().dotThis)) {
+  if (!noteUsedName(TaggedParserAtomIndex::WellKnown::dotThis())) {
     return null();
   }
 
-  if (!noteUsedName(cx_->names().dotInitializers)) {
+  if (!noteUsedName(TaggedParserAtomIndex::WellKnown::dotInitializers())) {
     return null();
   }
 
@@ -7579,11 +8212,12 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
       return null();
     }
 
-    NameNodeType argsNameNode = newName(cx_->names().args, synthesizedBodyPos);
+    NameNodeType argsNameNode = newName(
+        TaggedParserAtomIndex::WellKnown::dotArgs(), synthesizedBodyPos);
     if (!argsNameNode) {
       return null();
     }
-    if (!noteUsedName(cx_->names().args)) {
+    if (!noteUsedName(TaggedParserAtomIndex::WellKnown::dotArgs())) {
       return null();
     }
 
@@ -7628,35 +8262,235 @@ GeneralParser<ParseHandler, Unit>::synthesizeConstructor(
     return null();
   }
 
-  // This function is asserted to set classStmt->constructorBox - however, it's
-  // not directly set in this function, but rather in
-  // initWithEnclosingParseContext.
+  return funNode;
+}
+
+template <class ParseHandler, typename Unit>
+typename ParseHandler::FunctionNodeType
+GeneralParser<ParseHandler, Unit>::privateMethodInitializer(
+    TokenPos propNamePos, TaggedParserAtomIndex propAtom,
+    TaggedParserAtomIndex storedMethodAtom) {
+  if (!abortIfSyntaxParser()) {
+    return null();
+  }
+
+  // Synthesize an initializer function that the constructor can use to stamp a
+  // private method onto an instance object.
+  FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::FieldInitializer;
+  FunctionAsyncKind asyncKind = FunctionAsyncKind::SyncFunction;
+  GeneratorKind generatorKind = GeneratorKind::NotGenerator;
+  bool isSelfHosting = options().selfHostingMode;
+  FunctionFlags flags =
+      InitialFunctionFlags(syntaxKind, generatorKind, asyncKind, isSelfHosting);
+
+  FunctionNodeType funNode = handler_.newFunction(syntaxKind, propNamePos);
+  if (!funNode) {
+    return null();
+  }
+
+  Directives directives(true);
+  FunctionBox* funbox =
+      newFunctionBox(funNode, TaggedParserAtomIndex::null(), flags,
+                     propNamePos.begin, directives, generatorKind, asyncKind);
+  if (!funbox) {
+    return null();
+  }
+  funbox->initWithEnclosingParseContext(pc_, flags, syntaxKind);
+
+  // Push a SourceParseContext on to the stack.
+  ParseContext* outerpc = pc_;
+  SourceParseContext funpc(this, funbox, /* newDirectives = */ nullptr);
+  if (!funpc.init()) {
+    return null();
+  }
+  pc_->functionScope().useAsVarScope(pc_);
+
+  // Add empty parameter list.
+  ListNodeType argsbody =
+      handler_.newList(ParseNodeKind::ParamsBody, propNamePos);
+  if (!argsbody) {
+    return null();
+  }
+  handler_.setFunctionFormalParametersAndBody(funNode, argsbody);
+  setFunctionStartAtCurrentToken(funbox);
+  funbox->setArgCount(0);
+
+  // Note both the stored private method body and it's private name as being
+  // used in the initializer. They will be emitted into the method body in the
+  // BCE.
+  if (!noteUsedName(storedMethodAtom)) {
+    return null();
+  }
+  NameNodeType privateNameNode = privateNameReference(propAtom);
+  if (!privateNameNode) {
+    return null();
+  }
+
+  bool canSkipLazyClosedOverBindings = handler_.canSkipLazyClosedOverBindings();
+  if (!pc_->declareFunctionThis(usedNames_, canSkipLazyClosedOverBindings)) {
+    return null();
+  }
+
+  // Unlike field initializers, private method initializers are not created with
+  // a body of synthesized AST nodes. Instead, the body is left empty and the
+  // initializer is synthesized at the bytecode level.
+  // See BytecodeEmitter::emitPrivateMethodInitializer.
+  ListNodeType stmtList = handler_.newStatementList(propNamePos);
+  if (!stmtList) {
+    return null();
+  }
+  LexicalScopeNodeType initializerBody =
+      finishLexicalScope(pc_->varScope(), stmtList, ScopeKind::FunctionLexical);
+  if (!initializerBody) {
+    return null();
+  }
+  handler_.setBeginPosition(initializerBody, stmtList);
+  handler_.setEndPosition(initializerBody, stmtList);
+  handler_.setFunctionBody(funNode, initializerBody);
+
+  // Set field-initializer lambda boundary to start at property name and end
+  // after method body.
+  setFunctionStartAtPosition(funbox, propNamePos);
+  setFunctionEndFromCurrentToken(funbox);
+
+  if (!finishFunction()) {
+    return null();
+  }
+
+  if (!leaveInnerFunction(outerpc)) {
+    return null();
+  }
 
   return funNode;
 }
 
 template <class ParseHandler, typename Unit>
 typename ParseHandler::FunctionNodeType
-GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
-                                                       HandleAtom propAtom,
-                                                       ClassFields& classFields,
-                                                       bool isStatic) {
+GeneralParser<ParseHandler, Unit>::staticClassBlock(
+    ClassInitializedMembers& classInitializedMembers) {
+  // Both for getting-this-done, and because this will invariably be executed,
+  // syntax parsing should be aborted.
+  if (!abortIfSyntaxParser()) {
+    return null();
+  }
+
+  if (!options().classStaticBlocks) {
+    error(JSMSG_CLASS_STATIC_NOT_SUPPORTED);
+    return null();
+  }
+
+  FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::StaticClassBlock;
+  FunctionAsyncKind asyncKind = FunctionAsyncKind::SyncFunction;
+  GeneratorKind generatorKind = GeneratorKind::NotGenerator;
+  bool isSelfHosting = options().selfHostingMode;
+  FunctionFlags flags =
+      InitialFunctionFlags(syntaxKind, generatorKind, asyncKind, isSelfHosting);
+
+  // Create the function node for the static class body.
+  FunctionNodeType funNode = handler_.newFunction(syntaxKind, pos());
+  if (!funNode) {
+    return null();
+  }
+
+  // Create the FunctionBox and link it to the function object.
+  Directives directives(true);
+  FunctionBox* funbox =
+      newFunctionBox(funNode, TaggedParserAtomIndex::null(), flags, pos().begin,
+                     directives, generatorKind, asyncKind);
+  if (!funbox) {
+    return null();
+  }
+  funbox->initWithEnclosingParseContext(pc_, flags, syntaxKind);
+  MOZ_ASSERT(funbox->isSyntheticFunction());
+  MOZ_ASSERT(!funbox->allowSuperCall());
+  MOZ_ASSERT(!funbox->allowArguments());
+  MOZ_ASSERT(!funbox->allowReturn());
+
+  // Set start at `static` token.
+  MOZ_ASSERT(anyChars.isCurrentTokenType(TokenKind::Static));
+  setFunctionStartAtCurrentToken(funbox);
+
+  // Push a SourceParseContext on to the stack.
+  ParseContext* outerpc = pc_;
+  SourceParseContext funpc(this, funbox, /* newDirectives = */ nullptr);
+  if (!funpc.init()) {
+    return null();
+  }
+
+  pc_->functionScope().useAsVarScope(pc_);
+
+  uint32_t start = pos().begin;
+
+  tokenStream.consumeKnownToken(TokenKind::LeftCurly);
+
+  // Static class blocks are code-generated as if they were static field
+  // initializers, so we bump the staticFields count here, which ensures
+  // .staticInitializers is noted as used.
+  classInitializedMembers.staticFields++;
+
+  LexicalScopeNodeType body = functionBody(
+      InHandling::InAllowed, YieldHandling::YieldIsKeyword,
+      FunctionSyntaxKind::Method, FunctionBodyType::StatementListBody);
+  if (!body) {
+    return null();
+  }
+
+  if (anyChars.isEOF()) {
+    error(JSMSG_UNTERMINATED_STATIC_CLASS_BLOCK);
+    return null();
+  }
+
+  tokenStream.consumeKnownToken(TokenKind::RightCurly,
+                                TokenStream::Modifier::SlashIsRegExp);
+
+  TokenPos wholeBodyPos(start, pos().end);
+
+  handler_.setEndPosition(funNode, wholeBodyPos.end);
+  setFunctionEndFromCurrentToken(funbox);
+
+  // Create a ListNode for the parameters + body (there are no parameters).
+  ListNodeType argsbody =
+      handler_.newList(ParseNodeKind::ParamsBody, wholeBodyPos);
+  if (!argsbody) {
+    return null();
+  }
+
+  handler_.setFunctionFormalParametersAndBody(funNode, argsbody);
+  funbox->setArgCount(0);
+
+  if (pc_->superScopeNeedsHomeObject()) {
+    funbox->setNeedsHomeObject();
+  }
+
+  handler_.setEndPosition(body, pos().begin);
+  handler_.setEndPosition(funNode, pos().end);
+  handler_.setFunctionBody(funNode, body);
+
+  if (!finishFunction()) {
+    return null();
+  }
+
+  if (!leaveInnerFunction(outerpc)) {
+    return null();
+  }
+
+  return funNode;
+}
+
+template <class ParseHandler, typename Unit>
+typename ParseHandler::FunctionNodeType
+GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(
+    TokenPos propNamePos, Node propName, TaggedParserAtomIndex propAtom,
+    ClassInitializedMembers& classInitializedMembers, bool isStatic,
+    HasHeritage hasHeritage) {
+  if (!abortIfSyntaxParser()) {
+    return null();
+  }
+
   bool hasInitializer = false;
   if (!tokenStream.matchToken(&hasInitializer, TokenKind::Assign,
                               TokenStream::SlashIsDiv)) {
     return null();
-  }
-
-  TokenPos firstTokenPos;
-  if (hasInitializer) {
-    firstTokenPos = pos();
-  } else {
-    // the location of the "initializer" should be a zero-width span:
-    // class C {
-    //   x /* here */ ;
-    // }
-    uint32_t endPos = pos().end;
-    firstTokenPos = TokenPos(endPos, endPos);
   }
 
   FunctionSyntaxKind syntaxKind = FunctionSyntaxKind::FieldInitializer;
@@ -7667,7 +8501,7 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
       InitialFunctionFlags(syntaxKind, generatorKind, asyncKind, isSelfHosting);
 
   // Create the top-level field initializer node.
-  FunctionNodeType funNode = handler_.newFunction(syntaxKind, firstTokenPos);
+  FunctionNodeType funNode = handler_.newFunction(syntaxKind, propNamePos);
   if (!funNode) {
     return null();
   }
@@ -7675,22 +8509,18 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
   // Create the FunctionBox and link it to the function object.
   Directives directives(true);
   FunctionBox* funbox =
-      newFunctionBox(funNode, nullptr, flags, firstTokenPos.begin, directives,
-                     generatorKind, asyncKind);
+      newFunctionBox(funNode, TaggedParserAtomIndex::null(), flags,
+                     propNamePos.begin, directives, generatorKind, asyncKind);
   if (!funbox) {
     return null();
   }
   funbox->initWithEnclosingParseContext(pc_, flags, syntaxKind);
-  MOZ_ASSERT(funbox->isFieldInitializer());
+  MOZ_ASSERT(funbox->isSyntheticFunction());
 
   // We can't use setFunctionStartAtCurrentToken because that uses pos().begin,
   // which is incorrect for fields without initializers (pos() points to the
   // field identifier)
-  uint32_t firstTokenLine, firstTokenColumn;
-  tokenStream.computeLineAndColumn(firstTokenPos.begin, &firstTokenLine,
-                                   &firstTokenColumn);
-
-  funbox->setStart(firstTokenPos.begin, firstTokenLine, firstTokenColumn);
+  setFunctionStartAtPosition(funbox, propNamePos);
 
   // Push a SourceParseContext on to the stack.
   ParseContext* outerpc = pc_;
@@ -7702,7 +8532,6 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
   pc_->functionScope().useAsVarScope(pc_);
 
   Node initializerExpr;
-  TokenPos wholeInitializerPos;
   if (hasInitializer) {
     // Parse the expression for the field initializer.
     {
@@ -7714,16 +8543,14 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
     }
 
     handler_.checkAndSetIsDirectRHSAnonFunction(initializerExpr);
-
-    wholeInitializerPos = pos();
-    wholeInitializerPos.begin = firstTokenPos.begin;
   } else {
-    initializerExpr = handler_.newRawUndefinedLiteral(firstTokenPos);
+    initializerExpr = handler_.newRawUndefinedLiteral(propNamePos);
     if (!initializerExpr) {
       return null();
     }
-    wholeInitializerPos = firstTokenPos;
   }
+
+  TokenPos wholeInitializerPos(propNamePos.begin, pos().end);
 
   // Update the end position of the parse node.
   handler_.setEndPosition(funNode, wholeInitializerPos.end);
@@ -7738,7 +8565,6 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
   handler_.setFunctionFormalParametersAndBody(funNode, argsbody);
   funbox->setArgCount(0);
 
-  funbox->usesThis = true;
   NameNodeType thisName = newThisName();
   if (!thisName) {
     return null();
@@ -7758,9 +8584,11 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
     // .fieldKeys means and its purpose.
     NameNodeType fieldKeysName;
     if (isStatic) {
-      fieldKeysName = newInternalDotName(cx_->names().dotStaticFieldKeys);
+      fieldKeysName = newInternalDotName(
+          TaggedParserAtomIndex::WellKnown::dotStaticFieldKeys());
     } else {
-      fieldKeysName = newInternalDotName(cx_->names().dotFieldKeys);
+      fieldKeysName =
+          newInternalDotName(TaggedParserAtomIndex::WellKnown::dotFieldKeys());
     }
     if (!fieldKeysName) {
       return null();
@@ -7768,9 +8596,9 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
 
     double fieldKeyIndex;
     if (isStatic) {
-      fieldKeyIndex = classFields.staticFieldKeys++;
+      fieldKeyIndex = classInitializedMembers.staticFieldKeys++;
     } else {
-      fieldKeyIndex = classFields.instanceFieldKeys++;
+      fieldKeyIndex = classInitializedMembers.instanceFieldKeys++;
     }
     Node fieldKeyIndexNode = handler_.newNumber(
         fieldKeyIndex, DecimalPoint::NoDecimal, wholeInitializerPos);
@@ -7789,15 +8617,35 @@ GeneralParser<ParseHandler, Unit>::fieldInitializerOpt(Node propName,
     if (!propAssignFieldAccess) {
       return null();
     }
-  } else if (propAtom->isIndex(&indexValue)) {
+  } else if (handler_.isPrivateName(propName)) {
+    // It would be nice if we could tweak this here such that only if
+    // HasHeritage::Yes we end up emitting CheckPrivateField, but otherwise we
+    // emit InitElem -- this is an optimization to minimize HasOwn checks
+    // in InitElem for classes without heritage.
+    //
+    // Further tweaking would be to ultimately only do CheckPrivateField for the
+    // -first- field in a derived class, which would suffice to match the
+    // semantic check.
+
+    NameNodeType privateNameNode = privateNameReference(propAtom);
+    if (!privateNameNode) {
+      return null();
+    }
+
+    propAssignFieldAccess = handler_.newPrivateMemberAccess(
+        propAssignThis, privateNameNode, wholeInitializerPos.end);
+    if (!propAssignFieldAccess) {
+      return null();
+    }
+  } else if (this->parserAtoms().isIndex(propAtom, &indexValue)) {
     propAssignFieldAccess = handler_.newPropertyByValue(
         propAssignThis, propName, wholeInitializerPos.end);
     if (!propAssignFieldAccess) {
       return null();
     }
   } else {
-    NameNodeType propAssignName = handler_.newPropertyName(
-        propAtom->asPropertyName(), wholeInitializerPos);
+    NameNodeType propAssignName =
+        handler_.newPropertyName(propAtom, wholeInitializerPos);
     if (!propAssignName) {
       return null();
     }
@@ -7903,7 +8751,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::statement(
     YieldHandling yieldHandling) {
   MOZ_ASSERT(checkOptionsCalled_);
 
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -7950,6 +8799,19 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::statement(
     }
 
     default: {
+      // If we encounter an await in a module, and the module is not marked
+      // as async, mark the module as async.
+      if (tt == TokenKind::Await && !pc_->isAsync()) {
+        if (pc_->atModuleTopLevel()) {
+          if (!options().topLevelAwait) {
+            error(JSMSG_TOP_LEVEL_AWAIT_NOT_SUPPORTED);
+            return null();
+          }
+          pc_->sc()->asModuleContext()->setIsAsync();
+          MOZ_ASSERT(pc_->isAsync());
+        }
+      }
+
       // Avoid getting next token with SlashIsDiv.
       if (tt == TokenKind::Await && pc_->isAsync()) {
         return expressionStatement(yieldHandling);
@@ -8071,7 +8933,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::statement(
       // The Return parameter is only used here, and the effect is easily
       // detected this way, so don't bother passing around an extra parameter
       // everywhere.
-      if (!pc_->isFunctionBox()) {
+      if (!pc_->allowReturn()) {
         error(JSMSG_BAD_RETURN_OR_YIELD, js_return_str);
         return null();
       }
@@ -8136,7 +8998,8 @@ GeneralParser<ParseHandler, Unit>::statementListItem(
     YieldHandling yieldHandling, bool canHaveDirectives /* = false */) {
   MOZ_ASSERT(checkOptionsCalled_);
 
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -8164,7 +9027,8 @@ GeneralParser<ParseHandler, Unit>::statementListItem(
     // function in a default, not split up this way.
     case TokenKind::String:
       if (!canHaveDirectives &&
-          anyChars.currentToken().atom() == cx_->names().useAsm) {
+          anyChars.currentToken().atom() ==
+              TaggedParserAtomIndex::WellKnown::useAsm()) {
         if (!warning(JSMSG_USE_ASM_DIRECTIVE_FAIL)) {
           return null();
         }
@@ -8194,6 +9058,19 @@ GeneralParser<ParseHandler, Unit>::statementListItem(
     }
 
     default: {
+      // If we encounter an await in a module, and the module is not marked
+      // as async, mark the module as async.
+      if (tt == TokenKind::Await && !pc_->isAsync()) {
+        if (pc_->atModuleTopLevel()) {
+          if (!options().topLevelAwait) {
+            error(JSMSG_TOP_LEVEL_AWAIT_NOT_SUPPORTED);
+            return null();
+          }
+          pc_->sc()->asModuleContext()->setIsAsync();
+          MOZ_ASSERT(pc_->isAsync());
+        }
+      }
+
       // Avoid getting next token with SlashIsDiv.
       if (tt == TokenKind::Await && pc_->isAsync()) {
         return expressionStatement(yieldHandling);
@@ -8269,7 +9146,7 @@ GeneralParser<ParseHandler, Unit>::statementListItem(
       // The Return parameter is only used here, and the effect is easily
       // detected this way, so don't bother passing around an extra parameter
       // everywhere.
-      if (!pc_->isFunctionBox()) {
+      if (!pc_->allowReturn()) {
         error(JSMSG_BAD_RETURN_OR_YIELD, js_return_str);
         return null();
       }
@@ -8432,35 +9309,35 @@ static ParseNodeKind BinaryOpTokenKindToParseNodeKind(TokenKind tok) {
 //   - the binary operators in TokenKind.h
 //   - the JSOp code list in BytecodeEmitter.cpp
 static const int PrecedenceTable[] = {
-    1,  /* ParseNodeKind::PipeLine */
-    2,  /* ParseNodeKind::Coalesce */
-    3,  /* ParseNodeKind::Or */
-    4,  /* ParseNodeKind::And */
-    5,  /* ParseNodeKind::BitOr */
-    6,  /* ParseNodeKind::BitXor */
-    7,  /* ParseNodeKind::BitAnd */
-    8,  /* ParseNodeKind::StrictEq */
-    8,  /* ParseNodeKind::Eq */
-    8,  /* ParseNodeKind::StrictNe */
-    8,  /* ParseNodeKind::Ne */
-    9,  /* ParseNodeKind::Lt */
-    9,  /* ParseNodeKind::Le */
-    9,  /* ParseNodeKind::Gt */
-    9,  /* ParseNodeKind::Ge */
-    9,  /* ParseNodeKind::InstanceOf */
-    9,  /* ParseNodeKind::In */
-    10, /* ParseNodeKind::Lsh */
-    10, /* ParseNodeKind::Rsh */
-    10, /* ParseNodeKind::Ursh */
-    11, /* ParseNodeKind::Add */
-    11, /* ParseNodeKind::Sub */
-    12, /* ParseNodeKind::Star */
-    12, /* ParseNodeKind::Div */
-    12, /* ParseNodeKind::Mod */
-    13  /* ParseNodeKind::Pow */
+    1,  /* ParseNodeKind::Coalesce */
+    2,  /* ParseNodeKind::Or */
+    3,  /* ParseNodeKind::And */
+    4,  /* ParseNodeKind::BitOr */
+    5,  /* ParseNodeKind::BitXor */
+    6,  /* ParseNodeKind::BitAnd */
+    7,  /* ParseNodeKind::StrictEq */
+    7,  /* ParseNodeKind::Eq */
+    7,  /* ParseNodeKind::StrictNe */
+    7,  /* ParseNodeKind::Ne */
+    8,  /* ParseNodeKind::Lt */
+    8,  /* ParseNodeKind::Le */
+    8,  /* ParseNodeKind::Gt */
+    8,  /* ParseNodeKind::Ge */
+    8,  /* ParseNodeKind::InstanceOf */
+    8,  /* ParseNodeKind::In */
+    8,  /* ParseNodeKind::PrivateIn */
+    9,  /* ParseNodeKind::Lsh */
+    9,  /* ParseNodeKind::Rsh */
+    9,  /* ParseNodeKind::Ursh */
+    10, /* ParseNodeKind::Add */
+    10, /* ParseNodeKind::Sub */
+    11, /* ParseNodeKind::Star */
+    11, /* ParseNodeKind::Div */
+    11, /* ParseNodeKind::Mod */
+    12  /* ParseNodeKind::Pow */
 };
 
-static const int PRECEDENCE_CLASSES = 13;
+static const int PRECEDENCE_CLASSES = 12;
 
 static int Precedence(ParseNodeKind pnk) {
   // Everything binds tighter than ParseNodeKind::Limit, because we want
@@ -8494,8 +9371,13 @@ GeneralParser<ParseHandler, Unit>::orExpr(InHandling inHandling,
   int depth = 0;
   Node pn;
   EnforcedParentheses unparenthesizedExpression = EnforcedParentheses::None;
+  PrivateNameHandling privateNameHandling =
+      cx_->options().ergonomicBrandChecks()
+          ? PrivateNameHandling::PrivateNameAllowed
+          : PrivateNameHandling::PrivateNameProhibited;
   for (;;) {
-    pn = unaryExpr(yieldHandling, tripledotHandling, possibleError, invoked);
+    pn = unaryExpr(yieldHandling, tripledotHandling, possibleError, invoked,
+                   privateNameHandling);
     if (!pn) {
       return null();
     }
@@ -8507,6 +9389,15 @@ GeneralParser<ParseHandler, Unit>::orExpr(InHandling inHandling,
       return null();
     }
 
+    // Ensure that if we have a private name lhs we are legally constructing a
+    // `#x in obj` expessions:
+    if (handler_.isPrivateName(pn)) {
+      if (tok != TokenKind::In || inHandling != InAllowed) {
+        error(JSMSG_ILLEGAL_PRIVATE_NAME);
+        return null();
+      }
+    }
+
     ParseNodeKind pnk;
     if (tok == TokenKind::In ? inHandling == InAllowed
                              : TokenKindIsBinaryOp(tok)) {
@@ -8516,6 +9407,7 @@ GeneralParser<ParseHandler, Unit>::orExpr(InHandling inHandling,
         return null();
       }
 
+      bool isErgonomicBrandCheck = false;
       switch (tok) {
         // Report an error for unary expressions on the LHS of **.
         case TokenKind::Pow:
@@ -8549,12 +9441,34 @@ GeneralParser<ParseHandler, Unit>::orExpr(InHandling inHandling,
           unparenthesizedExpression = EnforcedParentheses::CoalesceExpr;
           break;
 
+        case TokenKind::In:
+          // if the LHS is a private name, and the operator is In,
+          // ensure we're construcing an ergnomic brand check of
+          // '#x in y', rather than having a higher precedence operator
+          // like + cause a different reduction, such as
+          // 1 + #x in y.
+          if (handler_.isPrivateName(pn)) {
+            if (depth > 0 && Precedence(kindStack[depth - 1]) >=
+                                 Precedence(ParseNodeKind::InExpr)) {
+              error(JSMSG_ILLEGAL_PRIVATE_NAME);
+              return null();
+            }
+
+            isErgonomicBrandCheck = true;
+          }
+          break;
+
         default:
           // do nothing in other cases
           break;
       }
 
-      pnk = BinaryOpTokenKindToParseNodeKind(tok);
+      if (isErgonomicBrandCheck) {
+        pnk = ParseNodeKind::PrivateInExpr;
+      } else {
+        pnk = BinaryOpTokenKindToParseNodeKind(tok);
+      }
+
     } else {
       tok = TokenKind::Eof;
       pnk = ParseNodeKind::Limit;
@@ -8645,7 +9559,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
     TripledotHandling tripledotHandling,
     PossibleError* possibleError /* = nullptr */,
     InvokedPrediction invoked /* = PredictUninvoked */) {
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -8677,7 +9592,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
       return null();
     }
     if (endsExpr) {
-      Rooted<PropertyName*> name(cx_, identifierReference(yieldHandling));
+      TaggedParserAtomIndex name = identifierReference(yieldHandling);
       if (!name) {
         return null();
       }
@@ -8724,7 +9639,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
 
   // Save the tokenizer state in case we find an arrow function and have to
   // rewind.
-  Position start(this->compilationInfo_.keepAtoms, tokenStream);
+  Position start(tokenStream);
+  auto ghostToken = this->compilationState_.getPosition();
 
   PossibleError possibleErrorInner(*this);
   Node lhs;
@@ -8740,22 +9656,38 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
     MOZ_ASSERT(TokenKindIsPossibleIdentifier(tokenAfterAsync));
 
     // Check yield validity here.
-    RootedPropertyName name(cx_, bindingIdentifier(yieldHandling));
+    TaggedParserAtomIndex name = bindingIdentifier(yieldHandling);
     if (!name) {
       return null();
     }
 
-    if (!tokenStream.peekTokenSameLine(&tokenAfterLHS)) {
-      return null();
-    }
-    if (tokenAfterLHS != TokenKind::Arrow) {
-      error(JSMSG_UNEXPECTED_TOKEN,
-            "'=>' on the same line after an argument list",
-            TokenKindToDesc(tokenAfterLHS));
+    if (!tokenStream.peekToken(&tokenAfterLHS, TokenStream::SlashIsRegExp)) {
       return null();
     }
 
-    isArrow = true;
+    isArrow = tokenAfterLHS == TokenKind::Arrow;
+
+    // |async [no LineTerminator] of| without being followed by => is only
+    // possible in for-await-of loops, e.g. |for await (async of [])|. Pretend
+    // the |async| token was parsed an identifier reference and then proceed
+    // with the rest of this function.
+    if (!isArrow) {
+      anyChars.ungetToken();  // unget the binding identifier
+
+      // The next token is guaranteed to never be a Div (, because it's an
+      // identifier), so it's okay to re-get the token with SlashIsRegExp.
+      anyChars.allowGettingNextTokenWithSlashIsRegExp();
+
+      TaggedParserAtomIndex asyncName = identifierReference(yieldHandling);
+      if (!asyncName) {
+        return null();
+      }
+
+      lhs = identifierReference(asyncName);
+      if (!lhs) {
+        return null();
+      }
+    }
   } else {
     lhs = condExpr(inHandling, yieldHandling, tripledotHandling,
                    &possibleErrorInner, invoked);
@@ -8766,8 +9698,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
     // Use SlashIsRegExp here because the ConditionalExpression parsed above
     // could be the entirety of this AssignmentExpression, and then ASI
     // permits this token to be a regular expression.
-    if (!tokenStream.peekTokenSameLine(&tokenAfterLHS,
-                                       TokenStream::SlashIsRegExp)) {
+    if (!tokenStream.peekToken(&tokenAfterLHS, TokenStream::SlashIsRegExp)) {
       return null();
     }
 
@@ -8777,10 +9708,14 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
   if (isArrow) {
     // Rewind to reparse as an arrow function.
     //
-    // Note: We do not call CompilationInfo::rewind here because parsing during
-    // delazification will see the same rewind and need the same sequence of
-    // inner functions to skip over.
+    // Note: We do not call CompilationState::rewind here because parsing
+    // during delazification will see the same rewind and need the same sequence
+    // of inner functions to skip over.
+    // Instead, we mark inner functions as "ghost".
+    //
+    // See GHOST_FUNCTION in FunctionFlags.h for more details.
     tokenStream.rewind(start);
+    this->compilationState_.markGhost(ghostToken);
 
     TokenKind next;
     if (!tokenStream.getToken(&next, TokenStream::SlashIsRegExp)) {
@@ -8818,8 +9753,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
     }
 
     return functionDefinition(funNode, toStringStart, inHandling, yieldHandling,
-                              nullptr, syntaxKind, GeneratorKind::NotGenerator,
-                              asyncKind);
+                              TaggedParserAtomIndex::null(), syntaxKind,
+                              GeneratorKind::NotGenerator, asyncKind);
   }
 
   MOZ_ALWAYS_TRUE(
@@ -8907,7 +9842,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::assignExpr(
         return null();
       }
     }
-  } else if (handler_.isPropertyAccess(lhs)) {
+  } else if (handler_.isPropertyOrPrivateMemberAccess(lhs)) {
     // Permitted: no additional testing/fixup needed.
   } else if (handler_.isFunctionCall(lhs)) {
     // We don't have to worry about backward compatibility issues with the new
@@ -8951,10 +9886,10 @@ const char* PerHandlerParser<ParseHandler>::nameIsArgumentsOrEval(Node node) {
   MOZ_ASSERT(handler_.isName(node),
              "must only call this function on known names");
 
-  if (handler_.isEvalName(node, cx_)) {
+  if (handler_.isEvalName(node)) {
     return js_eval_str;
   }
-  if (handler_.isArgumentsName(node, cx_)) {
+  if (handler_.isArgumentsName(node)) {
     return js_arguments_str;
   }
   return nullptr;
@@ -8969,7 +9904,7 @@ bool GeneralParser<ParseHandler, Unit>::checkIncDecOperand(
         return false;
       }
     }
-  } else if (handler_.isPropertyAccess(operand)) {
+  } else if (handler_.isPropertyOrPrivateMemberAccess(operand)) {
     // Permitted: no additional testing/fixup needed.
   } else if (handler_.isFunctionCall(operand)) {
     // Assignment to function calls is forbidden in ES6.  We're still
@@ -9002,7 +9937,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::optionalExpr(
     YieldHandling yieldHandling, TripledotHandling tripledotHandling,
     TokenKind tt, PossibleError* possibleError /* = nullptr */,
     InvokedPrediction invoked /* = PredictUninvoked */) {
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -9028,6 +9964,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::optionalExpr(
     }
 
     if (tt == TokenKind::Eof) {
+      anyChars.ungetToken();
       break;
     }
 
@@ -9038,6 +9975,11 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::optionalExpr(
       }
       if (TokenKindIsPossibleIdentifierName(tt)) {
         nextMember = memberPropertyAccess(lhs, OptionalKind::Optional);
+        if (!nextMember) {
+          return null();
+        }
+      } else if (tt == TokenKind::PrivateName) {
+        nextMember = memberPrivateAccess(lhs, OptionalKind::Optional);
         if (!nextMember) {
           return null();
         }
@@ -9063,6 +10005,11 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::optionalExpr(
       }
       if (TokenKindIsPossibleIdentifierName(tt)) {
         nextMember = memberPropertyAccess(lhs);
+        if (!nextMember) {
+          return null();
+        }
+      } else if (tt == TokenKind::PrivateName) {
+        nextMember = memberPrivateAccess(lhs);
         if (!nextMember) {
           return null();
         }
@@ -9100,8 +10047,10 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::unaryExpr(
     YieldHandling yieldHandling, TripledotHandling tripledotHandling,
     PossibleError* possibleError /* = nullptr */,
-    InvokedPrediction invoked /* = PredictUninvoked */) {
-  if (!CheckRecursionLimit(cx_)) {
+    InvokedPrediction invoked /* = PredictUninvoked */,
+    PrivateNameHandling privateNameHandling /* = PrivateNameProhibited */) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -9159,6 +10108,14 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::unaryExpr(
                               : ParseNodeKind::PreDecrementExpr;
       return handler_.newUpdate(pnk, begin, operand);
     }
+    case TokenKind::PrivateName: {
+      if (privateNameHandling == PrivateNameHandling::PrivateNameAllowed) {
+        TaggedParserAtomIndex field = anyChars.currentName();
+        return privateNameReference(field);
+      }
+      error(JSMSG_ILLEGAL_PRIVATE_NAME);
+      return null();
+    }
 
     case TokenKind::Delete: {
       uint32_t exprOffset;
@@ -9171,8 +10128,10 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::unaryExpr(
         return null();
       }
 
-      // Per spec, deleting any unary expression is valid -- it simply
-      // returns true -- except for one case that is illegal in strict mode.
+      // Per spec, deleting most unary expressions is valid -- it simply
+      // returns true -- except for two cases:
+      // 1. `var x; ...; delete x` is a syntax error in strict mode.
+      // 2. Private fields cannot be deleted.
       if (handler_.isName(expr)) {
         if (!strictModeErrorAt(exprOffset, JSMSG_DEPRECATED_DELETE_OPERAND)) {
           return null();
@@ -9181,10 +10140,24 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::unaryExpr(
         pc_->sc()->setBindingsAccessedDynamically();
       }
 
+      if (handler_.isPrivateMemberAccess(expr)) {
+        errorAt(exprOffset, JSMSG_PRIVATE_DELETE);
+        return null();
+      }
+
       return handler_.newDelete(begin, expr);
     }
-
     case TokenKind::Await: {
+      // If we encounter an await in a module, mark it as async.
+      if (!pc_->isAsync() && pc_->sc()->isModule()) {
+        if (!options().topLevelAwait) {
+          error(JSMSG_TOP_LEVEL_AWAIT_NOT_SUPPORTED);
+          return null();
+        }
+        pc_->sc()->asModuleContext()->setIsAsync();
+        MOZ_ASSERT(pc_->isAsync());
+      }
+
       if (pc_->isAsync()) {
         if (inParametersOfAsyncFunction()) {
           error(JSMSG_AWAIT_IN_PARAMETER);
@@ -9351,7 +10324,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberExpr(
 
   Node lhs;
 
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -9439,6 +10413,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberExpr(
       return null();
     }
     if (tt == TokenKind::Eof) {
+      anyChars.ungetToken();
       break;
     }
 
@@ -9450,6 +10425,11 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberExpr(
 
       if (TokenKindIsPossibleIdentifierName(tt)) {
         nextMember = memberPropertyAccess(lhs);
+        if (!nextMember) {
+          return null();
+        }
+      } else if (tt == TokenKind::PrivateName) {
+        nextMember = memberPrivateAccess(lhs);
         if (!nextMember) {
           return null();
         }
@@ -9481,7 +10461,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberExpr(
           return null();
         }
 
-        if (!noteUsedName(cx_->names().dotInitializers)) {
+        if (!noteUsedName(
+                TaggedParserAtomIndex::WellKnown::dotInitializers())) {
           return null();
         }
       } else {
@@ -9511,22 +10492,30 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberExpr(
 
 template <class ParseHandler>
 inline typename ParseHandler::NameNodeType
-PerHandlerParser<ParseHandler>::newName(PropertyName* name) {
+PerHandlerParser<ParseHandler>::newName(TaggedParserAtomIndex name) {
   return newName(name, pos());
 }
 
 template <class ParseHandler>
 inline typename ParseHandler::NameNodeType
-PerHandlerParser<ParseHandler>::newName(PropertyName* name, TokenPos pos) {
-  return handler_.newName(name, pos, cx_);
+PerHandlerParser<ParseHandler>::newName(TaggedParserAtomIndex name,
+                                        TokenPos pos) {
+  return handler_.newName(name, pos);
+}
+
+template <class ParseHandler>
+inline typename ParseHandler::NameNodeType
+PerHandlerParser<ParseHandler>::newPrivateName(TaggedParserAtomIndex name) {
+  return handler_.newPrivateName(name, pos());
 }
 
 template <class ParseHandler, typename Unit>
 typename ParseHandler::Node
 GeneralParser<ParseHandler, Unit>::memberPropertyAccess(
     Node lhs, OptionalKind optionalKind /* = OptionalKind::NonOptional */) {
-  MOZ_ASSERT(TokenKindIsPossibleIdentifierName(anyChars.currentToken().type));
-  PropertyName* field = anyChars.currentName();
+  MOZ_ASSERT(TokenKindIsPossibleIdentifierName(anyChars.currentToken().type) ||
+             anyChars.currentToken().type == TokenKind::PrivateName);
+  TaggedParserAtomIndex field = anyChars.currentName();
   if (handler_.isSuperBase(lhs) && !checkAndMarkSuperScope()) {
     error(JSMSG_BAD_SUPERPROP, "property");
     return null();
@@ -9542,6 +10531,31 @@ GeneralParser<ParseHandler, Unit>::memberPropertyAccess(
     return handler_.newOptionalPropertyAccess(lhs, name);
   }
   return handler_.newPropertyAccess(lhs, name);
+}
+
+template <class ParseHandler, typename Unit>
+typename ParseHandler::Node
+GeneralParser<ParseHandler, Unit>::memberPrivateAccess(
+    Node lhs, OptionalKind optionalKind /* = OptionalKind::NonOptional */) {
+  MOZ_ASSERT(anyChars.currentToken().type == TokenKind::PrivateName);
+
+  TaggedParserAtomIndex field = anyChars.currentName();
+  // Cannot access private fields on super.
+  if (handler_.isSuperBase(lhs)) {
+    error(JSMSG_BAD_SUPERPRIVATE);
+    return null();
+  }
+
+  NameNodeType privateName = privateNameReference(field);
+  if (!privateName) {
+    return null();
+  }
+
+  if (optionalKind == OptionalKind::Optional) {
+    MOZ_ASSERT(!handler_.isSuperBase(lhs));
+    return handler_.newOptionalPrivateMemberAccess(lhs, privateName, pos().end);
+  }
+  return handler_.newPrivateMemberAccess(lhs, privateName, pos().end);
 }
 
 template <class ParseHandler, typename Unit>
@@ -9600,8 +10614,9 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberCall(
     TokenKind tt, Node lhs, YieldHandling yieldHandling,
     PossibleError* possibleError /* = nullptr */,
     OptionalKind optionalKind /* = OptionalKind::NonOptional */) {
-  if (options().selfHostingMode && (handler_.isPropertyAccess(lhs) ||
-                                    handler_.isOptionalPropertyAccess(lhs))) {
+  if (options().selfHostingMode &&
+      (handler_.isPropertyOrPrivateMemberAccess(lhs) ||
+       handler_.isOptionalPropertyOrPrivateMemberAccess(lhs))) {
     error(JSMSG_SELFHOSTED_METHOD_CALL);
     return null();
   }
@@ -9612,19 +10627,17 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberCall(
 
   JSOp op = JSOp::Call;
   bool maybeAsyncArrow = false;
-  if (PropertyName* prop = handler_.maybeDottedProperty(lhs)) {
+  if (auto prop = handler_.maybeDottedProperty(lhs)) {
     // Use the JSOp::Fun{Apply,Call} optimizations given the right
     // syntax.
-    if (prop == cx_->names().apply) {
+    if (prop == TaggedParserAtomIndex::WellKnown::apply()) {
       op = JSOp::FunApply;
-      if (pc_->isFunctionBox()) {
-        pc_->functionBox()->usesApply = true;
-      }
-    } else if (prop == cx_->names().call) {
+    } else if (prop == TaggedParserAtomIndex::WellKnown::call()) {
       op = JSOp::FunCall;
     }
-  } else if (tt == TokenKind::LeftParen) {
-    if (handler_.isAsyncKeyword(lhs, cx_)) {
+  } else if (tt == TokenKind::LeftParen &&
+             optionalKind == OptionalKind::NonOptional) {
+    if (handler_.isAsyncKeyword(lhs)) {
       // |async (| can be the start of an async arrow
       // function, so we need to defer reporting possible
       // errors from destructuring syntax. To give better
@@ -9632,7 +10645,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberCall(
       // part of the CoverCallExpressionAndAsyncArrowHead
       // syntax when the initial name is "async".
       maybeAsyncArrow = true;
-    } else if (handler_.isEvalName(lhs, cx_)) {
+    } else if (handler_.isEvalName(lhs)) {
       // Select the right Eval op and flag pc_ as having a
       // direct eval.
       op = pc_->sc()->strict() ? JSOp::StrictEval : JSOp::Eval;
@@ -9696,23 +10709,30 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::memberCall(
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::checkLabelOrIdentifierReference(
-    PropertyName* ident, uint32_t offset, YieldHandling yieldHandling,
+    TaggedParserAtomIndex ident, uint32_t offset, YieldHandling yieldHandling,
     TokenKind hint /* = TokenKind::Limit */) {
   TokenKind tt;
   if (hint == TokenKind::Limit) {
     tt = ReservedWordTokenKind(ident);
   } else {
+    // All non-reserved word kinds are folded into TokenKind::Limit in
+    // ReservedWordTokenKind and the following code.
+    if (hint == TokenKind::Name || hint == TokenKind::PrivateName) {
+      hint = TokenKind::Limit;
+    }
     MOZ_ASSERT(hint == ReservedWordTokenKind(ident),
                "hint doesn't match actual token kind");
     tt = hint;
   }
 
-  if (!pc_->sc()->allowArguments() && ident == cx_->names().arguments) {
+  if (!pc_->sc()->allowArguments() &&
+      ident == TaggedParserAtomIndex::WellKnown::arguments()) {
     error(JSMSG_BAD_ARGUMENTS);
     return false;
   }
 
-  if (tt == TokenKind::Name || tt == TokenKind::PrivateName) {
+  if (tt == TokenKind::Limit) {
+    // Either TokenKind::Name or TokenKind::PrivateName
     return true;
   }
   if (TokenKindIsContextualKeyword(tt)) {
@@ -9774,17 +10794,17 @@ bool GeneralParser<ParseHandler, Unit>::checkLabelOrIdentifierReference(
 
 template <class ParseHandler, typename Unit>
 bool GeneralParser<ParseHandler, Unit>::checkBindingIdentifier(
-    PropertyName* ident, uint32_t offset, YieldHandling yieldHandling,
+    TaggedParserAtomIndex ident, uint32_t offset, YieldHandling yieldHandling,
     TokenKind hint /* = TokenKind::Limit */) {
   if (pc_->sc()->strict()) {
-    if (ident == cx_->names().arguments) {
+    if (ident == TaggedParserAtomIndex::WellKnown::arguments()) {
       if (!strictModeErrorAt(offset, JSMSG_BAD_STRICT_ASSIGN, "arguments")) {
         return false;
       }
       return true;
     }
 
-    if (ident == cx_->names().eval) {
+    if (ident == TaggedParserAtomIndex::WellKnown::eval()) {
       if (!strictModeErrorAt(offset, JSMSG_BAD_STRICT_ASSIGN, "eval")) {
         return false;
       }
@@ -9796,37 +10816,38 @@ bool GeneralParser<ParseHandler, Unit>::checkBindingIdentifier(
 }
 
 template <class ParseHandler, typename Unit>
-PropertyName* GeneralParser<ParseHandler, Unit>::labelOrIdentifierReference(
+TaggedParserAtomIndex
+GeneralParser<ParseHandler, Unit>::labelOrIdentifierReference(
     YieldHandling yieldHandling) {
   // ES 2017 draft 12.1.1.
   //   StringValue of IdentifierName normalizes any Unicode escape sequences
   //   in IdentifierName hence such escapes cannot be used to write an
   //   Identifier whose code point sequence is the same as a ReservedWord.
   //
-  // Use PropertyName* instead of TokenKind to reflect the normalization.
+  // Use const ParserName* instead of TokenKind to reflect the normalization.
 
   // Unless the name contains escapes, we can reuse the current TokenKind
   // to determine if the name is a restricted identifier.
-  TokenKind hint = !anyChars.currentNameHasEscapes()
+  TokenKind hint = !anyChars.currentNameHasEscapes(this->parserAtoms())
                        ? anyChars.currentToken().type
                        : TokenKind::Limit;
-  RootedPropertyName ident(cx_, anyChars.currentName());
+  TaggedParserAtomIndex ident = anyChars.currentName();
   if (!checkLabelOrIdentifierReference(ident, pos().begin, yieldHandling,
                                        hint)) {
-    return nullptr;
+    return TaggedParserAtomIndex::null();
   }
   return ident;
 }
 
 template <class ParseHandler, typename Unit>
-PropertyName* GeneralParser<ParseHandler, Unit>::bindingIdentifier(
+TaggedParserAtomIndex GeneralParser<ParseHandler, Unit>::bindingIdentifier(
     YieldHandling yieldHandling) {
-  TokenKind hint = !anyChars.currentNameHasEscapes()
+  TokenKind hint = !anyChars.currentNameHasEscapes(this->parserAtoms())
                        ? anyChars.currentToken().type
                        : TokenKind::Limit;
-  RootedPropertyName ident(cx_, anyChars.currentName());
+  TaggedParserAtomIndex ident = anyChars.currentName();
   if (!checkBindingIdentifier(ident, pos().begin, yieldHandling, hint)) {
-    return nullptr;
+    return TaggedParserAtomIndex::null();
   }
   return ident;
 }
@@ -9834,13 +10855,29 @@ PropertyName* GeneralParser<ParseHandler, Unit>::bindingIdentifier(
 template <class ParseHandler>
 typename ParseHandler::NameNodeType
 PerHandlerParser<ParseHandler>::identifierReference(
-    Handle<PropertyName*> name) {
+    TaggedParserAtomIndex name) {
   NameNodeType id = newName(name);
   if (!id) {
     return null();
   }
 
   if (!noteUsedName(name)) {
+    return null();
+  }
+
+  return id;
+}
+
+template <class ParseHandler>
+typename ParseHandler::NameNodeType
+PerHandlerParser<ParseHandler>::privateNameReference(
+    TaggedParserAtomIndex name) {
+  NameNodeType id = newPrivateName(name);
+  if (!id) {
+    return null();
+  }
+
+  if (!noteUsedName(name, NameVisibility::Private, Some(pos()))) {
     return null();
   }
 
@@ -9885,29 +10922,35 @@ RegExpLiteral* Parser<FullParseHandler, Unit>::newRegExp() {
   mozilla::Range<const char16_t> range(chars.begin(), chars.length());
   RegExpFlags flags = anyChars.currentToken().regExpFlags();
 
+  uint32_t offset = anyChars.currentToken().pos.begin;
+  uint32_t line, column;
+  tokenStream.computeLineAndColumn(offset, &line, &column);
+
   if (!handler_.canSkipRegexpSyntaxParse()) {
     // Verify that the Regexp will syntax parse when the time comes to
     // instantiate it. If we have already done a syntax parse, we can
     // skip this.
     LifoAllocScope allocScope(&cx_->tempLifoAlloc());
-#ifdef ENABLE_NEW_REGEXP
-    if (!irregexp::CheckPatternSyntax(cx_, anyChars, range, flags)) {
+    if (!irregexp::CheckPatternSyntax(cx_, anyChars, range, flags, Some(line),
+                                      Some(column))) {
       return nullptr;
     }
-#else
-    if (!irregexp::ParsePatternSyntax(anyChars, allocScope.alloc(), range,
-                                      flags.unicode())) {
-      return nullptr;
-    }
-#endif
   }
 
-  RegExpIndex index(this->getCompilationInfo().regExpData.length());
-  if (!this->getCompilationInfo().regExpData.emplaceBack()) {
+  auto atom =
+      this->parserAtoms().internChar16(cx_, chars.begin(), chars.length());
+  if (!atom) {
     return nullptr;
   }
+  this->parserAtoms().markUsedByStencil(atom);
 
-  if (!this->getCompilationInfo().regExpData[index].init(cx_, range, flags)) {
+  RegExpIndex index(this->compilationState_.regExpData.length());
+  if (uint32_t(index) >= TaggedScriptThingIndex::IndexLimit) {
+    ReportAllocationOverflow(cx_);
+    return nullptr;
+  }
+  if (!this->compilationState_.regExpData.emplaceBack(atom, flags)) {
+    js::ReportOutOfMemory(cx_);
     return nullptr;
   }
 
@@ -9923,19 +10966,17 @@ Parser<SyntaxParseHandler, Unit>::newRegExp() {
   const auto& chars = tokenStream.getCharBuffer();
   RegExpFlags flags = anyChars.currentToken().regExpFlags();
 
+  uint32_t offset = anyChars.currentToken().pos.begin;
+  uint32_t line, column;
+  tokenStream.computeLineAndColumn(offset, &line, &column);
+
   mozilla::Range<const char16_t> source(chars.begin(), chars.length());
   {
     LifoAllocScope scopeAlloc(&alloc_);
-#ifdef ENABLE_NEW_REGEXP
-    if (!irregexp::CheckPatternSyntax(cx_, anyChars, source, flags)) {
+    if (!irregexp::CheckPatternSyntax(cx_, anyChars, source, flags, Some(line),
+                                      Some(column))) {
       return null();
     }
-#else
-    if (!js::irregexp::ParsePatternSyntax(anyChars, scopeAlloc.alloc(), source,
-                                          flags.unicode())) {
-      return null();
-    }
-#endif
   }
 
   return handler_.newRegExp(SyntaxParseHandler::NodeGeneric, pos());
@@ -9954,19 +10995,31 @@ BigIntLiteral* Parser<FullParseHandler, Unit>::newBigInt() {
   // BigIntLiteralSuffix (the trailing "n").  Note that NonDecimalIntegerLiteral
   // productions start with 0[bBoOxX], indicating binary/octal/hex.
   const auto& chars = tokenStream.getCharBuffer();
-
-  BigIntIndex index(this->getCompilationInfo().bigIntData.length());
-  if (!this->getCompilationInfo().bigIntData.emplaceBack()) {
+  if (chars.length() > UINT32_MAX) {
+    ReportAllocationOverflow(cx_);
     return null();
   }
 
-  if (!this->getCompilationInfo().bigIntData[index].init(this->cx_, chars)) {
+  BigIntIndex index(this->compilationState_.bigIntData.length());
+  if (uint32_t(index) >= TaggedScriptThingIndex::IndexLimit) {
+    ReportAllocationOverflow(cx_);
     return null();
   }
+  if (!this->compilationState_.bigIntData.emplaceBack()) {
+    js::ReportOutOfMemory(cx_);
+    return null();
+  }
+
+  if (!this->compilationState_.bigIntData[index].init(
+          this->cx_, this->stencilAlloc(), chars)) {
+    return null();
+  }
+
+  bool isZero = this->compilationState_.bigIntData[index].isZero();
 
   // Should the operations below fail, the buffer held by data will
-  // be cleaned up by the CompilationInfo destructor.
-  return handler_.newBigInt(index, this->getCompilationInfo(), pos());
+  // be cleaned up by the CompilationState destructor.
+  return handler_.newBigInt(index, isZero, pos());
 }
 
 template <typename Unit>
@@ -9983,19 +11036,6 @@ GeneralParser<ParseHandler, Unit>::newBigInt() {
   return asFinalParser()->newBigInt();
 }
 
-template <class ParseHandler, typename Unit>
-JSAtom* GeneralParser<ParseHandler, Unit>::bigIntAtom() {
-  // See newBigInt() for a description about |chars'| contents.
-  const auto& chars = tokenStream.getCharBuffer();
-  mozilla::Range<const char16_t> source(chars.begin(), chars.length());
-
-  RootedBigInt bi(cx_, js::ParseBigIntLiteral(cx_, source));
-  if (!bi) {
-    return nullptr;
-  }
-  return BigIntToAtom<CanGC>(cx_, bi);
-}
-
 // |exprPossibleError| is the PossibleError state within |expr|,
 // |possibleError| is the surrounding PossibleError state.
 template <class ParseHandler, typename Unit>
@@ -10005,7 +11045,7 @@ bool GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentTarget(
   // Report any pending expression error if we're definitely not in a
   // destructuring context or the possible destructuring target is a
   // property accessor.
-  if (!possibleError || handler_.isPropertyAccess(expr)) {
+  if (!possibleError || handler_.isPropertyOrPrivateMemberAccess(expr)) {
     return exprPossibleError->checkForExpressionError();
   }
 
@@ -10065,7 +11105,7 @@ void GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
   }
 
   if (pc_->sc()->strict()) {
-    if (handler_.isArgumentsName(name, cx_)) {
+    if (handler_.isArgumentsName(name)) {
       if (pc_->sc()->strict()) {
         possibleError->setPendingDestructuringErrorAt(
             namePos, JSMSG_BAD_STRICT_ASSIGN_ARGUMENTS);
@@ -10076,7 +11116,7 @@ void GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
       return;
     }
 
-    if (handler_.isEvalName(name, cx_)) {
+    if (handler_.isEvalName(name)) {
       if (pc_->sc()->strict()) {
         possibleError->setPendingDestructuringErrorAt(
             namePos, JSMSG_BAD_STRICT_ASSIGN_EVAL);
@@ -10244,7 +11284,7 @@ template <class ParseHandler, typename Unit>
 typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::propertyName(
     YieldHandling yieldHandling, PropertyNameContext propertyNameContext,
     const Maybe<DeclarationKind>& maybeDecl, ListNodeType propList,
-    MutableHandleAtom propAtom) {
+    TaggedParserAtomIndex* propAtomOut) {
   // PropertyName[Yield, Await]:
   //   LiteralPropertyName
   //   ComputedPropertyName[?Yield, ?Await]
@@ -10255,26 +11295,30 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::propertyName(
   //   NumericLiteral
   TokenKind ltok = anyChars.currentToken().type;
 
-  propAtom.set(nullptr);
+  *propAtomOut = TaggedParserAtomIndex::null();
   switch (ltok) {
-    case TokenKind::Number:
-      propAtom.set(NumberToAtom(cx_, anyChars.currentToken().number()));
-      if (!propAtom.get()) {
+    case TokenKind::Number: {
+      auto numAtom = NumberToParserAtom(cx_, this->parserAtoms(),
+                                        anyChars.currentToken().number());
+      if (!numAtom) {
         return null();
       }
+      *propAtomOut = numAtom;
       return newNumber(anyChars.currentToken());
+    }
 
-    case TokenKind::BigInt:
-      propAtom.set(bigIntAtom());
-      if (!propAtom.get()) {
+    case TokenKind::BigInt: {
+      Node biNode = newBigInt();
+      if (!biNode) {
         return null();
       }
-      return newBigInt();
-
+      return handler_.newSyntheticComputedName(biNode, pos().begin, pos().end);
+    }
     case TokenKind::String: {
-      propAtom.set(anyChars.currentToken().atom());
+      auto str = anyChars.currentToken().atom();
+      *propAtomOut = str;
       uint32_t index;
-      if (propAtom->isIndex(&index)) {
+      if (this->parserAtoms().isIndex(str, &index)) {
         return handler_.newNumber(index, NoDecimal, pos());
       }
       return stringLiteral();
@@ -10284,14 +11328,26 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::propertyName(
       return computedPropertyName(yieldHandling, maybeDecl, propertyNameContext,
                                   propList);
 
+    case TokenKind::PrivateName: {
+      if (propertyNameContext != PropertyNameContext::PropertyNameInClass) {
+        error(JSMSG_ILLEGAL_PRIVATE_FIELD);
+        return null();
+      }
+
+      TaggedParserAtomIndex propName = anyChars.currentName();
+      *propAtomOut = propName;
+      return privateNameReference(propName);
+    }
+
     default: {
       if (!TokenKindIsPossibleIdentifierName(ltok)) {
         error(JSMSG_UNEXPECTED_TOKEN, "property name", TokenKindToDesc(ltok));
         return null();
       }
 
-      propAtom.set(anyChars.currentName());
-      return handler_.newObjectLiteralPropertyName(propAtom, pos());
+      TaggedParserAtomIndex name = anyChars.currentName();
+      *propAtomOut = name;
+      return handler_.newObjectLiteralPropertyName(name, pos());
     }
   }
 }
@@ -10300,7 +11356,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::propertyName(
 static bool TokenKindCanStartPropertyName(TokenKind tt) {
   return TokenKindIsPossibleIdentifierName(tt) || tt == TokenKind::String ||
          tt == TokenKind::Number || tt == TokenKind::LeftBracket ||
-         tt == TokenKind::Mul || tt == TokenKind::BigInt;
+         tt == TokenKind::Mul || tt == TokenKind::BigInt ||
+         tt == TokenKind::PrivateName;
 }
 
 template <class ParseHandler, typename Unit>
@@ -10308,7 +11365,7 @@ typename ParseHandler::Node
 GeneralParser<ParseHandler, Unit>::propertyOrMethodName(
     YieldHandling yieldHandling, PropertyNameContext propertyNameContext,
     const Maybe<DeclarationKind>& maybeDecl, ListNodeType propList,
-    PropertyType* propType, MutableHandleAtom propAtom) {
+    PropertyType* propType, TaggedParserAtomIndex* propAtomOut) {
   // We're parsing an object literal, class, or destructuring pattern;
   // propertyNameContext tells which one. This method parses any of the
   // following, storing the corresponding PropertyType in `*propType` to tell
@@ -10392,7 +11449,7 @@ GeneralParser<ParseHandler, Unit>::propertyOrMethodName(
   }
 
   Node propName = propertyName(yieldHandling, propertyNameContext, maybeDecl,
-                               propList, propAtom);
+                               propList, propAtomOut);
   if (!propName) {
     return null();
   }
@@ -10506,7 +11563,7 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
   bool seenPrototypeMutation = false;
   bool seenCoverInitializedName = false;
   Maybe<DeclarationKind> declKind = Nothing();
-  RootedAtom propAtom(cx_);
+  TaggedParserAtomIndex propAtom;
   for (;;) {
     TokenKind tt;
     if (!tokenStream.peekToken(&tt)) {
@@ -10568,7 +11625,7 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
           return null();
         }
 
-        if (propAtom == cx_->names().proto) {
+        if (propAtom == TaggedParserAtomIndex::WellKnown::proto()) {
           if (seenPrototypeMutation) {
             // Directly report the error when we're definitely not
             // in a destructuring context.
@@ -10608,7 +11665,7 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
          * for |({x: x, y: y} = o)|, and |var o = {x, y}| as
          * initializer shorthand for |var o = {x: x, y: y}|.
          */
-        Rooted<PropertyName*> name(cx_, identifierReference(yieldHandling));
+        TaggedParserAtomIndex name = identifierReference(yieldHandling);
         if (!name) {
           return null();
         }
@@ -10631,7 +11688,7 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
          * Support, e.g., |({x=1, y=2} = o)| as destructuring
          * shorthand with default values, as per ES6 12.14.5
          */
-        Rooted<PropertyName*> name(cx_, identifierReference(yieldHandling));
+        TaggedParserAtomIndex name = identifierReference(yieldHandling);
         if (!name) {
           return null();
         }
@@ -10689,8 +11746,10 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
           return null();
         }
       } else {
-        RootedAtom funName(cx_);
-        if (!anyChars.isCurrentTokenType(TokenKind::RightBracket)) {
+        TaggedParserAtomIndex funName;
+        bool hasStaticName =
+            !anyChars.isCurrentTokenType(TokenKind::RightBracket) && propAtom;
+        if (hasStaticName) {
           funName = propAtom;
 
           if (propType == PropertyType::Getter ||
@@ -10749,9 +11808,9 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
 
 template <class ParseHandler, typename Unit>
 typename ParseHandler::FunctionNodeType
-GeneralParser<ParseHandler, Unit>::methodDefinition(uint32_t toStringStart,
-                                                    PropertyType propType,
-                                                    HandleAtom funName) {
+GeneralParser<ParseHandler, Unit>::methodDefinition(
+    uint32_t toStringStart, PropertyType propType,
+    TaggedParserAtomIndex funName) {
   FunctionSyntaxKind syntaxKind;
   switch (propType) {
     case PropertyType::Getter:
@@ -10909,7 +11968,8 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::primaryExpr(
     YieldHandling yieldHandling, TripledotHandling tripledotHandling,
     TokenKind tt, PossibleError* possibleError, InvokedPrediction invoked) {
   MOZ_ASSERT(anyChars.isCurrentTokenType(tt));
-  if (!CheckRecursionLimit(cx_)) {
+  AutoCheckRecursionLimit recursion(cx_);
+  if (!recursion.check(cx_)) {
     return null();
   }
 
@@ -10995,7 +12055,7 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::primaryExpr(
         }
       }
 
-      Rooted<PropertyName*> name(cx_, identifierReference(yieldHandling));
+      TaggedParserAtomIndex name = identifierReference(yieldHandling);
       if (!name) {
         return null();
       }
@@ -11017,9 +12077,6 @@ typename ParseHandler::Node GeneralParser<ParseHandler, Unit>::primaryExpr(
     case TokenKind::False:
       return handler_.newBooleanLiteral(false, pos());
     case TokenKind::This: {
-      if (pc_->isFunctionBox()) {
-        pc_->functionBox()->usesThis = true;
-      }
       NameNodeType thisName = null();
       if (pc_->sc()->hasFunctionThisBinding()) {
         thisName = newThisName();
@@ -11117,13 +12174,5 @@ template class Parser<FullParseHandler, Utf8Unit>;
 template class Parser<SyntaxParseHandler, Utf8Unit>;
 template class Parser<FullParseHandler, char16_t>;
 template class Parser<SyntaxParseHandler, char16_t>;
-
-CompilationInfo::RewindToken CompilationInfo::getRewindToken() {
-  return RewindToken{traceListHead};
-}
-
-void CompilationInfo::rewind(const CompilationInfo::RewindToken& pos) {
-  traceListHead = pos.funbox;
-}
 
 }  // namespace js::frontend

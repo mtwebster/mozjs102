@@ -28,6 +28,7 @@
 #include "nsIObserverService.h"
 #include "nsIServiceManager.h"
 #include "nsXULAppAPI.h"
+#include "mozilla/AppShutdown.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -78,21 +79,16 @@ class ScopedXPCOM final : public nsIDirectoryServiceProvider2 {
   ~ScopedXPCOM() {
     // If we created a profile directory, we need to remove it.
     if (mProfD) {
-      nsCOMPtr<nsIObserverService> os =
-          do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-      MOZ_ASSERT(os);
-      if (os) {
-        MOZ_ALWAYS_SUCCEEDS(os->NotifyObservers(
-            nullptr, "profile-change-net-teardown", nullptr));
-        MOZ_ALWAYS_SUCCEEDS(
-            os->NotifyObservers(nullptr, "profile-change-teardown", nullptr));
-        MOZ_ALWAYS_SUCCEEDS(
-            os->NotifyObservers(nullptr, "profile-before-change", nullptr));
-        MOZ_ALWAYS_SUCCEEDS(
-            os->NotifyObservers(nullptr, "profile-before-change-qm", nullptr));
-        MOZ_ALWAYS_SUCCEEDS(os->NotifyObservers(
-            nullptr, "profile-before-change-telemetry", nullptr));
-      }
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownNetTeardown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownTeardown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownQM);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownTelemetry);
 
       if (NS_FAILED(mProfD->Remove(true))) {
         NS_WARNING("Problem removing profile directory");
@@ -128,7 +124,7 @@ class ScopedXPCOM final : public nsIDirectoryServiceProvider2 {
                                          getter_AddRefs(profD));
     NS_ENSURE_SUCCESS(rv, nullptr);
 
-    rv = profD->Append(NS_LITERAL_STRING("cpp-unit-profd"));
+    rv = profD->Append(u"cpp-unit-profd"_ns);
     NS_ENSURE_SUCCESS(rv, nullptr);
 
     rv = profD->CreateUnique(nsIFile::DIRECTORY_TYPE, 0755);
@@ -170,7 +166,7 @@ class ScopedXPCOM final : public nsIDirectoryServiceProvider2 {
     nsAutoCString leafName;
     mGREBinD->GetNativeLeafName(leafName);
     if (leafName.EqualsLiteral("Resources")) {
-      mGREBinD->SetNativeLeafName(NS_LITERAL_CSTRING("MacOS"));
+      mGREBinD->SetNativeLeafName("MacOS"_ns);
     }
 #endif
 

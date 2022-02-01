@@ -8,6 +8,7 @@
 #include "js/CompilationAndEvaluation.h"  // JS::CompileFunction
 #include "js/SourceText.h"                // JS::Source{Ownership,Text}
 #include "jsapi-tests/tests.h"
+#include "util/Text.h"
 
 #include "vm/JSObject-inl.h"
 #include "vm/JSScript-inl.h"
@@ -49,7 +50,7 @@ bool testPreserveJitCode(bool preserveJitCode, unsigned remainingIonScripts) {
 
   CHECK_EQUAL(countIonScripts(global), 0u);
 
-  static const char source[] =
+  static constexpr char source[] =
       "var i = 0;\n"
       "var sum = 0;\n"
       "while (i < 10) {\n"
@@ -57,7 +58,7 @@ bool testPreserveJitCode(bool preserveJitCode, unsigned remainingIonScripts) {
       "    ++i;\n"
       "}\n"
       "return sum;\n";
-  constexpr unsigned length = mozilla::ArrayLength(source) - 1;
+  constexpr unsigned length = js_strlen(source);
 
   JS::SourceText<mozilla::Utf8Unit> srcBuf;
   CHECK(srcBuf.init(cx, source, length, JS::SourceOwnership::Borrowed));
@@ -79,10 +80,10 @@ bool testPreserveJitCode(bool preserveJitCode, unsigned remainingIonScripts) {
   CHECK_EQUAL(value.toInt32(), 45);
   CHECK_EQUAL(countIonScripts(global), 1u);
 
-  NonIncrementalGC(cx, GC_NORMAL, GCReason::API);
+  NonIncrementalGC(cx, JS::GCOptions::Normal, GCReason::API);
   CHECK_EQUAL(countIonScripts(global), remainingIonScripts);
 
-  NonIncrementalGC(cx, GC_SHRINK, GCReason::API);
+  NonIncrementalGC(cx, JS::GCOptions::Shrink, GCReason::API);
   CHECK_EQUAL(countIonScripts(global), 0u);
 
   return true;

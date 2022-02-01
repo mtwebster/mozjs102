@@ -7,12 +7,16 @@
 #ifndef jit_none_MacroAssembler_none_h
 #define jit_none_MacroAssembler_none_h
 
-#include "jit/JitRealm.h"
+#include <iterator>
+
 #include "jit/MoveResolver.h"
 #include "jit/shared/Assembler-shared.h"
+#include "wasm/WasmTypes.h"
 
 namespace js {
 namespace jit {
+
+class CompactBufferReader;
 
 static constexpr Register StackPointer{Registers::invalid_reg};
 static constexpr Register FramePointer{Registers::invalid_reg};
@@ -20,9 +24,6 @@ static constexpr Register ReturnReg{Registers::invalid_reg2};
 static constexpr FloatRegister ReturnFloat32Reg = {FloatRegisters::invalid_reg};
 static constexpr FloatRegister ReturnDoubleReg = {FloatRegisters::invalid_reg};
 static constexpr FloatRegister ReturnSimd128Reg = {FloatRegisters::invalid_reg};
-static constexpr FloatRegister ScratchFloat32Reg = {
-    FloatRegisters::invalid_reg};
-static constexpr FloatRegister ScratchDoubleReg = {FloatRegisters::invalid_reg};
 static constexpr FloatRegister ScratchSimd128Reg = {
     FloatRegisters::invalid_reg};
 static constexpr FloatRegister InvalidFloatReg = {FloatRegisters::invalid_reg};
@@ -46,8 +47,7 @@ static constexpr Register CallTempReg4{Registers::invalid_reg};
 static constexpr Register CallTempReg5{Registers::invalid_reg};
 static constexpr Register InvalidReg{Registers::invalid_reg};
 static constexpr Register CallTempNonArgRegs[] = {InvalidReg, InvalidReg};
-static const uint32_t NumCallTempNonArgRegs =
-    mozilla::ArrayLength(CallTempNonArgRegs);
+static const uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
 
 static constexpr Register IntArgReg0{Registers::invalid_reg};
 static constexpr Register IntArgReg1{Registers::invalid_reg};
@@ -98,6 +98,7 @@ static constexpr Register WasmTableCallSigReg{Registers::invalid_reg};
 static constexpr Register WasmTableCallIndexReg{Registers::invalid_reg};
 static constexpr Register WasmTlsReg{Registers::invalid_reg};
 static constexpr Register WasmJitEntryReturnScratch{Registers::invalid_reg};
+static constexpr Register WasmExceptionReg{Registers::invalid_reg};
 
 static constexpr uint32_t ABIStackAlignment = 4;
 static constexpr uint32_t CodeAlignment = 16;
@@ -532,13 +533,13 @@ class MacroAssemblerNone : public Assembler {
     MOZ_CRASH();
   }
   void notBoolean(ValueOperand) { MOZ_CRASH(); }
-  MOZ_MUST_USE Register extractObject(Address, Register) { MOZ_CRASH(); }
-  MOZ_MUST_USE Register extractObject(ValueOperand, Register) { MOZ_CRASH(); }
-  MOZ_MUST_USE Register extractSymbol(ValueOperand, Register) { MOZ_CRASH(); }
-  MOZ_MUST_USE Register extractInt32(ValueOperand, Register) { MOZ_CRASH(); }
-  MOZ_MUST_USE Register extractBoolean(ValueOperand, Register) { MOZ_CRASH(); }
+  [[nodiscard]] Register extractObject(Address, Register) { MOZ_CRASH(); }
+  [[nodiscard]] Register extractObject(ValueOperand, Register) { MOZ_CRASH(); }
+  [[nodiscard]] Register extractSymbol(ValueOperand, Register) { MOZ_CRASH(); }
+  [[nodiscard]] Register extractInt32(ValueOperand, Register) { MOZ_CRASH(); }
+  [[nodiscard]] Register extractBoolean(ValueOperand, Register) { MOZ_CRASH(); }
   template <typename T>
-  MOZ_MUST_USE Register extractTag(T, Register) {
+  [[nodiscard]] Register extractTag(T, Register) {
     MOZ_CRASH();
   }
 
@@ -546,6 +547,9 @@ class MacroAssemblerNone : public Assembler {
     MOZ_CRASH();
   }
   void convertDoubleToInt32(FloatRegister, Register, Label*, bool v = true) {
+    MOZ_CRASH();
+  }
+  void convertDoubleToPtr(FloatRegister, Register, Label*, bool v = true) {
     MOZ_CRASH();
   }
   void convertBoolToInt32(Register, Register) { MOZ_CRASH(); }
@@ -587,7 +591,7 @@ class MacroAssemblerNone : public Assembler {
   void convertUInt32ToFloat32(Register, FloatRegister) { MOZ_CRASH(); }
   void incrementInt32Value(Address) { MOZ_CRASH(); }
   void ensureDouble(ValueOperand, FloatRegister, Label*) { MOZ_CRASH(); }
-  void handleFailureWithHandlerTail(void*) { MOZ_CRASH(); }
+  void handleFailureWithHandlerTail(Label*) { MOZ_CRASH(); }
 
   void buildFakeExitFrame(Register, uint32_t*) { MOZ_CRASH(); }
   bool buildOOLFakeExitFrame(void*) { MOZ_CRASH(); }
@@ -617,6 +621,7 @@ class ABIArgGenerator {
   ABIArg next(MIRType) { MOZ_CRASH(); }
   ABIArg& current() { MOZ_CRASH(); }
   uint32_t stackBytesConsumedSoFar() const { MOZ_CRASH(); }
+  void increaseStackOffset(uint32_t) { MOZ_CRASH(); }
 };
 
 static inline bool GetTempRegForIntArg(uint32_t, uint32_t, Register*) {

@@ -1,12 +1,19 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![warn(clippy::pedantic)]
 
-use neqo_crypto::*;
+use neqo_crypto::{
+    generate_ech_keys, AuthenticationStatus, Client, Error, HandshakeState, SecretAgentPreInfo,
+    Server, ZeroRttCheckResult, ZeroRttChecker, TLS_AES_128_GCM_SHA256,
+    TLS_CHACHA20_POLY1305_SHA256, TLS_GRP_EC_SECP256R1, TLS_VERSION_1_3,
+};
 
 use std::boxed::Box;
 
 mod handshake;
-use crate::handshake::*;
+use crate::handshake::{
+    connect, connect_fail, forward_records, resumption_setup, PermissiveZeroRttChecker, Resumption,
+    ZERO_RTT_TOKEN_DATA,
+};
 use test_fixture::{fixture_init, now};
 
 #[test]
@@ -67,7 +74,7 @@ fn basic() {
 fn check_client_preinfo(client_preinfo: &SecretAgentPreInfo) {
     assert_eq!(client_preinfo.version(), None);
     assert_eq!(client_preinfo.cipher_suite(), None);
-    assert_eq!(client_preinfo.early_data(), false);
+    assert!(!client_preinfo.early_data());
     assert_eq!(client_preinfo.early_data_cipher(), None);
     assert_eq!(client_preinfo.max_early_data(), 0);
     assert_eq!(client_preinfo.alpn(), None);
@@ -76,7 +83,7 @@ fn check_client_preinfo(client_preinfo: &SecretAgentPreInfo) {
 fn check_server_preinfo(server_preinfo: &SecretAgentPreInfo) {
     assert_eq!(server_preinfo.version(), Some(TLS_VERSION_1_3));
     assert_eq!(server_preinfo.cipher_suite(), Some(TLS_AES_128_GCM_SHA256));
-    assert_eq!(server_preinfo.early_data(), false);
+    assert!(!server_preinfo.early_data());
     assert_eq!(server_preinfo.early_data_cipher(), None);
     assert_eq!(server_preinfo.max_early_data(), 0);
     assert_eq!(server_preinfo.alpn(), None);
@@ -134,7 +141,7 @@ fn chacha_client() {
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     client
-        .enable_ciphers(&[TLS_CHACHA20_POLY1305_SHA256])
+        .set_ciphers(&[TLS_CHACHA20_POLY1305_SHA256])
         .expect("ciphers set");
 
     connect(&mut client, &mut server);
@@ -264,7 +271,7 @@ fn resume() {
     let mut server = Server::new(&["key"]).expect("should create second server");
 
     client
-        .set_resumption_token(&token[..])
+        .enable_resumption(token)
         .expect("should accept token");
     connect(&mut client, &mut server);
 
@@ -280,7 +287,7 @@ fn zero_rtt() {
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     client
-        .set_resumption_token(&token[..])
+        .enable_resumption(token)
         .expect("should accept token");
     client.enable_0rtt().expect("should enable 0-RTT");
     server
@@ -304,10 +311,12 @@ fn zero_rtt_no_eoed() {
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     client
-        .set_resumption_token(&token[..])
+        .enable_resumption(token)
         .expect("should accept token");
     client.enable_0rtt().expect("should enable 0-RTT");
-    client.disable_end_of_early_data();
+    client
+        .disable_end_of_early_data()
+        .expect("should disable EOED");
     server
         .enable_0rtt(
             anti_replay.as_ref().unwrap(),
@@ -315,7 +324,9 @@ fn zero_rtt_no_eoed() {
             Box::new(PermissiveZeroRttChecker::default()),
         )
         .expect("should enable 0-RTT");
-    server.disable_end_of_early_data();
+    server
+        .disable_end_of_early_data()
+        .expect("should disable EOED");
 
     connect(&mut client, &mut server);
     assert!(client.info().unwrap().early_data_accepted());
@@ -339,7 +350,7 @@ fn reject_zero_rtt() {
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     client
-        .set_resumption_token(&token[..])
+        .enable_resumption(token)
         .expect("should accept token");
     client.enable_0rtt().expect("should enable 0-RTT");
     server
@@ -357,6 +368,7 @@ fn reject_zero_rtt() {
 
 #[test]
 fn close() {
+    fixture_init();
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     connect(&mut client, &mut server);
@@ -366,9 +378,98 @@ fn close() {
 
 #[test]
 fn close_client_twice() {
+    fixture_init();
     let mut client = Client::new("server.example").expect("should create client");
     let mut server = Server::new(&["key"]).expect("should create server");
     connect(&mut client, &mut server);
     client.close();
     client.close(); // Should be a noop.
+}
+
+#[test]
+fn ech() {
+    fixture_init();
+    let mut server = Server::new(&["key"]).expect("should create server");
+    let (sk, pk) = generate_ech_keys().expect("ECH keys");
+    server
+        .enable_ech(88, "public.example", &sk, &pk)
+        .expect("should enable server ECH");
+
+    let mut client = Client::new("server.example").expect("should create client");
+    client
+        .enable_ech(server.ech_config())
+        .expect("should enable client ECH");
+
+    connect(&mut client, &mut server);
+    assert!(client.info().unwrap().ech_accepted());
+    assert!(server.info().unwrap().ech_accepted());
+    assert!(client.preinfo().unwrap().ech_accepted().unwrap());
+    assert!(server.preinfo().unwrap().ech_accepted().unwrap());
+}
+
+#[test]
+fn ech_retry() {
+    const PUBLIC_NAME: &str = "public.example";
+    const PRIVATE_NAME: &str = "private.example";
+    const CONFIG_ID: u8 = 7;
+
+    fixture_init();
+    let mut server = Server::new(&["key"]).unwrap();
+    let (sk, pk) = generate_ech_keys().unwrap();
+    server.enable_ech(CONFIG_ID, PUBLIC_NAME, &sk, &pk).unwrap();
+
+    let mut client = Client::new(PRIVATE_NAME).unwrap();
+    let mut cfg = Vec::from(server.ech_config());
+    // Ensure that the version and config_id is correct.
+    assert_eq!(cfg[2], 0xfe);
+    assert_eq!(cfg[3], 0x0a);
+    assert_eq!(cfg[6], CONFIG_ID);
+    // Change the config_id so that the server doesn't recognize this.
+    cfg[6] ^= 0x94;
+    client.enable_ech(&cfg).unwrap();
+
+    // Long version of connect() so that we can check the state.
+    let records = client.handshake_raw(now(), None).unwrap(); // ClientHello
+    let records = forward_records(now(), &mut server, records).unwrap(); // ServerHello...
+    let records = forward_records(now(), &mut client, records).unwrap(); // (empty)
+    assert!(records.is_empty());
+
+    // The client should now be expecting authentication.
+    assert_eq!(
+        *client.state(),
+        HandshakeState::EchFallbackAuthenticationPending(String::from(PUBLIC_NAME))
+    );
+    client.authenticated(AuthenticationStatus::Ok);
+    let updated_config = if let Err(Error::EchRetry(c)) = client.handshake_raw(now(), None) {
+        c
+    } else {
+        panic!(
+            "Handshake should fail with EchRetry, state is instead {:?}",
+            client.state()
+        );
+    };
+    assert_eq!(
+        client
+            .preinfo()
+            .unwrap()
+            .ech_public_name()
+            .unwrap()
+            .unwrap(),
+        PUBLIC_NAME
+    );
+    // We don't forward alerts, so we can't tell the server about them.
+    // An ech_required alert should be set though.
+    assert_eq!(client.alert(), Some(&121));
+
+    let mut server = Server::new(&["key"]).unwrap();
+    server.enable_ech(CONFIG_ID, PUBLIC_NAME, &sk, &pk).unwrap();
+    let mut client = Client::new(PRIVATE_NAME).unwrap();
+    client.enable_ech(&updated_config).unwrap();
+
+    connect(&mut client, &mut server);
+
+    assert!(client.info().unwrap().ech_accepted());
+    assert!(server.info().unwrap().ech_accepted());
+    assert!(client.preinfo().unwrap().ech_accepted().unwrap());
+    assert!(server.preinfo().unwrap().ech_accepted().unwrap());
 }

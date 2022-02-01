@@ -11,13 +11,13 @@
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Variant.h"
+#include "mozilla/Span.h"  // for Span
 
 #include <algorithm>
 #include <type_traits>
 
 #include "gc/Rooting.h"
-#include "jit/JSJitFrameIter.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/UniquePtr.h"
@@ -25,17 +25,19 @@
 #include "vm/JSFunction.h"
 #include "vm/JSScript.h"
 #include "vm/SavedFrame.h"
-#include "wasm/WasmTypes.h"  // js::wasm::DebugFrame
+#include "wasm/WasmFrame.h"  // js::wasm::DebugFrame
 
 namespace js {
 
 class InterpreterRegs;
 class CallObject;
 class FrameIter;
+class ClassBodyScope;
 class EnvironmentObject;
+class BlockLexicalEnvironmentObject;
+class ExtensibleLexicalEnvironmentObject;
 class GeckoProfilerRuntime;
 class InterpreterFrame;
-class LexicalEnvironmentObject;
 class EnvironmentIter;
 class EnvironmentCoordinate;
 
@@ -214,6 +216,9 @@ class AbstractFramePtr {
   inline bool isFunctionFrame() const;
   inline bool isGeneratorFrame() const;
 
+  inline bool saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                 ArrayObject* dest) const;
+
   inline unsigned numActualArgs() const;
   inline unsigned numFormalArgs() const;
 
@@ -316,8 +321,6 @@ class InterpreterFrame {
   InterpreterFrame* prev_;
   jsbytecode* prevpc_;
   Value* prevsp_;
-
-  void* unused;
 
   /*
    * For an eval-in-frame DEBUGGER_EVAL frame, the frame in whose scope
@@ -513,15 +516,18 @@ class InterpreterFrame {
   inline HandleObject environmentChain() const;
 
   inline EnvironmentObject& aliasedEnvironment(EnvironmentCoordinate ec) const;
+  inline EnvironmentObject& aliasedEnvironmentMaybeDebug(
+      EnvironmentCoordinate ec) const;
   inline GlobalObject& global() const;
   inline CallObject& callObj() const;
-  inline LexicalEnvironmentObject& extensibleLexicalEnvironment() const;
+  inline ExtensibleLexicalEnvironmentObject& extensibleLexicalEnvironment()
+      const;
 
   template <typename SpecificEnvironment>
   inline void pushOnEnvironmentChain(SpecificEnvironment& env);
   template <typename SpecificEnvironment>
   inline void popOffEnvironmentChain();
-  inline void replaceInnermostEnvironment(EnvironmentObject& env);
+  inline void replaceInnermostEnvironment(BlockLexicalEnvironmentObject& env);
 
   // Push a VarEnvironmentObject for function frames of functions that have
   // parameter expressions with closed over var bindings.
@@ -541,6 +547,8 @@ class InterpreterFrame {
   bool pushLexicalEnvironment(JSContext* cx, Handle<LexicalScope*> scope);
   bool freshenLexicalEnvironment(JSContext* cx);
   bool recreateLexicalEnvironment(JSContext* cx);
+
+  bool pushClassBodyEnvironment(JSContext* cx, Handle<ClassBodyScope*> scope);
 
   /*
    * Script
@@ -577,8 +585,10 @@ class InterpreterFrame {
   /*
    * Callee
    *
-   * Only function frames have a callee. An eval frame in a function has the
-   * same callee as its containing function frame.
+   * Only function frames have a true callee. An eval frame in a function has
+   * the same callee as its containing function frame. An async module has to
+   * create a wrapper callee to allow passing the script to generators for
+   * pausing and resuming.
    */
 
   JSFunction& callee() const {
@@ -644,9 +654,17 @@ class InterpreterFrame {
     markReturnValue();
   }
 
+  // Copy values from this frame into a private Array, owned by the
+  // GeneratorObject, for suspending.
+  [[nodiscard]] inline bool saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                               ArrayObject* dest) const;
+
+  // Copy values from the Array into this stack frame, for resuming.
+  inline void restoreGeneratorSlots(ArrayObject* src);
+
   void resumeGeneratorFrame(JSObject* envChain) {
     MOZ_ASSERT(script()->isGenerator() || script()->isAsync());
-    MOZ_ASSERT(isFunctionFrame());
+    MOZ_ASSERT_IF(!script()->isModule(), isFunctionFrame());
     flags_ |= HAS_INITIAL_ENV;
     envChain_ = envChain;
   }
@@ -750,7 +768,11 @@ class InterpreterRegs {
     pc = fp_->prevpc();
     unsigned spForNewTarget =
         fp_->isResumedGenerator() ? 0 : fp_->isConstructing();
-    sp = fp_->prevsp() - fp_->numActualArgs() - 1 - spForNewTarget;
+    // This code is called when resuming from async and generator code.
+    // In the case of modules, we don't have arguments, so we can't use
+    // numActualArgs, which asserts 'hasArgs'.
+    unsigned nActualArgs = fp_->isModuleFrame() ? 0 : fp_->numActualArgs();
+    sp = fp_->prevsp() - nActualArgs - 1 - spForNewTarget;
     fp_ = fp_->prev();
     MOZ_ASSERT(fp_);
   }
@@ -862,7 +884,7 @@ class GenericArgsBase
   explicit GenericArgsBase(JSContext* cx) : v_(cx) {}
 
  public:
-  bool init(JSContext* cx, unsigned argc) {
+  bool init(JSContext* cx, uint64_t argc) {
     if (argc > ARGS_LENGTH_MAX) {
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_TOO_MANY_ARGUMENTS);
@@ -889,7 +911,8 @@ class GenericArgsBase
 template <MaybeConstruct Construct, size_t N>
 class FixedArgsBase
     : public std::conditional_t<Construct, AnyConstructArgs, AnyInvokeArgs> {
-  static_assert(N <= ARGS_LENGTH_MAX, "o/~ too many args o/~");
+  // Add +1 here to avoid noisy warning on gcc when N=0 (0 <= unsigned).
+  static_assert(N + 1 <= ARGS_LENGTH_MAX + 1, "o/~ too many args o/~");
 
  protected:
   JS::RootedValueArray<2 + N + uint32_t(Construct)> v_;

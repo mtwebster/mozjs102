@@ -15,9 +15,10 @@ use crate::isa::enc_tables::{self as shared_enc_tables, lookup_enclist, Encoding
 use crate::isa::Builder as IsaBuilder;
 use crate::isa::{EncInfo, RegClass, RegInfo, TargetIsa};
 use crate::regalloc;
-use alloc::borrow::Cow;
-use alloc::boxed::Box;
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use core::any::Any;
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use target_lexicon::{PointerWidth, Triple};
 
 #[allow(dead_code)]
@@ -66,6 +67,15 @@ impl TargetIsa for Isa {
 
     fn flags(&self) -> &shared_settings::Flags {
         &self.shared_flags
+    }
+
+    fn isa_flags(&self) -> Vec<shared_settings::Value> {
+        self.isa_flags.iter().collect()
+    }
+
+    fn hash_all_flags(&self, mut hasher: &mut dyn Hasher) {
+        self.shared_flags.hash(&mut hasher);
+        self.isa_flags.hash(&mut hasher);
     }
 
     fn register_info(&self) -> RegInfo {
@@ -130,6 +140,10 @@ impl TargetIsa for Isa {
     fn unsigned_sub_overflow_condition(&self) -> ir::condcodes::IntCC {
         unimplemented!()
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
+    }
 }
 
 #[cfg(test)]
@@ -163,7 +177,7 @@ mod tests {
         let arg32 = func.dfg.append_block_param(block, types::I32);
 
         // Try to encode iadd_imm.i64 v1, -10.
-        let inst64 = InstructionData::BinaryImm {
+        let inst64 = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg64,
             imm: immediates::Imm64::new(-10),
@@ -176,7 +190,7 @@ mod tests {
         );
 
         // Try to encode iadd_imm.i64 v1, -10000.
-        let inst64_large = InstructionData::BinaryImm {
+        let inst64_large = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg64,
             imm: immediates::Imm64::new(-10000),
@@ -186,7 +200,7 @@ mod tests {
         assert!(isa.encode(&func, &inst64_large, types::I64).is_err());
 
         // Create an iadd_imm.i32 which is encodable in RV64.
-        let inst32 = InstructionData::BinaryImm {
+        let inst32 = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg32,
             imm: immediates::Imm64::new(10),
@@ -214,7 +228,7 @@ mod tests {
         let arg32 = func.dfg.append_block_param(block, types::I32);
 
         // Try to encode iadd_imm.i64 v1, -10.
-        let inst64 = InstructionData::BinaryImm {
+        let inst64 = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg64,
             imm: immediates::Imm64::new(-10),
@@ -224,7 +238,7 @@ mod tests {
         assert!(isa.encode(&func, &inst64, types::I64).is_err());
 
         // Try to encode iadd_imm.i64 v1, -10000.
-        let inst64_large = InstructionData::BinaryImm {
+        let inst64_large = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg64,
             imm: immediates::Imm64::new(-10000),
@@ -234,7 +248,7 @@ mod tests {
         assert!(isa.encode(&func, &inst64_large, types::I64).is_err());
 
         // Create an iadd_imm.i32 which is encodable in RV32.
-        let inst32 = InstructionData::BinaryImm {
+        let inst32 = InstructionData::BinaryImm64 {
             opcode: Opcode::IaddImm,
             arg: arg32,
             imm: immediates::Imm64::new(10),

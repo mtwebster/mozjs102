@@ -27,14 +27,13 @@ namespace wasm {
 // Return whether BaselineCompileFunction can generate code on the current
 // device.  Usually you do *not* want to call this, you want
 // BaselineAvailable().
-MOZ_MUST_USE bool BaselinePlatformSupport();
+[[nodiscard]] bool BaselinePlatformSupport();
 
 // Generate adequate code quickly.
-MOZ_MUST_USE bool BaselineCompileFunctions(const ModuleEnvironment& env,
-                                           LifoAlloc& lifo,
-                                           const FuncCompileInputVector& inputs,
-                                           CompiledCode* code,
-                                           UniqueChars* error);
+[[nodiscard]] bool BaselineCompileFunctions(
+    const ModuleEnvironment& moduleEnv, const CompilerEnvironment& compilerEnv,
+    LifoAlloc& lifo, const FuncCompileInputVector& inputs, CompiledCode* code,
+    UniqueChars* error);
 
 class BaseLocalIter {
  private:
@@ -42,7 +41,7 @@ class BaseLocalIter {
 
   const ValTypeVector& locals_;
   const ArgTypeVector& args_;
-  jit::ABIArgIter<ArgTypeVector> argsIter_;
+  jit::WasmABIArgIter<ArgTypeVector> argsIter_;
   size_t index_;
   int32_t frameSize_;
   int32_t nextFrameSize_;
@@ -91,12 +90,6 @@ class BaseLocalIter {
   }
 #endif
 };
-
-#ifdef DEBUG
-// Check whether |nextPC| is a valid code address for a stackmap created by
-// this compiler.
-bool IsValidStackMapKey(bool debugEnabled, const uint8_t* nextPC);
-#endif
 
 }  // namespace wasm
 }  // namespace js

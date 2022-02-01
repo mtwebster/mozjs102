@@ -7,8 +7,6 @@
 #ifndef builtin_intl_RelativeTimeFormat_h
 #define builtin_intl_RelativeTimeFormat_h
 
-#include "mozilla/Attributes.h"
-
 #include <stdint.h>
 
 #include "builtin/SelfHostingDefines.h"
@@ -35,7 +33,7 @@ class RelativeTimeFormatObject : public NativeObject {
                 "INTERNALS_SLOT must match self-hosting define for internals "
                 "object slot");
 
-  // Estimated memory use for URelativeDateTimeFormatter.
+  // Estimated memory use for URelativeDateTimeFormatter (see IcuMemoryUsage).
   static constexpr size_t EstimatedMemoryUse = 278;
 
   URelativeDateTimeFormatter* getRelativeDateTimeFormatter() const {
@@ -69,14 +67,14 @@ class RelativeTimeFormatObject : public NativeObject {
  * Usage: formatted = intl_FormatRelativeTime(relativeTimeFormat, t,
  *                                            unit, numeric, formatToParts)
  */
-extern MOZ_MUST_USE bool intl_FormatRelativeTime(JSContext* cx, unsigned argc,
-                                                 JS::Value* vp);
+[[nodiscard]] extern bool intl_FormatRelativeTime(JSContext* cx, unsigned argc,
+                                                  JS::Value* vp);
 
 namespace intl {
 
 using FieldType = js::ImmutablePropertyNamePtr JSAtomState::*;
 
-MOZ_MUST_USE bool FormattedRelativeTimeToParts(
+[[nodiscard]] bool FormattedRelativeTimeToParts(
     JSContext* cx, const UFormattedValue* formattedValue, double timeValue,
     FieldType relativeTimeUnit, MutableHandleValue result);
 

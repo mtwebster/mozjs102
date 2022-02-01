@@ -10,8 +10,6 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Tuple.h"
-#include "mozilla/Variant.h"
 
 #include <stddef.h>
 #include <utility>
@@ -186,7 +184,7 @@ class ObjectWrapperMap {
     }
   }
 
-  MOZ_MUST_USE bool put(JSObject* key, JSObject* value) {
+  [[nodiscard]] bool put(JSObject* key, JSObject* value) {
     JS::Compartment* comp = key->compartment();
     auto ptr = map.lookupForAdd(comp);
     if (!ptr) {
@@ -250,7 +248,7 @@ class ObjectWrapperMap {
 
 using StringWrapperMap =
     NurseryAwareHashMap<JSString*, JSString*, DefaultHasher<JSString*>,
-                        ZoneAllocPolicy>;
+                        ZoneAllocPolicy, DuplicatesPossible>;
 
 }  // namespace js
 
@@ -353,26 +351,29 @@ class JS::Compartment {
 
   void destroy(JSFreeOp* fop);
 
-  MOZ_MUST_USE inline bool wrap(JSContext* cx, JS::MutableHandleValue vp);
+  [[nodiscard]] inline bool wrap(JSContext* cx, JS::MutableHandleValue vp);
 
-  MOZ_MUST_USE inline bool wrap(JSContext* cx,
-                                MutableHandle<mozilla::Maybe<Value>> vp);
+  [[nodiscard]] inline bool wrap(JSContext* cx,
+                                 MutableHandle<mozilla::Maybe<Value>> vp);
 
-  MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandleString strp);
-  MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandle<JS::BigInt*> bi);
-  MOZ_MUST_USE bool wrap(JSContext* cx, JS::MutableHandleObject obj);
-  MOZ_MUST_USE bool wrap(JSContext* cx,
-                         JS::MutableHandle<JS::PropertyDescriptor> desc);
-  MOZ_MUST_USE bool wrap(JSContext* cx,
-                         JS::MutableHandle<JS::GCVector<JS::Value>> vec);
-  MOZ_MUST_USE bool rewrap(JSContext* cx, JS::MutableHandleObject obj,
-                           JS::HandleObject existing);
+  [[nodiscard]] bool wrap(JSContext* cx, js::MutableHandleString strp);
+  [[nodiscard]] bool wrap(JSContext* cx, js::MutableHandle<JS::BigInt*> bi);
+  [[nodiscard]] bool wrap(JSContext* cx, JS::MutableHandleObject obj);
+  [[nodiscard]] bool wrap(JSContext* cx,
+                          JS::MutableHandle<JS::PropertyDescriptor> desc);
+  [[nodiscard]] bool wrap(
+      JSContext* cx,
+      JS::MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc);
+  [[nodiscard]] bool wrap(JSContext* cx,
+                          JS::MutableHandle<JS::GCVector<JS::Value>> vec);
+  [[nodiscard]] bool rewrap(JSContext* cx, JS::MutableHandleObject obj,
+                            JS::HandleObject existing);
 
-  MOZ_MUST_USE bool putWrapper(JSContext* cx, JSObject* wrapped,
-                               JSObject* wrapper);
+  [[nodiscard]] bool putWrapper(JSContext* cx, JSObject* wrapped,
+                                JSObject* wrapper);
 
-  MOZ_MUST_USE bool putWrapper(JSContext* cx, JSString* wrapped,
-                               JSString* wrapper);
+  [[nodiscard]] bool putWrapper(JSContext* cx, JSString* wrapped,
+                                JSString* wrapper);
 
   js::ObjectWrapperMap::Ptr lookupWrapper(JSObject* obj) const {
     return crossCompartmentObjectWrappers.lookup(obj);
@@ -427,7 +428,7 @@ class JS::Compartment {
   void fixupCrossCompartmentObjectWrappersAfterMovingGC(JSTracer* trc);
   void fixupAfterMovingGC(JSTracer* trc);
 
-  MOZ_MUST_USE bool findSweepGroupEdges();
+  [[nodiscard]] bool findSweepGroupEdges();
 };
 
 namespace js {
@@ -495,25 +496,19 @@ struct WrapperValue {
 class MOZ_RAII AutoWrapperVector : public JS::GCVector<WrapperValue, 8>,
                                    public JS::AutoGCRooter {
  public:
-  explicit AutoWrapperVector(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  explicit AutoWrapperVector(JSContext* cx)
       : JS::GCVector<WrapperValue, 8>(cx),
-        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {}
 
   void trace(JSTracer* trc);
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
  public:
-  AutoWrapperRooter(JSContext* cx,
-                    const WrapperValue& v MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  AutoWrapperRooter(JSContext* cx, const WrapperValue& v)
+      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {}
 
   operator JSObject*() const { return value; }
 
@@ -521,7 +516,6 @@ class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
 
  private:
   WrapperValue value;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace js */

@@ -27,34 +27,29 @@ class ConditionsProvider(MachCommandBase):
     foo = True
     bar = False
 
-    @Command('cmd_foo', category='testing', conditions=[is_foo])
-    def run_foo(self):
+    @Command("cmd_foo", category="testing", conditions=[is_foo])
+    def run_foo(self, command_context):
         pass
 
-    @Command('cmd_bar', category='testing', conditions=[is_bar])
-    def run_bar(self):
+    @Command("cmd_bar", category="testing", conditions=[is_bar])
+    def run_bar(self, command_context):
         pass
 
-    @Command('cmd_foobar', category='testing', conditions=[is_foo, is_bar])
-    def run_foobar(self):
+    @Command("cmd_foobar", category="testing", conditions=[is_foo, is_bar])
+    def run_foobar(self, command_context):
         pass
 
 
 @CommandProvider
 class ConditionsContextProvider(MachCommandBase):
-    def __init__(self, *args, **kwargs):
-        super(ConditionsContextProvider, self).__init__(*args, **kwargs)
-        self.foo = self._mach_context.foo
-        self.bar = self._mach_context.bar
-
-    @Command('cmd_foo_ctx', category='testing', conditions=[is_foo])
-    def run_foo(self):
+    @Command("cmd_foo_ctx", category="testing", conditions=[is_foo])
+    def run_foo(self, command_context):
         pass
 
-    @Command('cmd_bar_ctx', category='testing', conditions=[is_bar])
-    def run_bar(self):
+    @Command("cmd_bar_ctx", category="testing", conditions=[is_bar])
+    def run_bar(self, command_context):
         pass
 
-    @Command('cmd_foobar_ctx', category='testing', conditions=[is_foo, is_bar])
-    def run_foobar(self):
+    @Command("cmd_foobar_ctx", category="testing", conditions=[is_foo, is_bar])
+    def run_foobar(self, command_context):
         pass

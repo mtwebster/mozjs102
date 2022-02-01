@@ -24,6 +24,20 @@ pub enum LibCall {
     /// probe for stack overflow. These are emitted for functions which need
     /// when the `enable_probestack` setting is true.
     Probestack,
+    /// udiv.i64
+    UdivI64,
+    /// sdiv.i64
+    SdivI64,
+    /// urem.i64
+    UremI64,
+    /// srem.i64
+    SremI64,
+    /// ishl.i64
+    IshlI64,
+    /// ushr.i64
+    UshrI64,
+    /// sshr.i64
+    SshrI64,
     /// ceil.f32
     CeilF32,
     /// ceil.f64
@@ -49,6 +63,7 @@ pub enum LibCall {
 
     /// Elf __tls_get_addr
     ElfTlsGetAddr,
+    // When adding a new variant make sure to add it to `all_libcalls` too.
 }
 
 impl fmt::Display for LibCall {
@@ -63,6 +78,13 @@ impl FromStr for LibCall {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Probestack" => Ok(Self::Probestack),
+            "UdivI64" => Ok(Self::UdivI64),
+            "SdivI64" => Ok(Self::SdivI64),
+            "UremI64" => Ok(Self::UremI64),
+            "SremI64" => Ok(Self::SremI64),
+            "IshlI64" => Ok(Self::IshlI64),
+            "UshrI64" => Ok(Self::UshrI64),
+            "SshrI64" => Ok(Self::SshrI64),
             "CeilF32" => Ok(Self::CeilF32),
             "CeilF64" => Ok(Self::CeilF64),
             "FloorF32" => Ok(Self::FloorF32),
@@ -88,6 +110,16 @@ impl LibCall {
     /// Returns `None` if no well-known library routine name exists for that instruction.
     pub fn for_inst(opcode: Opcode, ctrl_type: Type) -> Option<Self> {
         Some(match ctrl_type {
+            types::I64 => match opcode {
+                Opcode::Udiv => Self::UdivI64,
+                Opcode::Sdiv => Self::SdivI64,
+                Opcode::Urem => Self::UremI64,
+                Opcode::Srem => Self::SremI64,
+                Opcode::Ishl => Self::IshlI64,
+                Opcode::Ushr => Self::UshrI64,
+                Opcode::Sshr => Self::SshrI64,
+                _ => return None,
+            },
             types::F32 => match opcode {
                 Opcode::Ceil => Self::CeilF32,
                 Opcode::Floor => Self::FloorF32,
@@ -104,6 +136,33 @@ impl LibCall {
             },
             _ => return None,
         })
+    }
+
+    /// Get a list of all known `LibCall`'s.
+    pub fn all_libcalls() -> &'static [LibCall] {
+        use LibCall::*;
+        &[
+            Probestack,
+            UdivI64,
+            SdivI64,
+            UremI64,
+            SremI64,
+            IshlI64,
+            UshrI64,
+            SshrI64,
+            CeilF32,
+            CeilF64,
+            FloorF32,
+            FloorF64,
+            TruncF32,
+            TruncF64,
+            NearestF32,
+            NearestF64,
+            Memcpy,
+            Memset,
+            Memmove,
+            ElfTlsGetAddr,
+        ]
     }
 }
 

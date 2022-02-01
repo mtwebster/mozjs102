@@ -8,6 +8,7 @@
 #include "jsfriendapi.h"
 #include "NamespaceImports.h"
 
+#include "js/friend/ErrorMessages.h"  // JSMSG_*
 #include "js/Wrapper.h"
 #include "vm/JSObject.h"
 #include "vm/StringType.h"
@@ -98,7 +99,7 @@ bool SecurityWrapper<Base>::defineProperty(JSContext* cx, HandleObject wrapper,
                                            HandleId id,
                                            Handle<PropertyDescriptor> desc,
                                            ObjectOpResult& result) const {
-  if (desc.getter() || desc.setter()) {
+  if (desc.isAccessorDescriptor()) {
     return Throw(cx, id, JSMSG_ACCESSOR_DEF_DENIED);
   }
 

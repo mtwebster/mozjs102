@@ -3,7 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SelfHostingDefines.h"
-#include "TypedObjectConstants.h"
 
 // Assertions and debug printing, defined here instead of in the header above
 // to make `assert` invisible to C++.
@@ -27,31 +26,25 @@
 // All C++-implemented standard builtins library functions used in self-hosted
 // code are installed via the std_functions JSFunctionSpec[] in
 // SelfHosting.cpp.
+
+/********** List / Record specification types **********/
+
+// A "List" is an internal type used in the ECMAScript spec to define a simple
+// ordered list of values. It is never exposed to user script, but we use a
+// simple Object (with null prototype) as a convenient implementation.
 //
-// Do not create an alias to a self-hosted builtin, otherwise it will be cloned
-// twice.
-//
-// Symbol is a bare constructor without properties or methods.
-var std_Symbol = Symbol;
-
-
-/********** List specification type **********/
-
-/* Spec: ECMAScript Language Specification, 5.1 edition, 8.8 */
-function List() {
-    this.length = 0;
-}
-MakeConstructible(List, {__proto__: null});
-
-
-/********** Record specification type **********/
-
-
-/* Spec: ECMAScript Internationalization API Specification, draft, 5 */
-function Record() {
+// NOTE: This does not track a `length` field.
+function new_List() {
     return std_Object_create(null);
 }
-MakeConstructible(Record, {});
+
+
+// A "Record" is an internal type used in the ECMAScript spec to define a struct
+// made up of key / values. It is never exposed to user script, but we use a
+// simple Object (with null prototype) as a convenient implementation.
+function new_Record() {
+    return std_Object_create(null);
+}
 
 
 /********** Abstract operations defined in ECMAScript Language Specification **********/
@@ -66,27 +59,6 @@ function ToBoolean(v) {
 /* Spec: ECMAScript Language Specification, 5.1 edition, 9.3 and 11.4.6 */
 function ToNumber(v) {
     return +v;
-}
-
-
-// ES6 7.2.1 (previously, ES5 9.10 under the name "CheckObjectCoercible").
-function RequireObjectCoercible(v) {
-    if (v === undefined || v === null)
-        ThrowTypeError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
-}
-
-/* Spec: ECMAScript Draft, 6 edition May 22, 2014, 7.1.15 */
-function ToLength(v) {
-    // Step 1.
-    v = ToInteger(v);
-
-    // Step 2.
-    // Use max(v, 0) here, because it's easier to optimize in Ion.
-    v = std_Math_max(v, 0);
-
-    // Step 3.
-    // Math.pow(2, 53) - 1 = 0x1fffffffffffff
-    return std_Math_min(v, 0x1fffffffffffff);
 }
 
 // ES2017 draft rev aebf014403a3e641fb1622aec47c40f051943527
@@ -124,19 +96,6 @@ function IsPropertyKey(argument) {
 #define TO_PROPERTY_KEY(name) \
 (typeof name !== "string" && typeof name !== "number" && typeof name !== "symbol" ? ToPropertyKey(name) : name)
 
-var _builtinCtorsCache = {__proto__: null};
-
-function GetBuiltinConstructor(builtinName) {
-    var ctor = _builtinCtorsCache[builtinName] ||
-               (_builtinCtorsCache[builtinName] = GetBuiltinConstructorImpl(builtinName));
-    assert(ctor, `No builtin with name "${builtinName}" found`);
-    return ctor;
-}
-
-function GetBuiltinPrototype(builtinName) {
-    return (_builtinCtorsCache[builtinName] || GetBuiltinConstructor(builtinName)).prototype;
-}
-
 // ES 2016 draft Mar 25, 2016 7.3.20.
 function SpeciesConstructor(obj, defaultConstructor) {
     // Step 1.
@@ -154,7 +113,7 @@ function SpeciesConstructor(obj, defaultConstructor) {
         ThrowTypeError(JSMSG_OBJECT_REQUIRED, "object's 'constructor' property");
 
     // Steps 5.
-    var s = ctor[std_species];
+    var s = ctor[GetBuiltinSymbol("species")];
 
     // Step 6.
     if (s === undefined || s === null)
@@ -230,7 +189,7 @@ function CopyDataProperties(target, source, excludedItems) {
         if (!hasOwn(key, excludedItems) &&
             callFunction(std_Object_propertyIsEnumerable, from, key))
         {
-            _DefineDataProperty(target, key, from[key]);
+            DefineDataProperty(target, key, from[key]);
         }
     }
 
@@ -266,7 +225,7 @@ function CopyDataPropertiesUnfiltered(target, source) {
         // We abbreviate this by calling propertyIsEnumerable which is faster
         // and returns false for not defined properties.
         if (callFunction(std_Object_propertyIsEnumerable, from, key))
-            _DefineDataProperty(target, key, from[key]);
+            DefineDataProperty(target, key, from[key]);
     }
 
     // Step 7 (Return).

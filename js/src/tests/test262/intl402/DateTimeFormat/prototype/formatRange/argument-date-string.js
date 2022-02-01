@@ -1,4 +1,3 @@
-// |reftest| skip -- Intl.DateTimeFormat-formatRange is not supported
 // Copyright (C) 2017 André Bargull. All rights reserved.
 // Copyright (C) 2019 Igalia S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.

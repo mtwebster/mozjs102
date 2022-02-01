@@ -213,7 +213,7 @@ struct MovableCellHasher<NumberAndObjectEntry> {
 BEGIN_TEST(testIncrementalWeakCacheSweeping) {
   AutoLeaveZeal nozeal(cx);
 
-  JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_ZONE_INCREMENTAL);
+  JS_SetGCParameter(cx, JSGC_INCREMENTAL_GC_ENABLED, true);
   JS_SetGCZeal(cx, 17, 1000000);
 
   CHECK(TestSet());
@@ -223,7 +223,7 @@ BEGIN_TEST(testIncrementalWeakCacheSweeping) {
   CHECK(TestUniqueIDLookups());
 
   JS_SetGCZeal(cx, 0, 0);
-  JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_GLOBAL);
+  JS_SetGCParameter(cx, JSGC_INCREMENTAL_GC_ENABLED, false);
 
   return true;
 }
@@ -235,7 +235,7 @@ bool GCUntilCacheSweep(JSContext* cx, const Cache& cache) {
   JS::Zone* zone = JS::GetObjectZone(global);
   JS::PrepareZoneForGC(cx, zone);
   SliceBudget budget(WorkBudget(1));
-  cx->runtime()->gc.startDebugGC(GC_NORMAL, budget);
+  cx->runtime()->gc.startDebugGC(JS::GCOptions::Normal, budget);
 
   CHECK(IsIncrementalGCInProgress(cx));
   CHECK(zone->isGCSweeping());

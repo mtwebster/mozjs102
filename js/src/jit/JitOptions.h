@@ -39,31 +39,29 @@ struct DefaultJitOptions {
 #endif
   bool checkRangeAnalysis;
   bool runExtraChecks;
-  bool disableInlineBacktracking;
   bool disableAma;
   bool disableEaa;
   bool disableEdgeCaseAnalysis;
   bool disableGvn;
   bool disableInlining;
   bool disableLicm;
-  bool disablePgo;
+  bool disablePruning;
   bool disableInstructionReordering;
   bool disableRangeAnalysis;
   bool disableRecoverIns;
   bool disableScalarReplacement;
   bool disableCacheIR;
   bool disableSink;
-  bool disableOptimizationLevels;
+  bool disableBailoutLoopCheck;
   bool baselineInterpreter;
   bool baselineJit;
   bool ion;
-#ifdef NIGHTLY_BUILD
-  bool typeInference;
-#endif
-  bool warpBuilder;
+  bool warpAsync;
+  bool warpGenerator;
   bool jitForTrustedPrincipals;
   bool nativeRegExp;
   bool forceInlineCaches;
+  bool forceMegamorphicICs;
   bool fullDebugChecks;
   bool limitScriptSize;
   bool osr;
@@ -72,12 +70,10 @@ struct DefaultJitOptions {
 #ifdef JS_TRACE_LOGGING
   bool enableTraceLogger;
 #endif
-#ifdef ENABLE_NEW_REGEXP
   bool traceRegExpParser;
   bool traceRegExpAssembler;
   bool traceRegExpInterpreter;
   bool traceRegExpPeephole;
-#endif
   bool enableWasmJitExit;
   bool enableWasmJitEntry;
   bool enableWasmIonFastCalls;
@@ -87,16 +83,16 @@ struct DefaultJitOptions {
 #endif
   uint32_t baselineInterpreterWarmUpThreshold;
   uint32_t baselineJitWarmUpThreshold;
+  uint32_t trialInliningWarmUpThreshold;
+  uint32_t trialInliningInitialWarmUpCount;
   uint32_t normalIonWarmUpThreshold;
-  uint32_t fullIonWarmUpThreshold;
-#ifdef ENABLE_NEW_REGEXP
   uint32_t regexpWarmUpThreshold;
-#endif
   uint32_t exceptionBailoutThreshold;
   uint32_t frequentBailoutThreshold;
   uint32_t maxStackArgs;
   uint32_t osrPcMismatchesBeforeRecompile;
-  uint32_t smallFunctionMaxBytecodeLength_;
+  uint32_t smallFunctionMaxBytecodeLength;
+  uint32_t inliningEntryThreshold;
   uint32_t jumpThreshold;
   uint32_t branchPruningHitCountFactor;
   uint32_t branchPruningInstFactor;
@@ -116,8 +112,7 @@ struct DefaultJitOptions {
   // measure the effectiveness of each mitigation with various proof of
   // concept.
   bool spectreIndexMasking;
-  bool spectreObjectMitigationsBarriers;
-  bool spectreObjectMitigationsMisc;
+  bool spectreObjectMitigations;
   bool spectreStringMitigations;
   bool spectreValueMasking;
   bool spectreJitToCxxCalls;
@@ -130,10 +125,9 @@ struct DefaultJitOptions {
   void setEagerBaselineCompilation();
   void setEagerIonCompilation();
   void setNormalIonWarmUpThreshold(uint32_t warmUpThreshold);
-  void setFullIonWarmUpThreshold(uint32_t warmUpThreshold);
   void resetNormalIonWarmUpThreshold();
-  void resetFullIonWarmUpThreshold();
   void enableGvn(bool val);
+  void setFastWarmUp();
 
   bool eagerIonCompilation() const { return normalIonWarmUpThreshold == 0; }
 };
@@ -150,12 +144,13 @@ inline bool IsBaselineInterpreterEnabled() {
 
 }  // namespace jit
 
-inline bool IsTypeInferenceEnabled() {
-#ifdef NIGHTLY_BUILD
-  return jit::JitOptions.typeInference;
-#else
-  // Always enable TI on non-Nightly for now to avoid performance overhead.
+extern mozilla::Atomic<bool> fuzzingSafe;
+
+static inline bool IsFuzzing() {
+#ifdef FUZZING
   return true;
+#else
+  return fuzzingSafe;
 #endif
 }
 

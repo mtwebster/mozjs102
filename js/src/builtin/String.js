@@ -7,7 +7,7 @@ function StringProtoHasNoMatch() {
     var StringProto = GetBuiltinPrototype("String");
     if (!ObjectHasPrototype(StringProto, ObjectProto))
         return false;
-    return !(std_match in StringProto);
+    return !(GetBuiltinSymbol("match") in StringProto);
 }
 
 function IsStringMatchOptimizable() {
@@ -16,19 +16,24 @@ function IsStringMatchOptimizable() {
     // guaranteed to be data properties.
     return RegExpPrototypeOptimizable(RegExpProto) &&
            RegExpProto.exec === RegExp_prototype_Exec &&
-           RegExpProto[std_match] === RegExpMatch;
+           RegExpProto[GetBuiltinSymbol("match")] === RegExpMatch;
+}
+
+function ThrowIncompatibleMethod(name, thisv) {
+    ThrowTypeError(JSMSG_INCOMPATIBLE_PROTO, "String", name, ToString(thisv));
 }
 
 // ES 2016 draft Mar 25, 2016 21.1.3.11.
 function String_match(regexp) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("match", this);
 
     // Step 2.
     var isPatternString = (typeof regexp === "string");
     if (!(isPatternString && StringProtoHasNoMatch()) && regexp !== undefined && regexp !== null) {
         // Step 2.a.
-        var matcher = GetMethod(regexp, std_match);
+        var matcher = GetMethod(regexp, GetBuiltinSymbol("match"));
 
         // Step 2.b.
         if (matcher !== undefined)
@@ -52,7 +57,7 @@ function String_match(regexp) {
         return RegExpMatcher(rx, S, 0);
 
     // Step 5.
-    return callContentFunction(GetMethod(rx, std_match), rx, S);
+    return callContentFunction(GetMethod(rx, GetBuiltinSymbol("match")), rx, S);
 }
 
 
@@ -61,7 +66,8 @@ function String_match(regexp) {
 // String.prototype.matchAll ( regexp )
 function String_matchAll(regexp) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("matchAll", this);
 
     // Step 2.
     if (regexp !== undefined && regexp !== null) {
@@ -82,7 +88,7 @@ function String_matchAll(regexp) {
         }
 
         // Step 2.c.
-        var matcher = GetMethod(regexp, std_matchAll);
+        var matcher = GetMethod(regexp, GetBuiltinSymbol("matchAll"));
 
         // Step 2.d.
         if (matcher !== undefined)
@@ -96,7 +102,7 @@ function String_matchAll(regexp) {
     var rx = RegExpCreate(regexp, "g");
 
     // Step 5.
-    return callContentFunction(GetMethod(rx, std_matchAll), rx, string);
+    return callContentFunction(GetMethod(rx, GetBuiltinSymbol("matchAll")), rx, string);
 }
 
 /**
@@ -104,8 +110,11 @@ function String_matchAll(regexp) {
  * and String.prototype.padEnd as described in ES7 Draft March 29, 2016
  */
 function String_pad(maxLength, fillString, padEnd) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod(padEnd ? "padEnd" : "padStart", this);
+
+    // Step 2.
     let str = ToString(this);
 
     // Steps 3-4.
@@ -159,7 +168,7 @@ function StringProtoHasNoReplace() {
     var StringProto = GetBuiltinPrototype("String");
     if (!ObjectHasPrototype(StringProto, ObjectProto))
         return false;
-    return !(std_replace in StringProto);
+    return !(GetBuiltinSymbol("replace") in StringProto);
 }
 
 // A thin wrapper to call SubstringKernel with int32-typed arguments.
@@ -175,14 +184,15 @@ function Substring(str, from, length) {
 // ES 2016 draft Mar 25, 2016 21.1.3.14.
 function String_replace(searchValue, replaceValue) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("replace", this);
 
     // Step 2.
     if (!(typeof searchValue === "string" && StringProtoHasNoReplace()) &&
         searchValue !== undefined && searchValue !== null)
     {
         // Step 2.a.
-        var replacer = GetMethod(searchValue, std_replace);
+        var replacer = GetMethod(searchValue, GetBuiltinSymbol("replace"));
 
         // Step 2.b.
         if (replacer !== undefined)
@@ -239,7 +249,8 @@ function String_replace(searchValue, replaceValue) {
 // String.prototype.replaceAll ( searchValue, replaceValue )
 function String_replaceAll(searchValue, replaceValue) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("replaceAll", this);
 
     // Step 2.
     if (searchValue !== undefined && searchValue !== null) {
@@ -260,7 +271,7 @@ function String_replaceAll(searchValue, replaceValue) {
         }
 
         // Step 2.c.
-        var replacer = GetMethod(searchValue, std_replace);
+        var replacer = GetMethod(searchValue, GetBuiltinSymbol("replace"));
 
         // Step 2.b.
         if (replacer !== undefined) {
@@ -344,7 +355,7 @@ function StringProtoHasNoSearch() {
     var StringProto = GetBuiltinPrototype("String");
     if (!ObjectHasPrototype(StringProto, ObjectProto))
         return false;
-    return !(std_search in StringProto);
+    return !(GetBuiltinSymbol("search") in StringProto);
 }
 
 function IsStringSearchOptimizable() {
@@ -353,19 +364,20 @@ function IsStringSearchOptimizable() {
     // guaranteed to be data properties.
     return RegExpPrototypeOptimizable(RegExpProto) &&
            RegExpProto.exec === RegExp_prototype_Exec &&
-           RegExpProto[std_search] === RegExpSearch;
+           RegExpProto[GetBuiltinSymbol("search")] === RegExpSearch;
 }
 
 // ES 2016 draft Mar 25, 2016 21.1.3.15.
 function String_search(regexp) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("search", this);
 
     // Step 2.
     var isPatternString = (typeof regexp === "string");
     if (!(isPatternString && StringProtoHasNoSearch()) && regexp !== undefined && regexp !== null) {
         // Step 2.a.
-        var searcher = GetMethod(regexp, std_search);
+        var searcher = GetMethod(regexp, GetBuiltinSymbol("search"));
 
         // Step 2.b.
         if (searcher !== undefined)
@@ -385,7 +397,7 @@ function String_search(regexp) {
     var rx = RegExpCreate(regexp);
 
     // Step 5.
-    return callContentFunction(GetMethod(rx, std_search), rx, string);
+    return callContentFunction(GetMethod(rx, GetBuiltinSymbol("search")), rx, string);
 }
 
 function StringProtoHasNoSplit() {
@@ -393,13 +405,14 @@ function StringProtoHasNoSplit() {
     var StringProto = GetBuiltinPrototype("String");
     if (!ObjectHasPrototype(StringProto, ObjectProto))
         return false;
-    return !(std_split in StringProto);
+    return !(GetBuiltinSymbol("split") in StringProto);
 }
 
 // ES 2016 draft Mar 25, 2016 21.1.3.17.
 function String_split(separator, limit) {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("split", this);
 
     // Optimized path for string.split(string), especially when both strings
     // are constants.  Following sequence of if's cannot be put together in
@@ -421,7 +434,7 @@ function String_split(separator, limit) {
         separator !== undefined && separator !== null)
     {
         // Step 2.a.
-        var splitter = GetMethod(separator, std_split);
+        var splitter = GetMethod(separator, GetBuiltinSymbol("split"));
 
         // Step 2.b.
         if (splitter !== undefined)
@@ -466,8 +479,11 @@ function String_split(separator, limit) {
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 21.1.3.22 String.prototype.substring ( start, end )
 function String_substring(start, end) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("substring", this);
+
+    // Step 2.
     var str = ToString(this);
 
     // Step 3.
@@ -501,12 +517,16 @@ function String_substring(start, end) {
     // double. Eagerly truncate since SubstringKernel only accepts int32.
     return SubstringKernel(str, from | 0, (to - from) | 0);
 }
+SetIsInlinableLargeFunction(String_substring);
 
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // B.2.3.1 String.prototype.substr ( start, length )
 function String_substr(start, length) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Steps 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("substr", this);
+
+    // Step 2.
     var str = ToString(this);
 
     // Step 3.
@@ -535,12 +555,54 @@ function String_substr(start, length) {
     // double. Eagerly truncate since SubstringKernel only accepts int32.
     return SubstringKernel(str, intStart | 0, resultLength | 0);
 }
+SetIsInlinableLargeFunction(String_substr);
+
+// ES2021 draft rev 12a546b92275a0e2f834017db2727bb9c6f6c8fd
+// 21.1.3.4 String.prototype.concat ( ...args )
+// Note: String.prototype.concat.length is 1.
+function String_concat(arg1) {
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("concat", this);
+
+    // Step 2.
+    var str = ToString(this);
+
+    // Specialize for the most common number of arguments for better inlining.
+    if (arguments.length === 0) {
+        return str;
+    }
+    if (arguments.length === 1) {
+        return str + ToString(arguments[0]);
+    }
+    if (arguments.length === 2) {
+        return str + ToString(arguments[0]) + ToString(arguments[1]);
+    }
+
+    // Step 3. (implicit)
+    // Step 4.
+    var result = str;
+
+    // Step 5.
+    for (var i = 0; i < arguments.length; i++) {
+        // Steps 5.a-b.
+        var nextString = ToString(arguments[i]);
+        // Step 5.c.
+        result += nextString;
+    }
+
+    // Step 6.
+    return result;
+}
 
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 21.1.3.19 String.prototype.slice ( start, end )
 function String_slice(start, end) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("slice", this);
+
+    // Step 2.
     var str = ToString(this);
 
     // Step 3.
@@ -567,12 +629,16 @@ function String_slice(start, end) {
     // double. Eagerly truncate since SubstringKernel only accepts int32.
     return SubstringKernel(str, from | 0, span | 0);
 }
+SetIsInlinableLargeFunction(String_slice);
 
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 21.1.3.3 String.prototype.codePointAt ( pos )
 function String_codePointAt(pos) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("codePointAt", this);
+
+    // Step 2.
     var S = ToString(this);
 
     // Step 3.
@@ -602,8 +668,11 @@ function String_codePointAt(pos) {
 // ES2020 draft rev dc1e21c454bd316810be1c0e7af0131a2d7f38e9
 // 21.1.3.16 String.prototype.repeat ( count )
 function String_repeat(count) {
-    // Steps 1-2.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("repeat", this);
+
+    // Step 2.
     var S = ToString(this);
 
     // Step 3.
@@ -643,8 +712,16 @@ function String_repeat(count) {
 
 // ES6 draft specification, section 21.1.3.27, version 2013-09-27.
 function String_iterator() {
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null) {
+        ThrowTypeError(JSMSG_INCOMPATIBLE_PROTO2, "String", "Symbol.iterator",
+                       ToString(this));
+    }
+
+    // Step 2.
     var S = ToString(this);
+
+    // Step 3.
     var iterator = NewStringIterator();
     UnsafeSetReservedSlot(iterator, ITERATOR_SLOT_TARGET, S);
     UnsafeSetReservedSlot(iterator, ITERATOR_SLOT_NEXT_INDEX, 0);
@@ -690,7 +767,7 @@ function StringIteratorNext() {
 }
 
 #if JS_HAS_INTL_API
-var collatorCache = new Record();
+var collatorCache = new_Record();
 
 /**
  * Compare this String against that String, using the locale and collation
@@ -699,8 +776,11 @@ var collatorCache = new Record();
  * Spec: ECMAScript Internationalization API Specification, 13.1.1.
  */
 function String_localeCompare(that) {
-    // Steps 1-3.
-    RequireObjectCoercible(this);
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("localeCompare", this);
+
+    // Steps 2-3.
     var S = ToString(this);
     var That = ToString(that);
 
@@ -713,9 +793,9 @@ function String_localeCompare(that) {
     if (locales === undefined && options === undefined) {
         // This cache only optimizes for the old ES5 localeCompare without
         // locales and options.
-        if (!IsRuntimeDefaultLocale(collatorCache.runtimeDefaultLocale)) {
+        if (!intl_IsRuntimeDefaultLocale(collatorCache.runtimeDefaultLocale)) {
             collatorCache.collator = intl_Collator(locales, options);
-            collatorCache.runtimeDefaultLocale = RuntimeDefaultLocale();
+            collatorCache.runtimeDefaultLocale = intl_RuntimeDefaultLocale();
         }
         collator = collatorCache.collator;
     } else {
@@ -733,7 +813,8 @@ function String_localeCompare(that) {
  */
 function String_toLocaleLowerCase() {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("toLocaleLowerCase", this);
 
     // Step 2.
     var string = ToString(this);
@@ -774,7 +855,8 @@ function String_toLocaleLowerCase() {
  */
 function String_toLocaleUpperCase() {
     // Step 1.
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("toLocaleUpperCase", this);
 
     // Step 2.
     var string = ToString(this);
@@ -858,57 +940,99 @@ function String_static_raw(callSite/*, ...substitutions*/) {
     return resultString;
 }
 
+// https://github.com/tc39/proposal-relative-indexing-method
+// String.prototype.at ( index )
+function String_at(index) {
+    // Step 1.
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("at", this);
+
+    // Step 2.
+    var string = ToString(this);
+
+    // Step 3.
+    var len = string.length;
+
+    // Step 4.
+    var relativeIndex = ToInteger(index);
+
+    // Steps 5-6.
+    var k;
+    if (relativeIndex >= 0) {
+        k = relativeIndex;
+    } else {
+        k = len + relativeIndex;
+    }
+
+    // Step 7.
+    if (k < 0 || k >= len) {
+        return undefined;
+    }
+
+    // Step 8.
+    return string[k];
+}
+
 // ES6 draft 2014-04-27 B.2.3.3
 function String_big() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("big", this);
     return "<big>" + ToString(this) + "</big>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.4
 function String_blink() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("blink", this);
     return "<blink>" + ToString(this) + "</blink>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.5
 function String_bold() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("bold", this);
     return "<b>" + ToString(this) + "</b>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.6
 function String_fixed() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("fixed", this);
     return "<tt>" + ToString(this) + "</tt>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.9
 function String_italics() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("italics", this);
     return "<i>" + ToString(this) + "</i>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.11
 function String_small() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("small", this);
     return "<small>" + ToString(this) + "</small>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.12
 function String_strike() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("strike", this);
     return "<strike>" + ToString(this) + "</strike>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.13
 function String_sub() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("sub", this);
     return "<sub>" + ToString(this) + "</sub>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.14
 function String_sup() {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("sup", this);
     return "<sup>" + ToString(this) + "</sup>";
 }
 
@@ -919,29 +1043,32 @@ function EscapeAttributeValue(v) {
 
 // ES6 draft 2014-04-27 B.2.3.2
 function String_anchor(name) {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("anchor", this);
     var S = ToString(this);
     return '<a name="' + EscapeAttributeValue(name) + '">' + S + "</a>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.7
 function String_fontcolor(color) {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("fontcolor", this);
     var S = ToString(this);
     return '<font color="' + EscapeAttributeValue(color) + '">' + S + "</font>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.8
 function String_fontsize(size) {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("fontsize", this);
     var S = ToString(this);
     return '<font size="' + EscapeAttributeValue(size) + '">' + S + "</font>";
 }
 
 // ES6 draft 2014-04-27 B.2.3.10
 function String_link(url) {
-    RequireObjectCoercible(this);
+    if (this === undefined || this === null)
+        ThrowIncompatibleMethod("link", this);
     var S = ToString(this);
     return '<a href="' + EscapeAttributeValue(url) + '">' + S + "</a>";
 }
-

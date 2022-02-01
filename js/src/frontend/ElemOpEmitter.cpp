@@ -54,8 +54,10 @@ bool ElemOpEmitter::prepareForKey() {
 bool ElemOpEmitter::emitGet() {
   MOZ_ASSERT(state_ == State::Key);
 
+  // Inc/dec and compound assignment use the KEY twice, but if it's an object,
+  // it must be converted ToPropertyKey only once, per spec.
   if (isIncDec() || isCompoundAssignment()) {
-    if (!bce_->emit1(JSOp::ToId)) {
+    if (!bce_->emit1(JSOp::ToPropertyKey)) {
       //            [stack] # if Super
       //            [stack] THIS KEY
       //            [stack] # otherwise
@@ -63,6 +65,7 @@ bool ElemOpEmitter::emitGet() {
       return false;
     }
   }
+
   if (isSuper()) {
     if (!bce_->emitSuperBase()) {
       //            [stack] THIS? THIS KEY SUPERBASE
@@ -86,12 +89,10 @@ bool ElemOpEmitter::emitGet() {
   JSOp op;
   if (isSuper()) {
     op = JSOp::GetElemSuper;
-  } else if (isCall()) {
-    op = JSOp::CallElem;
   } else {
     op = JSOp::GetElem;
   }
-  if (!bce_->emitElemOpBase(op, ShouldInstrument::Yes)) {
+  if (!bce_->emitElemOpBase(op)) {
     //              [stack] # if Get
     //              [stack] ELEM
     //              [stack] # if Call
@@ -151,7 +152,7 @@ bool ElemOpEmitter::emitDelete() {
   MOZ_ASSERT(isDelete());
 
   if (isSuper()) {
-    if (!bce_->emit1(JSOp::ToId)) {
+    if (!bce_->emit1(JSOp::ToPropertyKey)) {
       //            [stack] THIS KEY
       return false;
     }
@@ -192,13 +193,12 @@ bool ElemOpEmitter::emitAssignment() {
 
   MOZ_ASSERT_IF(isPropInit(), !isSuper());
 
-  JSOp setOp = isPropInit()
-                   ? JSOp::InitElem
-                   : isSuper() ? bce_->sc->strict() ? JSOp::StrictSetElemSuper
-                                                    : JSOp::SetElemSuper
-                               : bce_->sc->strict() ? JSOp::StrictSetElem
-                                                    : JSOp::SetElem;
-  if (!bce_->emitElemOpBase(setOp, ShouldInstrument::Yes)) {
+  JSOp setOp = isPropInit() ? JSOp::InitElem
+               : isSuper()  ? bce_->sc->strict() ? JSOp::StrictSetElemSuper
+                                                 : JSOp::SetElemSuper
+               : bce_->sc->strict() ? JSOp::StrictSetElem
+                                    : JSOp::SetElem;
+  if (!bce_->emitElemOpBase(setOp)) {
     //              [stack] ELEM
     return false;
   }
@@ -245,7 +245,7 @@ bool ElemOpEmitter::emitIncDec() {
       isSuper()
           ? (bce_->sc->strict() ? JSOp::StrictSetElemSuper : JSOp::SetElemSuper)
           : (bce_->sc->strict() ? JSOp::StrictSetElem : JSOp::SetElem);
-  if (!bce_->emitElemOpBase(setOp, ShouldInstrument::Yes)) {
+  if (!bce_->emitElemOpBase(setOp)) {
     //              [stack] N? N+1
     return false;
   }

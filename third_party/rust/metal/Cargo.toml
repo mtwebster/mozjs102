@@ -13,8 +13,9 @@
 [package]
 edition = "2018"
 name = "metal"
-version = "0.18.0"
+version = "0.22.0"
 authors = ["GFX Developers"]
+exclude = ["guide/**/*", "examples/texture/**/*", "tests/**/*", "Cargo.lock", "target/**/*"]
 description = "Rust bindings for Metal"
 homepage = "https://github.com/gfx-rs/metal-rs"
 documentation = "https://docs.rs/crate/metal"
@@ -29,6 +30,9 @@ default-target = "x86_64-apple-darwin"
 name = "window"
 
 [[example]]
+name = "headless-render"
+
+[[example]]
 name = "library"
 
 [[example]]
@@ -41,8 +45,16 @@ name = "caps"
 name = "argument-buffer"
 
 [[example]]
+name = "circle"
+path = "examples/circle/main.rs"
+
+[[example]]
 name = "compute"
 path = "examples/compute/main.rs"
+
+[[example]]
+name = "mps"
+required-features = ["mps"]
 
 [[example]]
 name = "embedded-lib"
@@ -54,20 +66,28 @@ path = "examples/compute/compute-argument-buffer.rs"
 
 [[example]]
 name = "bind"
+
+[[example]]
+name = "events"
+required-features = ["dispatch"]
+
+[[example]]
+name = "fence"
 [dependencies.bitflags]
 version = "1"
 
 [dependencies.block]
-version = "0.1.5"
+version = "0.1.6"
 
-[dependencies.cocoa]
-version = "0.20"
+[dependencies.cocoa-foundation]
+version = "0.1"
 
-[dependencies.core-graphics]
-version = "0.19"
+[dependencies.dispatch]
+version = "0.2"
+optional = true
 
 [dependencies.foreign-types]
-version = "0.3"
+version = "0.3.2"
 
 [dependencies.log]
 version = "0.4"
@@ -75,6 +95,15 @@ version = "0.4"
 [dependencies.objc]
 version = "0.2.4"
 features = ["objc_exception"]
+[dev-dependencies.cocoa]
+version = "0.24.0"
+
+[dev-dependencies.cty]
+version = "0.2.1"
+
+[dev-dependencies.png]
+version = "0.16"
+
 [dev-dependencies.sema]
 version = "0.1.4"
 
@@ -83,4 +112,5 @@ version = "0.22"
 
 [features]
 default = []
+mps = []
 private = []

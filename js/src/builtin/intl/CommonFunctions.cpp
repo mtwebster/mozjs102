@@ -9,16 +9,18 @@
 #include "builtin/intl/CommonFunctions.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/Casting.h"
+#include "mozilla/intl/ICU4CGlue.h"
 #include "mozilla/TextUtils.h"
 
 #include <algorithm>
 
-#include "jsfriendapi.h"  // for GetErrorMessage, JSMSG_INTERNAL_INTL_ERROR
-
 #include "gc/GCEnum.h"
 #include "gc/Zone.h"
 #include "gc/ZoneAllocator.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_INTERNAL_INTL_ERROR
 #include "js/Value.h"
+#include "unicode/uformattedvalue.h"
 #include "vm/JSContext.h"
 #include "vm/JSObject.h"
 #include "vm/SelfHosting.h"
@@ -91,6 +93,19 @@ void js::intl::ReportInternalError(JSContext* cx) {
                             JSMSG_INTERNAL_INTL_ERROR);
 }
 
+void js::intl::ReportInternalError(JSContext* cx,
+                                   mozilla::intl::ICUError error) {
+  switch (error) {
+    case mozilla::intl::ICUError::OutOfMemory:
+      MOZ_ASSERT(cx->isThrowingOutOfMemory());
+      return;
+    case mozilla::intl::ICUError::InternalError:
+      ReportInternalError(cx);
+      return;
+  }
+  MOZ_CRASH("Unexpected ICU error");
+}
+
 const js::intl::OldStyleLanguageTagMapping
     js::intl::oldStyleLanguageTagMappings[] = {
         {"pa-PK", "pa-Arab-PK"}, {"zh-CN", "zh-Hans-CN"},
@@ -124,16 +139,23 @@ void js::intl::AddICUCellMemory(JSObject* obj, size_t nbytes) {
   // Account the (estimated) number of bytes allocated by an ICU object against
   // the JSObject's zone.
   AddCellMemory(obj, nbytes, MemoryUse::ICUObject);
-
-  // Manually trigger malloc zone GCs in case there's memory pressure and
-  // collecting any unreachable Intl objects could free ICU allocated memory.
-  //
-  // (ICU allocations use the system memory allocator, so we can't rely on
-  // ZoneAllocPolicy to call |maybeMallocTriggerZoneGC|.)
-  obj->zone()->maybeMallocTriggerZoneGC();
 }
 
 void js::intl::RemoveICUCellMemory(JSFreeOp* fop, JSObject* obj,
                                    size_t nbytes) {
   fop->removeCellMemory(obj, nbytes, MemoryUse::ICUObject);
+}
+
+JSString* js::intl::FormattedValueToString(
+    JSContext* cx, const UFormattedValue* formattedValue) {
+  UErrorCode status = U_ZERO_ERROR;
+  int32_t strLength;
+  const char16_t* str = ufmtval_getString(formattedValue, &strLength, &status);
+  if (U_FAILURE(status)) {
+    ReportInternalError(cx);
+    return nullptr;
+  }
+
+  return NewStringCopyN<CanGC>(cx, str,
+                               mozilla::AssertedCast<uint32_t>(strLength));
 }

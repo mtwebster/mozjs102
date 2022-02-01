@@ -4,6 +4,8 @@
 
 /* Portions Copyright Norbert Lindenberg 2011-2012. */
 
+#include "NumberingSystemsGenerated.h"
+
 /**
  * NumberFormat internal properties.
  *
@@ -101,7 +103,8 @@ function resolveNumberFormatInternals(lazyNumberFormatData) {
  */
 function getNumberFormatInternals(obj) {
     assert(IsObject(obj), "getNumberFormatInternals called with non-object");
-    assert(GuardToNumberFormat(obj) !== null, "getNumberFormatInternals called with non-NumberFormat");
+    assert(intl_GuardToNumberFormat(obj) !== null,
+           "getNumberFormatInternals called with non-NumberFormat");
 
     var internals = getIntlObjectInternals(obj);
     assert(internals.type === "NumberFormat", "bad type escaped getIntlObjectInternals");
@@ -123,9 +126,9 @@ function getNumberFormatInternals(obj) {
 function UnwrapNumberFormat(nf) {
     // Steps 2 and 4 (error handling moved to caller).
     if (IsObject(nf) &&
-        GuardToNumberFormat(nf) === null &&
-        !IsWrappedNumberFormat(nf) &&
-        nf instanceof GetBuiltinConstructor("NumberFormat"))
+        intl_GuardToNumberFormat(nf) === null &&
+        !intl_IsWrappedNumberFormat(nf) &&
+        callFunction(std_Object_isPrototypeOf, GetBuiltinPrototype("NumberFormat"), nf))
     {
         nf = nf[intlFallbackSymbol()];
     }
@@ -179,18 +182,33 @@ function SetNumberFormatDigitOptions(lazyData, options, mnfdDefault, mxfdDefault
         // Step 12.a (Omitted).
 
         // Step 12.b.
-        mnfd = DefaultNumberOption(mnfd, 0, 20, mnfdDefault);
+        mnfd = DefaultNumberOption(mnfd, 0, 20, undefined);
 
         // Step 12.c.
-        const mxfdActualDefault = std_Math_max(mnfd, mxfdDefault);
+        mxfd = DefaultNumberOption(mxfd, 0, 20, undefined);
 
-        // Step 12.d.
-        mxfd = DefaultNumberOption(mxfd, mnfd, 20, mxfdActualDefault);
-
-        // Step 12.e.
-        lazyData.minimumFractionDigits = mnfd;
+        // Steps 12.d-e.
+        // Inlined DefaultNumberOption, only the fallback case applies here.
+        if (mnfd === undefined) {
+            assert(mxfd !== undefined, "mxfd isn't undefined when mnfd is undefined");
+            mnfd = std_Math_min(mnfdDefault, mxfd);
+        }
 
         // Step 12.f.
+        // Inlined DefaultNumberOption, only the fallback case applies here.
+        else if (mxfd === undefined) {
+            mxfd = std_Math_max(mxfdDefault, mnfd);
+        }
+
+        // Step 12.g.
+        else if (mnfd > mxfd) {
+            ThrowRangeError(JSMSG_INVALID_DIGITS_VALUE, mxfd);
+        }
+
+        // Step 12.h.
+        lazyData.minimumFractionDigits = mnfd;
+
+        // Step 12.i.
         lazyData.maximumFractionDigits = mxfd;
     }
 
@@ -331,7 +349,8 @@ For example "speed/kilometer-per-hour" is implied by "length/kilometer" and
  */
 function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     assert(IsObject(numberFormat), "InitializeNumberFormat called with non-object");
-    assert(GuardToNumberFormat(numberFormat) !== null, "InitializeNumberFormat called with non-NumberFormat");
+    assert(intl_GuardToNumberFormat(numberFormat) !== null,
+           "InitializeNumberFormat called with non-NumberFormat");
 
     // Lazy NumberFormat data has the following structure:
     //
@@ -396,7 +415,7 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
 
     // Compute options that impact interpretation of locale.
     // Step 4.
-    var opt = new Record();
+    var opt = new_Record();
     lazyNumberFormatData.opt = opt;
 
     // Steps 5-6.
@@ -511,13 +530,11 @@ function InitializeNumberFormat(numberFormat, thisValue, locales, options) {
     initializeIntlObject(numberFormat, "NumberFormat", lazyNumberFormatData);
 
     // 11.2.1, steps 4-5.
-    // TODO: spec issue - The current spec doesn't have the IsObject check,
-    // which means |Intl.NumberFormat.call(null)| is supposed to throw here.
-    if (numberFormat !== thisValue && IsObject(thisValue) &&
-        thisValue instanceof GetBuiltinConstructor("NumberFormat"))
+    if (numberFormat !== thisValue &&
+        callFunction(std_Object_isPrototypeOf, GetBuiltinPrototype("NumberFormat"), thisValue))
     {
-        _DefineDataProperty(thisValue, intlFallbackSymbol(), numberFormat,
-                            ATTR_NONENUMERABLE | ATTR_NONCONFIGURABLE | ATTR_NONWRITABLE);
+        DefineDataProperty(thisValue, intlFallbackSymbol(), numberFormat,
+                           ATTR_NONENUMERABLE | ATTR_NONCONFIGURABLE | ATTR_NONWRITABLE);
 
         return thisValue;
     }
@@ -567,23 +584,13 @@ function getNumberingSystems(locale) {
     // can be used with any locale. Supporting a decimal numbering system
     // (where only the digits are replaced) is easy, so we offer them all here.
     // Algorithmic numbering systems are typically tied to one locale, so for
-    // lack of information we don't offer them. To increase chances that
-    // other software will process output correctly, we further restrict to
-    // those decimal numbering systems explicitly listed in table 3 of
-    // the ECMAScript Internationalization API Specification, 11.1.6, which
-    // in turn are those with full specifications in version 21 of Unicode
-    // Technical Standard #35 using digits that were defined in Unicode 5.0,
-    // the Unicode version supported in Windows Vista.
+    // lack of information we don't offer them.
     // The one thing we can find out from ICU is the default numbering system
     // for a locale.
     var defaultNumberingSystem = intl_numberingSystem(locale);
     return [
         defaultNumberingSystem,
-        "arab", "arabext", "bali", "beng", "deva",
-        "fullwide", "gujr", "guru", "hanidec", "khmr",
-        "knda", "laoo", "latn", "limb", "mlym",
-        "mong", "mymr", "orya", "tamldec", "telu",
-        "thai", "tibt",
+        NUMBERING_SYSTEMS_WITH_SIMPLE_DIGIT_MAPPINGS
     ];
 }
 
@@ -609,13 +616,14 @@ function createNumberFormatFormat(nf) {
 
         // Step 2.
         assert(IsObject(nf), "InitializeNumberFormat called with non-object");
-        assert(GuardToNumberFormat(nf) !== null, "InitializeNumberFormat called with non-NumberFormat");
+        assert(intl_GuardToNumberFormat(nf) !== null,
+               "InitializeNumberFormat called with non-NumberFormat");
 
         // Steps 3-4.
         var x = ToNumeric(value);
 
         // Step 5.
-        return intl_FormatNumber(nf, x, /* formatToParts = */ false, /* unitStyle = */ false);
+        return intl_FormatNumber(nf, x, /* formatToParts = */ false);
     };
 }
 
@@ -627,13 +635,13 @@ function createNumberFormatFormat(nf) {
  * Spec: ECMAScript Internationalization API Specification, 11.4.3.
  */
 // Uncloned functions with `$` prefix are allocated as extended function
-// to store the original name in `_SetCanonicalName`.
+// to store the original name in `SetCanonicalName`.
 function $Intl_NumberFormat_format_get() {
     // Steps 1-3.
     var thisArg = UnwrapNumberFormat(this);
     var nf = thisArg;
-    if (!IsObject(nf) || (nf = GuardToNumberFormat(nf)) === null) {
-        return callFunction(CallNumberFormatMethodIfWrapped, thisArg,
+    if (!IsObject(nf) || (nf = intl_GuardToNumberFormat(nf)) === null) {
+        return callFunction(intl_CallNumberFormatMethodIfWrapped, thisArg,
                             "$Intl_NumberFormat_format_get");
     }
 
@@ -648,7 +656,7 @@ function $Intl_NumberFormat_format_get() {
     // Step 5.
     return internals.boundFormat;
 }
-_SetCanonicalName($Intl_NumberFormat_format_get, "get format");
+SetCanonicalName($Intl_NumberFormat_format_get, "get format");
 
 /**
  * 11.4.4 Intl.NumberFormat.prototype.formatToParts ( value )
@@ -658,19 +666,16 @@ function Intl_NumberFormat_formatToParts(value) {
     var nf = this;
 
     // Steps 2-3.
-    if (!IsObject(nf) || (nf = GuardToNumberFormat(nf)) === null) {
-        return callFunction(CallNumberFormatMethodIfWrapped, this, value,
+    if (!IsObject(nf) || (nf = intl_GuardToNumberFormat(nf)) === null) {
+        return callFunction(intl_CallNumberFormatMethodIfWrapped, this, value,
                             "Intl_NumberFormat_formatToParts");
     }
-
-    var internals = getNumberFormatInternals(nf);
-    var unitStyle = internals.style === "unit";
 
     // Step 4.
     var x = ToNumeric(value);
 
     // Step 5.
-    return intl_FormatNumber(nf, x, /* formatToParts = */ true, unitStyle);
+    return intl_FormatNumber(nf, x, /* formatToParts = */ true);
 }
 
 /**
@@ -682,8 +687,8 @@ function Intl_NumberFormat_resolvedOptions() {
     // Steps 1-3.
     var thisArg = UnwrapNumberFormat(this);
     var nf = thisArg;
-    if (!IsObject(nf) || (nf = GuardToNumberFormat(nf)) === null) {
-        return callFunction(CallNumberFormatMethodIfWrapped, thisArg,
+    if (!IsObject(nf) || (nf = intl_GuardToNumberFormat(nf)) === null) {
+        return callFunction(intl_CallNumberFormatMethodIfWrapped, thisArg,
                             "Intl_NumberFormat_resolvedOptions");
     }
 
@@ -706,9 +711,9 @@ function Intl_NumberFormat_resolvedOptions() {
            "currencySign is present iff style is 'currency'");
 
     if (hasOwn("currency", internals)) {
-        _DefineDataProperty(result, "currency", internals.currency);
-        _DefineDataProperty(result, "currencyDisplay", internals.currencyDisplay);
-        _DefineDataProperty(result, "currencySign", internals.currencySign);
+        DefineDataProperty(result, "currency", internals.currency);
+        DefineDataProperty(result, "currencyDisplay", internals.currencyDisplay);
+        DefineDataProperty(result, "currencySign", internals.currencySign);
     }
 
     // unit and unitDisplay are only present for unit formatters.
@@ -718,11 +723,11 @@ function Intl_NumberFormat_resolvedOptions() {
            "unitDisplay is present iff style is 'unit'");
 
     if (hasOwn("unit", internals)) {
-        _DefineDataProperty(result, "unit", internals.unit);
-        _DefineDataProperty(result, "unitDisplay", internals.unitDisplay);
+        DefineDataProperty(result, "unit", internals.unit);
+        DefineDataProperty(result, "unitDisplay", internals.unitDisplay);
     }
 
-    _DefineDataProperty(result, "minimumIntegerDigits", internals.minimumIntegerDigits);
+    DefineDataProperty(result, "minimumIntegerDigits", internals.minimumIntegerDigits);
 
     // Min/Max fraction digits are either both present or not present at all.
     assert(hasOwn("minimumFractionDigits", internals) ===
@@ -730,8 +735,8 @@ function Intl_NumberFormat_resolvedOptions() {
            "minimumFractionDigits is present iff maximumFractionDigits is present");
 
     if (hasOwn("minimumFractionDigits", internals)) {
-        _DefineDataProperty(result, "minimumFractionDigits", internals.minimumFractionDigits);
-        _DefineDataProperty(result, "maximumFractionDigits", internals.maximumFractionDigits);
+        DefineDataProperty(result, "minimumFractionDigits", internals.minimumFractionDigits);
+        DefineDataProperty(result, "maximumFractionDigits", internals.maximumFractionDigits);
     }
 
     // Min/Max significant digits are either both present or not present at all.
@@ -740,21 +745,21 @@ function Intl_NumberFormat_resolvedOptions() {
            "minimumSignificantDigits is present iff maximumSignificantDigits is present");
 
     if (hasOwn("minimumSignificantDigits", internals)) {
-        _DefineDataProperty(result, "minimumSignificantDigits",
-                            internals.minimumSignificantDigits);
-        _DefineDataProperty(result, "maximumSignificantDigits",
-                            internals.maximumSignificantDigits);
+        DefineDataProperty(result, "minimumSignificantDigits",
+                           internals.minimumSignificantDigits);
+        DefineDataProperty(result, "maximumSignificantDigits",
+                           internals.maximumSignificantDigits);
     }
 
-    _DefineDataProperty(result, "useGrouping", internals.useGrouping);
+    DefineDataProperty(result, "useGrouping", internals.useGrouping);
 
     var notation = internals.notation;
-    _DefineDataProperty(result, "notation", notation);
+    DefineDataProperty(result, "notation", notation);
 
     if (notation === "compact")
-        _DefineDataProperty(result, "compactDisplay", internals.compactDisplay);
+        DefineDataProperty(result, "compactDisplay", internals.compactDisplay);
 
-    _DefineDataProperty(result, "signDisplay", internals.signDisplay);
+    DefineDataProperty(result, "signDisplay", internals.signDisplay);
 
     // Step 6.
     return result;

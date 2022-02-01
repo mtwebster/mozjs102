@@ -8,47 +8,63 @@
 #![warn(clippy::use_self)]
 
 use neqo_common::qinfo;
-use neqo_crypto;
+use neqo_crypto::Error as CryptoError;
 
+mod ackrate;
+mod addr_valid;
 mod cc;
 mod cid;
 mod connection;
 mod crypto;
 mod dump;
 mod events;
-mod flow_mgr;
+mod fc;
 mod frame;
+mod pace;
 mod packet;
 mod path;
+mod qlog;
 mod recovery;
 mod recv_stream;
+mod rtt;
 mod send_stream;
+mod sender;
 pub mod server;
 mod stats;
-mod stream_id;
+pub mod stream_id;
+pub mod streams;
 pub mod tparams;
 mod tracking;
 
-pub use self::cid::ConnectionIdManager;
-pub use self::connection::{Connection, FixedConnectionIdManager, Output, Role, State};
+pub use self::cc::CongestionControlAlgorithm;
+pub use self::cid::{
+    ConnectionId, ConnectionIdDecoder, ConnectionIdGenerator, ConnectionIdRef,
+    EmptyConnectionIdGenerator, RandomConnectionIdGenerator,
+};
+pub use self::connection::{
+    params::ConnectionParameters, params::ACK_RATIO_SCALE, Connection, Output, State, ZeroRttState,
+};
 pub use self::events::{ConnectionEvent, ConnectionEvents};
 pub use self::frame::CloseError;
-pub use self::frame::StreamType;
+pub use self::packet::QuicVersion;
+pub use self::stats::Stats;
+pub use self::stream_id::{StreamId, StreamType};
 
-/// The supported version of the QUIC protocol.
-pub type Version = u32;
-pub const QUIC_VERSION: Version = 0xff00_0000 + 27;
+pub use self::recv_stream::RECV_BUFFER_SIZE;
+pub use self::send_stream::SEND_BUFFER_SIZE;
 
-const LOCAL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60); // 1 minute
-
-type TransportError = u64;
+pub type TransportError = u64;
+const ERROR_APPLICATION_CLOSE: TransportError = 12;
+const ERROR_AEAD_LIMIT_REACHED: TransportError = 15;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Ord, Eq)]
 #[allow(clippy::pub_enum_variant_names)]
 pub enum Error {
     NoError,
-    InternalError,
-    ServerBusy,
+    // Each time tihe error is return a different parameter is supply.
+    // This will be use to distinguish each occurance of this error.
+    InternalError(u16),
+    ConnectionRefused,
     FlowControlError,
     StreamLimitError,
     StreamStateError,
@@ -56,12 +72,17 @@ pub enum Error {
     FrameEncodingError,
     TransportParameterError,
     ProtocolViolation,
-    InvalidMigration,
-    CryptoError(neqo_crypto::Error),
+    InvalidToken,
+    ApplicationError,
+    CryptoError(CryptoError),
+    QlogError,
     CryptoAlert(u8),
+    EchRetry(Vec<u8>),
 
-    // All internal errors from here.
+    // All internal errors from here.  Please keep these sorted.
     AckedUnsentPacket,
+    ConnectionIdLimitExceeded,
+    ConnectionIdsExhausted,
     ConnectionState,
     DecodingFrame,
     DecryptError,
@@ -69,32 +90,43 @@ pub enum Error {
     IdleTimeout,
     IntegerOverflow,
     InvalidInput,
+    InvalidMigration,
     InvalidPacket,
     InvalidResumptionToken,
     InvalidRetry,
     InvalidStreamId,
-    // Packet protection keys aren't available yet, or they have been discarded.
-    KeysNotFound,
-    // An attempt to update keys can be blocked if
-    // a packet sent with the current keys hasn't been acknowledged.
+    KeysDiscarded,
+    /// Packet protection keys are exhausted.
+    /// Also used when too many key updates have happened.
+    KeysExhausted,
+    /// Packet protection keys aren't available yet for the identified space.
+    KeysPending(crypto::CryptoSpace),
+    /// An attempt to update keys can be blocked if
+    /// a packet sent with the current keys hasn't been acknowledged.
     KeyUpdateBlocked,
+    NoAvailablePath,
     NoMoreData,
     NotConnected,
     PacketNumberOverlap,
+    PeerApplicationError(AppError),
     PeerError(TransportError),
+    StatelessReset,
     TooMuchData,
     UnexpectedMessage,
+    UnknownConnectionId,
     UnknownFrameType,
     VersionNegotiation,
     WrongRole,
-    KeysDiscarded,
 }
 
 impl Error {
     pub fn code(&self) -> TransportError {
         match self {
-            Self::NoError | Self::IdleTimeout => 0,
-            Self::ServerBusy => 2,
+            Self::NoError
+            | Self::IdleTimeout
+            | Self::PeerError(_)
+            | Self::PeerApplicationError(_) => 0,
+            Self::ConnectionRefused => 2,
             Self::FlowControlError => 3,
             Self::StreamLimitError => 4,
             Self::StreamStateError => 5,
@@ -102,19 +134,33 @@ impl Error {
             Self::FrameEncodingError => 7,
             Self::TransportParameterError => 8,
             Self::ProtocolViolation => 10,
-            Self::InvalidMigration => 12,
+            Self::InvalidToken => 11,
+            Self::KeysExhausted => ERROR_AEAD_LIMIT_REACHED,
+            Self::ApplicationError => ERROR_APPLICATION_CLOSE,
+            Self::NoAvailablePath => 16,
             Self::CryptoAlert(a) => 0x100 + u64::from(*a),
-            Self::PeerError(a) => *a,
+            // As we have a special error code for ECH fallbacks, we lose the alert.
+            // Send the server "ech_required" directly.
+            Self::EchRetry(_) => 0x100 + 121,
             // All the rest are internal errors.
             _ => 1,
         }
     }
 }
 
-impl From<neqo_crypto::Error> for Error {
-    fn from(err: neqo_crypto::Error) -> Self {
+impl From<CryptoError> for Error {
+    fn from(err: CryptoError) -> Self {
         qinfo!("Crypto operation failed {:?}", err);
-        Self::CryptoError(err)
+        match err {
+            CryptoError::EchRetry(config) => Self::EchRetry(config),
+            _ => Self::CryptoError(err),
+        }
+    }
+}
+
+impl From<::qlog::Error> for Error {
+    fn from(_err: ::qlog::Error) -> Self {
+        Self::QlogError
     }
 }
 

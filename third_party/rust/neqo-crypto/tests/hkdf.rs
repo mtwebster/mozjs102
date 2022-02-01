@@ -1,7 +1,10 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![warn(clippy::pedantic)]
 
-use neqo_crypto::constants::*;
+use neqo_crypto::constants::{
+    Cipher, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
+    TLS_VERSION_1_3,
+};
 use neqo_crypto::{hkdf, SymKey};
 use test_fixture::fixture_init;
 
@@ -35,8 +38,8 @@ fn cipher_hash_len(cipher: Cipher) -> usize {
 fn import_keys(cipher: Cipher) -> (SymKey, SymKey) {
     let l = cipher_hash_len(cipher);
     (
-        hkdf::import_key(TLS_VERSION_1_3, cipher, &SALT[0..l]).expect("import salt"),
-        hkdf::import_key(TLS_VERSION_1_3, cipher, &IKM[0..l]).expect("import IKM"),
+        hkdf::import_key(TLS_VERSION_1_3, &SALT[0..l]).expect("import salt"),
+        hkdf::import_key(TLS_VERSION_1_3, &IKM[0..l]).expect("import IKM"),
     )
 }
 

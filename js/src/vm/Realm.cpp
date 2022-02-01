@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "js/shadow/Realm.h"  // JS::shadow::Realm
 #include "vm/Realm-inl.h"
 
 #include "mozilla/MemoryReporting.h"
@@ -18,7 +19,9 @@
 #include "gc/PublicIterators.h"
 #include "jit/JitOptions.h"
 #include "jit/JitRealm.h"
+#include "jit/JitRuntime.h"
 #include "js/Date.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Proxy.h"
 #include "js/RootingAPI.h"
 #include "js/Wrapper.h"
@@ -183,7 +186,7 @@ void js::DtoaCache::checkCacheAfterMovingGC() {
 
 #endif  // JSGC_HASH_TABLE_CHECKS
 
-LexicalEnvironmentObject*
+NonSyntacticLexicalEnvironmentObject*
 ObjectRealm::getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
                                                        HandleObject enclosing,
                                                        HandleObject key,
@@ -205,7 +208,7 @@ ObjectRealm::getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
     MOZ_ASSERT(key->is<NonSyntacticVariablesObject>() ||
                !key->is<EnvironmentObject>());
     lexicalEnv =
-        LexicalEnvironmentObject::createNonSyntactic(cx, enclosing, thisv);
+        NonSyntacticLexicalEnvironmentObject::create(cx, enclosing, thisv);
     if (!lexicalEnv) {
       return nullptr;
     }
@@ -214,10 +217,10 @@ ObjectRealm::getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
     }
   }
 
-  return &lexicalEnv->as<LexicalEnvironmentObject>();
+  return &lexicalEnv->as<NonSyntacticLexicalEnvironmentObject>();
 }
 
-LexicalEnvironmentObject*
+NonSyntacticLexicalEnvironmentObject*
 ObjectRealm::getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
                                                        HandleObject enclosing) {
   // If a wrapped WithEnvironmentObject was passed in, unwrap it, as we may
@@ -241,8 +244,8 @@ ObjectRealm::getOrCreateNonSyntacticLexicalEnvironment(JSContext* cx,
                                                    /*thisv = */ key);
 }
 
-LexicalEnvironmentObject* ObjectRealm::getNonSyntacticLexicalEnvironment(
-    JSObject* key) const {
+NonSyntacticLexicalEnvironmentObject*
+ObjectRealm::getNonSyntacticLexicalEnvironment(JSObject* key) const {
   MOZ_ASSERT(&ObjectRealm::get(key) == this);
 
   if (!nonSyntacticLexicalEnvironments_) {
@@ -258,7 +261,7 @@ LexicalEnvironmentObject* ObjectRealm::getNonSyntacticLexicalEnvironment(
   if (!lexicalEnv) {
     return nullptr;
   }
-  return &lexicalEnv->as<LexicalEnvironmentObject>();
+  return &lexicalEnv->as<NonSyntacticLexicalEnvironmentObject>();
 }
 
 bool Realm::addToVarNames(JSContext* cx, JS::Handle<JSAtom*> name) {
@@ -311,9 +314,8 @@ void Realm::traceRoots(JSTracer* trc,
     //
     // If a realm is on-stack, we mark its global so that
     // JSContext::global() remains valid.
-    if (shouldTraceGlobal() && global_.unbarrieredGet()) {
-      TraceRoot(trc, global_.unsafeUnbarrieredForTracing(),
-                "on-stack realm global");
+    if (shouldTraceGlobal() && global_) {
+      TraceRoot(trc, global_.unbarrieredAddress(), "on-stack realm global");
     }
   }
 
@@ -448,20 +450,18 @@ void Realm::traceWeakTemplateObjects(JSTracer* trc) {
 void Realm::fixupAfterMovingGC(JSTracer* trc) {
   purge();
   fixupGlobal();
-  objectGroups_.fixupTablesAfterMovingGC();
 }
 
 void Realm::fixupGlobal() {
-  GlobalObject* global = *global_.unsafeGet();
+  GlobalObject* global = global_.unbarrieredGet();
   if (global) {
-    global_.set(MaybeForwarded(global));
+    global_.unbarrieredSet(MaybeForwarded(global));
   }
 }
 
 void Realm::purge() {
   dtoaCache.purge();
   newProxyCache.purge();
-  objectGroups_.purge();
   objects_.iteratorCache.clearAndCompact();
   arraySpeciesLookup.purge();
   promiseLookup.purge();
@@ -478,7 +478,6 @@ void Realm::clearTables() {
   MOZ_ASSERT(!debugEnvs_);
   MOZ_ASSERT(objects_.enumerators->next() == objects_.enumerators);
 
-  objectGroups_.clearTables();
   savedStacks_.clear();
   varNames_.clear();
 }
@@ -533,116 +532,6 @@ void Realm::setNewObjectMetadata(JSContext* cx, HandleObject obj) {
   }
 }
 
-static bool AddInnerLazyFunctionsFromScript(
-    JSScript* script, MutableHandleObjectVector lazyFunctions) {
-  for (JS::GCCellPtr gcThing : script->gcthings()) {
-    if (!gcThing.is<JSObject>()) {
-      continue;
-    }
-    JSObject* obj = &gcThing.as<JSObject>();
-
-    if (!obj->is<JSFunction>()) {
-      continue;
-    }
-    JSFunction* fun = &obj->as<JSFunction>();
-
-    if (!fun->hasBaseScript() || fun->hasBytecode()) {
-      continue;
-    }
-
-    if (!lazyFunctions.append(obj)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool AddLazyFunctionsForRealm(JSContext* cx,
-                                     MutableHandleObjectVector lazyFunctions,
-                                     gc::AllocKind kind) {
-  // Find all live root lazy functions in the realm: those which have a
-  // non-lazy enclosing script, and which do not have an uncompiled enclosing
-  // script. The last condition is so that we don't compile lazy scripts
-  // whose enclosing scripts failed to compile, indicating that the lazy
-  // script did not escape the script.
-
-  for (auto i = cx->zone()->cellIter<JSObject>(kind); !i.done(); i.next()) {
-    JSFunction* fun = &i->as<JSFunction>();
-
-    // When iterating over the GC-heap, we may encounter function objects that
-    // are incomplete (missing a BaseScript when we expect one). We must check
-    // for this case before we can call JSFunction::hasBytecode().
-    if (fun->isIncomplete()) {
-      continue;
-    }
-
-    if (fun->realm() != cx->realm()) {
-      continue;
-    }
-
-    if (!fun->hasBaseScript() || fun->hasBytecode()) {
-      continue;
-    }
-
-    BaseScript* lazy = fun->baseScript();
-    if (lazy->isReadyForDelazification()) {
-      if (!lazyFunctions.append(fun)) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-static bool CreateLazyScriptsForRealm(JSContext* cx) {
-  RootedObjectVector lazyFunctions(cx);
-
-  if (!AddLazyFunctionsForRealm(cx, &lazyFunctions, gc::AllocKind::FUNCTION)) {
-    return false;
-  }
-
-  // Methods, for instance {get method() {}}, are extended functions that can
-  // be relazified, so we need to handle those as well.
-  if (!AddLazyFunctionsForRealm(cx, &lazyFunctions,
-                                gc::AllocKind::FUNCTION_EXTENDED)) {
-    return false;
-  }
-
-  // Create scripts for each lazy function, updating the list of functions to
-  // process with any newly exposed inner functions in created scripts.
-  // A function cannot be delazified until its outer script exists.
-  RootedFunction fun(cx);
-  for (size_t i = 0; i < lazyFunctions.length(); i++) {
-    fun = &lazyFunctions[i]->as<JSFunction>();
-
-    // lazyFunctions may have been populated with multiple functions for
-    // a lazy script.
-    if (!fun->isInterpreted() || fun->hasBytecode()) {
-      continue;
-    }
-
-    JSScript* script = JSFunction::getOrCreateScript(cx, fun);
-    if (!script) {
-      return false;
-    }
-    if (!AddInnerLazyFunctionsFromScript(script, &lazyFunctions)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-bool Realm::ensureDelazifyScriptsForDebugger(JSContext* cx) {
-  AutoRealmUnchecked ar(cx, this);
-  if (needsDelazificationForDebugger() && !CreateLazyScriptsForRealm(cx)) {
-    return false;
-  }
-  debugModeBits_ &= ~DebuggerNeedsDelazification;
-  return true;
-}
-
 void Realm::updateDebuggerObservesFlag(unsigned flag) {
   MOZ_ASSERT(isDebuggee());
   MOZ_ASSERT(flag == DebuggerObservesAllExecution ||
@@ -680,7 +569,7 @@ void Realm::unsetIsDebuggee() {
     if (debuggerObservesCoverage()) {
       runtime_->decrementNumDebuggeeRealmsObservingCoverage();
     }
-    debugModeBits_ &= ~DebuggerObservesMask;
+    debugModeBits_ = 0;
     DebugEnvironments::onRealmUnsetIsDebuggee(this);
     runtimeFromMainThread()->decrementNumDebuggeeRealms();
   }
@@ -709,7 +598,7 @@ void Realm::updateDebuggerObservesCoverage() {
   runtime_->decrementNumDebuggeeRealmsObservingCoverage();
 
   // If code coverage is enabled by any other means, keep it.
-  if (collectCoverage()) {
+  if (collectCoverageForDebug()) {
     return;
   }
 
@@ -722,14 +611,6 @@ coverage::LCovRealm* Realm::lcovRealm() {
     lcovRealm_ = js::MakeUnique<coverage::LCovRealm>(this);
   }
   return lcovRealm_.get();
-}
-
-bool Realm::collectCoverage() const {
-  return collectCoverageForPGO() || collectCoverageForDebug();
-}
-
-bool Realm::collectCoverageForPGO() const {
-  return !jit::JitOptions.disablePgo;
 }
 
 bool Realm::collectCoverageForDebug() const {
@@ -757,16 +638,14 @@ void ObjectRealm::addSizeOfExcludingThis(
   }
 }
 
-void Realm::addSizeOfIncludingThis(
-    mozilla::MallocSizeOf mallocSizeOf, size_t* tiAllocationSiteTables,
-    size_t* tiArrayTypeTables, size_t* tiObjectTypeTables, size_t* realmObject,
-    size_t* realmTables, size_t* innerViewsArg, size_t* objectMetadataTablesArg,
-    size_t* savedStacksSet, size_t* varNamesSet,
-    size_t* nonSyntacticLexicalEnvironmentsArg, size_t* jitRealm) {
+void Realm::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
+                                   size_t* realmObject, size_t* realmTables,
+                                   size_t* innerViewsArg,
+                                   size_t* objectMetadataTablesArg,
+                                   size_t* savedStacksSet, size_t* varNamesSet,
+                                   size_t* nonSyntacticLexicalEnvironmentsArg,
+                                   size_t* jitRealm) {
   *realmObject += mallocSizeOf(this);
-  objectGroups_.addSizeOfExcludingThis(mallocSizeOf, tiAllocationSiteTables,
-                                       tiArrayTypeTables, tiObjectTypeTables,
-                                       realmTables);
   wasm.addSizeOfExcludingThis(mallocSizeOf, realmTables);
 
   objects_.addSizeOfExcludingThis(mallocSizeOf, innerViewsArg,
@@ -786,11 +665,9 @@ mozilla::HashCodeScrambler Realm::randomHashCodeScrambler() {
                                     randomKeyGenerator_.next());
 }
 
-AutoSetNewObjectMetadata::AutoSetNewObjectMetadata(
-    JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
+AutoSetNewObjectMetadata::AutoSetNewObjectMetadata(JSContext* cx)
     : cx_(cx->isHelperThreadContext() ? nullptr : cx),
       prevState_(cx, cx->realm()->objectMetadataState_) {
-  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
   if (cx_) {
     cx_->realm()->objectMetadataState_ =
         NewObjectMetadataState(DelayMetadata());
@@ -872,7 +749,7 @@ JS_PUBLIC_API void JS::SetRealmNameCallback(JSContext* cx,
   cx->runtime()->realmNameCallback = callback;
 }
 
-JS_PUBLIC_API JSObject* JS::GetRealmGlobalOrNull(Handle<JS::Realm*> realm) {
+JS_PUBLIC_API JSObject* JS::GetRealmGlobalOrNull(JS::Realm* realm) {
   return realm->maybeGlobal();
 }
 
@@ -907,6 +784,10 @@ JS_PUBLIC_API JSObject* JS::GetRealmErrorPrototype(JSContext* cx) {
 JS_PUBLIC_API JSObject* JS::GetRealmIteratorPrototype(JSContext* cx) {
   CHECK_THREAD(cx);
   return GlobalObject::getOrCreateIteratorPrototype(cx, cx->global());
+}
+
+JS_PUBLIC_API JSObject* JS::GetRealmKeyObject(JSContext* cx) {
+  return GlobalObject::getOrCreateRealmKeyObject(cx, cx->global());
 }
 
 JS_PUBLIC_API Realm* JS::GetFunctionRealm(JSContext* cx, HandleObject objArg) {

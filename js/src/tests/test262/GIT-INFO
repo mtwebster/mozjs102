@@ -1,5 +1,5 @@
-commit 4a8e49b3ca7f9f74a4cafe6621ff9ba548ccc353
-Author: Alexey Shvayka <shvaikalesh@gmail.com>
-Date:   Sat Apr 11 01:41:59 2020 +0300
+commit 6d353a4436747e2de8820efac27ae5ef7e601b60
+Author: jugglinmike <mike@mikepennisi.com>
+Date:   Fri May 14 13:33:06 2021 -0400
 
-    Add test for \0 in Unicode patterns (#2569)
+    Remove invalid test (#2990)

@@ -7,20 +7,29 @@
 #ifndef jit_CompileInfo_h
 #define jit_CompileInfo_h
 
-#include "mozilla/Maybe.h"
+#include "mozilla/Assertions.h"  // MOZ_ASSERT
+#include "mozilla/Maybe.h"       // mozilla::Maybe, mozilla::Some
 
-#include <algorithm>
+#include <algorithm>  // std::max
+#include <stdint.h>   // uint32_t
 
-#include "jit/JitAllocPolicy.h"
-#include "jit/JitFrames.h"
-#include "jit/Registers.h"
-#include "vm/EnvironmentObject.h"
-#include "vm/JSFunction.h"
+#include "jit/CompileWrappers.h"  // CompileRuntime
+#include "jit/JitFrames.h"        // MinJITStackSize
+#include "js/TypeDecls.h"         // jsbytecode
+#include "vm/BindingKind.h"       // BindingLocation
+#include "vm/BytecodeUtil.h"      // JSOp
+#include "vm/JSAtomState.h"       // JSAtomState
+#include "vm/JSFunction.h"        // JSFunction
+#include "vm/JSScript.h"          // JSScript
+#include "vm/Scope.h"             // BindingIter
 
 namespace js {
+
+class ModuleObject;
+
 namespace jit {
 
-class TrackedOptimizations;
+class InlineScriptTree;
 
 inline unsigned StartArgSlot(JSScript* script) {
   // Reserved slots:
@@ -32,7 +41,7 @@ inline unsigned StartArgSlot(JSScript* script) {
 
   // Note: when updating this, please also update the assert in
   // SnapshotWriter::startFrame
-  return 2 + (script->argumentsHasVarBinding() ? 1 : 0);
+  return 2 + (script->needsArgsObj() ? 1 : 0);
 }
 
 inline unsigned CountArgSlots(JSScript* script, JSFunction* fun) {
@@ -46,130 +55,25 @@ inline unsigned CountArgSlots(JSScript* script, JSFunction* fun) {
   return StartArgSlot(script) + (fun ? fun->nargs() + 1 : 0);
 }
 
-// The compiler at various points needs to be able to store references to the
-// current inline path (the sequence of scripts and call-pcs that lead to the
-// current function being inlined).
-//
-// To support this, the top-level IonBuilder keeps a tree that records the
-// inlinings done during compilation.
-class InlineScriptTree {
-  // InlineScriptTree for the caller
-  InlineScriptTree* caller_;
-
-  // PC in the caller corresponding to this script.
-  jsbytecode* callerPc_;
-
-  // Script for this entry.
-  JSScript* script_;
-
-  // Child entries (linked together by nextCallee pointer)
-  InlineScriptTree* children_;
-  InlineScriptTree* nextCallee_;
-
- public:
-  InlineScriptTree(InlineScriptTree* caller, jsbytecode* callerPc,
-                   JSScript* script)
-      : caller_(caller),
-        callerPc_(callerPc),
-        script_(script),
-        children_(nullptr),
-        nextCallee_(nullptr) {}
-
-  static InlineScriptTree* New(TempAllocator* allocator,
-                               InlineScriptTree* caller, jsbytecode* callerPc,
-                               JSScript* script);
-
-  InlineScriptTree* addCallee(TempAllocator* allocator, jsbytecode* callerPc,
-                              JSScript* calleeScript);
-
-  InlineScriptTree* caller() const { return caller_; }
-
-  bool isOutermostCaller() const { return caller_ == nullptr; }
-  bool hasCaller() const { return caller_ != nullptr; }
-  InlineScriptTree* outermostCaller() {
-    if (isOutermostCaller()) {
-      return this;
-    }
-    return caller_->outermostCaller();
-  }
-
-  jsbytecode* callerPc() const { return callerPc_; }
-
-  JSScript* script() const { return script_; }
-
-  bool hasChildren() const { return children_ != nullptr; }
-  InlineScriptTree* firstChild() const {
-    MOZ_ASSERT(hasChildren());
-    return children_;
-  }
-
-  bool hasNextCallee() const { return nextCallee_ != nullptr; }
-  InlineScriptTree* nextCallee() const {
-    MOZ_ASSERT(hasNextCallee());
-    return nextCallee_;
-  }
-
-  unsigned depth() const {
-    if (isOutermostCaller()) {
-      return 1;
-    }
-    return 1 + caller_->depth();
-  }
-};
-
-class BytecodeSite : public TempObject {
-  // InlineScriptTree identifying innermost active function at site.
-  InlineScriptTree* tree_;
-
-  // Bytecode address within innermost active function.
-  jsbytecode* pc_;
-
- public:
-  BytecodeSite() : tree_(nullptr), pc_(nullptr) {}
-
-  BytecodeSite(InlineScriptTree* tree, jsbytecode* pc) : tree_(tree), pc_(pc) {
-    MOZ_ASSERT(tree_ != nullptr);
-    MOZ_ASSERT(pc_ != nullptr);
-  }
-
-  InlineScriptTree* tree() const { return tree_; }
-
-  jsbytecode* pc() const { return pc_; }
-
-  JSScript* script() const { return tree_ ? tree_->script() : nullptr; }
-};
-
-enum AnalysisMode {
-  /* JavaScript execution, not analysis. */
-  Analysis_None,
-
-  /*
-   * MIR analysis performed when invoking 'new' on a script, to determine
-   * definite properties. Used by the optimizing JIT.
-   */
-  Analysis_DefiniteProperties,
-
-  /*
-   * MIR analysis performed when executing a script which uses its arguments,
-   * when it is not known whether a lazy arguments value can be used.
-   */
-  Analysis_ArgumentsUsage
-};
-
 // Contains information about the compilation source for IR being generated.
 class CompileInfo {
  public:
   CompileInfo(CompileRuntime* runtime, JSScript* script, JSFunction* fun,
-              jsbytecode* osrPc, AnalysisMode analysisMode,
-              bool scriptNeedsArgsObj, InlineScriptTree* inlineScriptTree)
+              jsbytecode* osrPc, bool scriptNeedsArgsObj,
+              InlineScriptTree* inlineScriptTree)
       : script_(script),
         fun_(fun),
         osrPc_(osrPc),
-        analysisMode_(analysisMode),
         scriptNeedsArgsObj_(scriptNeedsArgsObj),
-        hadOverflowBailout_(script->hadOverflowBailout()),
-        hadFrequentBailouts_(script->hadFrequentBailouts()),
+        hadEagerTruncationBailout_(script->hadEagerTruncationBailout()),
+        hadSpeculativePhiBailout_(script->hadSpeculativePhiBailout()),
+        hadLICMInvalidation_(script->hadLICMInvalidation()),
+        hadReorderingBailout_(script->hadReorderingBailout()),
+        hadBoundsCheckBailout_(script->failedBoundsCheck()),
+        hadUnboxFoldingBailout_(script->hadUnboxFoldingBailout()),
         mayReadFrameArgsDirectly_(script->mayReadFrameArgsDirectly()),
+        anyFormalIsForwarded_(script->anyFormalIsForwarded()),
+        isDerivedClassConstructor_(script->isDerivedClassConstructor()),
         inlineScriptTree_(inlineScriptTree) {
     MOZ_ASSERT_IF(osrPc, JSOp(*osrPc) == JSOp::LoopHead);
 
@@ -225,11 +129,15 @@ class CompileInfo {
       : script_(nullptr),
         fun_(nullptr),
         osrPc_(nullptr),
-        analysisMode_(Analysis_None),
         scriptNeedsArgsObj_(false),
-        hadOverflowBailout_(false),
-        hadFrequentBailouts_(false),
+        hadEagerTruncationBailout_(false),
+        hadSpeculativePhiBailout_(false),
+        hadLICMInvalidation_(false),
+        hadReorderingBailout_(false),
+        hadBoundsCheckBailout_(false),
+        hadUnboxFoldingBailout_(false),
         mayReadFrameArgsDirectly_(false),
+        anyFormalIsForwarded_(false),
         inlineScriptTree_(nullptr),
         needsBodyEnvironmentObject_(false),
         funNeedsSomeEnvironmentObject_(false) {
@@ -247,38 +155,9 @@ class CompileInfo {
   jsbytecode* osrPc() const { return osrPc_; }
   InlineScriptTree* inlineScriptTree() const { return inlineScriptTree_; }
 
-  bool hasOsrAt(jsbytecode* pc) const {
-    MOZ_ASSERT(JSOp(*pc) == JSOp::LoopHead);
-    return pc == osrPc();
-  }
-
-  jsbytecode* startPC() const { return script_->code(); }
-  jsbytecode* limitPC() const { return script_->codeEnd(); }
-
   const char* filename() const { return script_->filename(); }
 
   unsigned lineno() const { return script_->lineno(); }
-  unsigned lineno(jsbytecode* pc) const { return PCToLineNumber(script_, pc); }
-
-  // Script accessors based on PC.
-
-  JSAtom* getAtom(jsbytecode* pc) const {
-    return script_->getAtom(GET_UINT32_INDEX(pc));
-  }
-
-  PropertyName* getName(jsbytecode* pc) const {
-    return script_->getName(GET_UINT32_INDEX(pc));
-  }
-
-  inline RegExpObject* getRegExp(jsbytecode* pc) const;
-
-  JSObject* getObject(jsbytecode* pc) const {
-    return script_->getObject(GET_UINT32_INDEX(pc));
-  }
-
-  inline JSFunction* getFunction(jsbytecode* pc) const;
-
-  BigInt* getBigInt(jsbytecode* pc) const { return script_->getBigInt(pc); }
 
   // Total number of slots: args, locals, and stack.
   unsigned nslots() const { return nslots_; }
@@ -302,7 +181,7 @@ class CompileInfo {
     return 1;
   }
   uint32_t argsObjSlot() const {
-    MOZ_ASSERT(hasArguments());
+    MOZ_ASSERT(needsArgsObj());
     return 2;
   }
   uint32_t thisSlot() const {
@@ -329,42 +208,16 @@ class CompileInfo {
   uint32_t firstStackSlot() const { return firstLocalSlot() + nlocals(); }
   uint32_t stackSlot(uint32_t i) const { return firstStackSlot() + i; }
 
-  uint32_t startArgSlot() const {
-    MOZ_ASSERT(script());
-    return StartArgSlot(script());
-  }
-  uint32_t endArgSlot() const {
-    MOZ_ASSERT(script());
-    return CountArgSlots(script(), funMaybeLazy());
-  }
-
   uint32_t totalSlots() const {
     MOZ_ASSERT(script() && funMaybeLazy());
     return nimplicit() + nargs() + nlocals();
   }
 
-  bool isSlotAliased(uint32_t index) const {
-    MOZ_ASSERT(index >= startArgSlot());
-    uint32_t arg = index - firstArgSlot();
-    if (arg < nargs()) {
-      return script()->formalIsAliased(arg);
-    }
-    return false;
-  }
-
-  bool hasArguments() const { return script()->argumentsHasVarBinding(); }
-  bool argumentsAliasesFormals() const {
-    return script()->argumentsAliasesFormals();
-  }
   bool hasMappedArgsObj() const { return script()->hasMappedArgsObj(); }
   bool needsArgsObj() const { return scriptNeedsArgsObj_; }
   bool argsObjAliasesFormals() const {
     return scriptNeedsArgsObj_ && script()->hasMappedArgsObj();
   }
-
-  AnalysisMode analysisMode() const { return analysisMode_; }
-
-  bool isAnalysis() const { return analysisMode_ != Analysis_None; }
 
   bool needsBodyEnvironmentObject() const {
     return needsBodyEnvironmentObject_;
@@ -427,16 +280,17 @@ class CompileInfo {
       // If the function may need an arguments object, also preserve the
       // environment chain because it may be needed to reconstruct the arguments
       // object during bailout.
-      if (funNeedsSomeEnvironmentObject_ || hasArguments()) {
+      if (funNeedsSomeEnvironmentObject_ || needsArgsObj()) {
         return SlotObservableKind::ObservableRecoverable;
       }
       return SlotObservableKind::NotObservable;
     }
 
-    // The arguments object is observable and not recoverable.
-    if (hasArguments() && slot == argsObjSlot()) {
+    // The arguments object is observable. If it does not escape, it can
+    // be recovered.
+    if (needsArgsObj() && slot == argsObjSlot()) {
       MOZ_ASSERT(funMaybeLazy());
-      return SlotObservableKind::ObservableNotRecoverable;
+      return SlotObservableKind::ObservableRecoverable;
     }
 
     MOZ_ASSERT(slot == returnValueSlot());
@@ -464,9 +318,17 @@ class CompileInfo {
 
   // Check previous bailout states to prevent doing the same bailout in the
   // next compilation.
-  bool hadOverflowBailout() const { return hadOverflowBailout_; }
-  bool hadFrequentBailouts() const { return hadFrequentBailouts_; }
+  bool hadEagerTruncationBailout() const { return hadEagerTruncationBailout_; }
+  bool hadSpeculativePhiBailout() const { return hadSpeculativePhiBailout_; }
+  bool hadLICMInvalidation() const { return hadLICMInvalidation_; }
+  bool hadReorderingBailout() const { return hadReorderingBailout_; }
+  bool hadBoundsCheckBailout() const { return hadBoundsCheckBailout_; }
+  bool hadUnboxFoldingBailout() const { return hadUnboxFoldingBailout_; }
+
   bool mayReadFrameArgsDirectly() const { return mayReadFrameArgsDirectly_; }
+  bool anyFormalIsForwarded() const { return anyFormalIsForwarded_; }
+
+  bool isDerivedClassConstructor() const { return isDerivedClassConstructor_; }
 
  private:
   unsigned nimplicit_;
@@ -478,19 +340,22 @@ class CompileInfo {
   JSScript* script_;
   JSFunction* fun_;
   jsbytecode* osrPc_;
-  AnalysisMode analysisMode_;
 
-  // Whether a script needs an arguments object is unstable over compilation
-  // since the arguments optimization could be marked as failed on the active
-  // thread, so cache a value here and use it throughout for consistency.
   bool scriptNeedsArgsObj_;
 
   // Record the state of previous bailouts in order to prevent compiling the
   // same function identically the next time.
-  bool hadOverflowBailout_;
-  bool hadFrequentBailouts_;
+  bool hadEagerTruncationBailout_;
+  bool hadSpeculativePhiBailout_;
+  bool hadLICMInvalidation_;
+  bool hadReorderingBailout_;
+  bool hadBoundsCheckBailout_;
+  bool hadUnboxFoldingBailout_;
 
   bool mayReadFrameArgsDirectly_;
+  bool anyFormalIsForwarded_;
+
+  bool isDerivedClassConstructor_;
 
   InlineScriptTree* inlineScriptTree_;
 

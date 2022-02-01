@@ -11,6 +11,7 @@
 
 #include <algorithm>
 
+#include "gc/Nursery.h"
 #include "gc/RelocationOverlay.h"
 #include "gc/ZoneAllocator.h"
 #include "vm/MutexIDs.h"
@@ -39,8 +40,8 @@ static constexpr double MinHeapGrowthFactor =
 
 GCSchedulingTunables::GCSchedulingTunables()
     : gcMaxBytes_(0),
-      gcMinNurseryBytes_(TuningDefaults::GCMinNurseryBytes),
-      gcMaxNurseryBytes_(JS::DefaultNurseryMaxBytes),
+      gcMinNurseryBytes_(Nursery::roundSize(TuningDefaults::GCMinNurseryBytes)),
+      gcMaxNurseryBytes_(Nursery::roundSize(JS::DefaultNurseryMaxBytes)),
       gcZoneAllocThresholdBase_(TuningDefaults::GCZoneAllocThresholdBase),
       smallHeapIncrementalLimit_(TuningDefaults::SmallHeapIncrementalLimit),
       largeHeapIncrementalLimit_(TuningDefaults::LargeHeapIncrementalLimit),
@@ -60,8 +61,13 @@ GCSchedulingTunables::GCSchedulingTunables()
           TuningDefaults::NurseryFreeThresholdForIdleCollection),
       nurseryFreeThresholdForIdleCollectionFraction_(
           TuningDefaults::NurseryFreeThresholdForIdleCollectionFraction),
+      nurseryTimeoutForIdleCollection_(TimeDuration::FromMilliseconds(
+          TuningDefaults::NurseryTimeoutForIdleCollectionMS)),
       pretenureThreshold_(TuningDefaults::PretenureThreshold),
       pretenureGroupThreshold_(TuningDefaults::PretenureGroupThreshold),
+      pretenureStringThreshold_(TuningDefaults::PretenureStringThreshold),
+      stopPretenureStringThreshold_(
+          TuningDefaults::StopPretenureStringThreshold),
       minLastDitchGCPeriod_(
           TimeDuration::FromSeconds(TuningDefaults::MinLastDitchGCPeriod)),
       mallocThresholdBase_(TuningDefaults::MallocThresholdBase),
@@ -78,14 +84,21 @@ bool GCSchedulingTunables::setParameter(JSGCParamKey key, uint32_t value,
       gcMaxBytes_ = value;
       break;
     case JSGC_MIN_NURSERY_BYTES:
-      if (value > gcMaxNurseryBytes_ || value < ArenaSize ||
-          value >= MaxNurseryBytes) {
+      if (value < ArenaSize || value >= MaxNurseryBytes) {
+        return false;
+      }
+      value = Nursery::roundSize(value);
+      if (value > gcMaxNurseryBytes_) {
         return false;
       }
       gcMinNurseryBytes_ = value;
       break;
     case JSGC_MAX_NURSERY_BYTES:
-      if (value < gcMinNurseryBytes_ || value >= MaxNurseryBytes) {
+      if (value < ArenaSize || value >= MaxNurseryBytes) {
+        return false;
+      }
+      value = Nursery::roundSize(value);
+      if (value < gcMinNurseryBytes_) {
         return false;
       }
       gcMaxNurseryBytes_ = value;
@@ -170,6 +183,9 @@ bool GCSchedulingTunables::setParameter(JSGCParamKey key, uint32_t value,
       }
       nurseryFreeThresholdForIdleCollectionFraction_ = value / 100.0;
       break;
+    case JSGC_NURSERY_TIMEOUT_FOR_IDLE_COLLECTION_MS:
+      nurseryTimeoutForIdleCollection_ = TimeDuration::FromMilliseconds(value);
+      break;
     case JSGC_PRETENURE_THRESHOLD: {
       // 100 disables pretenuring
       if (value == 0 || value > 100) {
@@ -183,6 +199,19 @@ bool GCSchedulingTunables::setParameter(JSGCParamKey key, uint32_t value,
         return false;
       }
       pretenureGroupThreshold_ = value;
+      break;
+    case JSGC_PRETENURE_STRING_THRESHOLD:
+      // 100 disables pretenuring
+      if (value == 0 || value > 100) {
+        return false;
+      }
+      pretenureStringThreshold_ = value / 100.0;
+      break;
+    case JSGC_STOP_PRETENURE_STRING_THRESHOLD:
+      if (value == 0 || value > 100) {
+        return false;
+      }
+      stopPretenureStringThreshold_ = value / 100.0;
       break;
     case JSGC_MIN_LAST_DITCH_GC_PERIOD:
       minLastDitchGCPeriod_ = TimeDuration::FromSeconds(value);
@@ -319,11 +348,18 @@ void GCSchedulingTunables::resetParameter(JSGCParamKey key,
       nurseryFreeThresholdForIdleCollectionFraction_ =
           TuningDefaults::NurseryFreeThresholdForIdleCollectionFraction;
       break;
+    case JSGC_NURSERY_TIMEOUT_FOR_IDLE_COLLECTION_MS:
+      nurseryTimeoutForIdleCollection_ = TimeDuration::FromMilliseconds(
+          TuningDefaults::NurseryTimeoutForIdleCollectionMS);
+      break;
     case JSGC_PRETENURE_THRESHOLD:
       pretenureThreshold_ = TuningDefaults::PretenureThreshold;
       break;
     case JSGC_PRETENURE_GROUP_THRESHOLD:
       pretenureGroupThreshold_ = TuningDefaults::PretenureGroupThreshold;
+      break;
+    case JSGC_PRETENURE_STRING_THRESHOLD:
+      pretenureStringThreshold_ = TuningDefaults::PretenureStringThreshold;
       break;
     case JSGC_MIN_LAST_DITCH_GC_PERIOD:
       minLastDitchGCPeriod_ =
@@ -338,6 +374,12 @@ void GCSchedulingTunables::resetParameter(JSGCParamKey key,
     default:
       MOZ_CRASH("Unknown GC parameter.");
   }
+}
+
+// GC thresholds may exceed the range of size_t on 32-bit platforms, so these
+// are calculated using 64-bit integers and clamped.
+static inline size_t ToClampedSize(uint64_t bytes) {
+  return std::min(bytes, uint64_t(SIZE_MAX));
 }
 
 void HeapThreshold::setIncrementalLimitFromStartBytes(
@@ -361,8 +403,11 @@ void HeapThreshold::setIncrementalLimitFromStartBytes(
       tunables.smallHeapIncrementalLimit(), tunables.largeHeapSizeMinBytes(),
       tunables.largeHeapIncrementalLimit());
 
-  incrementalLimitBytes_ = std::max(size_t(double(startBytes_) * factor),
-                                    startBytes_ + tunables.gcMaxNurseryBytes());
+  uint64_t bytes =
+      std::max(uint64_t(double(startBytes_) * factor),
+               uint64_t(startBytes_) + tunables.gcMaxNurseryBytes());
+  incrementalLimitBytes_ = ToClampedSize(bytes);
+  MOZ_ASSERT(incrementalLimitBytes_ >= startBytes_);
 }
 
 double HeapThreshold::eagerAllocTrigger(bool highFrequencyGC) const {
@@ -375,8 +420,9 @@ double HeapThreshold::eagerAllocTrigger(bool highFrequencyGC) const {
 void HeapThreshold::setSliceThreshold(ZoneAllocator* zone,
                                       const HeapSize& heapSize,
                                       const GCSchedulingTunables& tunables) {
-  sliceBytes_ = std::min(heapSize.bytes() + tunables.zoneAllocDelayBytes(),
-                         incrementalLimitBytes_);
+  sliceBytes_ = ToClampedSize(
+      std::min(uint64_t(heapSize.bytes()) + tunables.zoneAllocDelayBytes(),
+               uint64_t(incrementalLimitBytes_)));
 }
 
 /* static */
@@ -414,20 +460,20 @@ double GCHeapThreshold::computeZoneHeapGrowthFactorForHeapSize(
 
 /* static */
 size_t GCHeapThreshold::computeZoneTriggerBytes(
-    double growthFactor, size_t lastBytes, JSGCInvocationKind gckind,
+    double growthFactor, size_t lastBytes, JS::GCOptions options,
     const GCSchedulingTunables& tunables, const AutoLockGC& lock) {
-  size_t baseMin = gckind == GC_SHRINK
+  size_t baseMin = options == JS::GCOptions::Shrink
                        ? tunables.minEmptyChunkCount(lock) * ChunkSize
                        : tunables.gcZoneAllocThresholdBase();
   size_t base = std::max(lastBytes, baseMin);
   double trigger = double(base) * growthFactor;
   double triggerMax =
       double(tunables.gcMaxBytes()) / tunables.largeHeapIncrementalLimit();
-  return size_t(std::min(triggerMax, trigger));
+  return ToClampedSize(std::min(triggerMax, trigger));
 }
 
 void GCHeapThreshold::updateStartThreshold(size_t lastBytes,
-                                           JSGCInvocationKind gckind,
+                                           JS::GCOptions options,
                                            const GCSchedulingTunables& tunables,
                                            const GCSchedulingState& state,
                                            bool isAtomsZone,
@@ -442,7 +488,7 @@ void GCHeapThreshold::updateStartThreshold(size_t lastBytes,
   }
 
   startBytes_ =
-      computeZoneTriggerBytes(growthFactor, lastBytes, gckind, tunables, lock);
+      computeZoneTriggerBytes(growthFactor, lastBytes, options, tunables, lock);
 
   setIncrementalLimitFromStartBytes(lastBytes, tunables);
 }
@@ -452,7 +498,7 @@ size_t MallocHeapThreshold::computeZoneTriggerBytes(double growthFactor,
                                                     size_t lastBytes,
                                                     size_t baseBytes,
                                                     const AutoLockGC& lock) {
-  return size_t(double(std::max(lastBytes, baseBytes)) * growthFactor);
+  return ToClampedSize(double(std::max(lastBytes, baseBytes)) * growthFactor);
 }
 
 void MallocHeapThreshold::updateStartThreshold(

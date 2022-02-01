@@ -52,7 +52,7 @@ that you'd like to parse, you should be able to parse it!
 The `wat` crate does not support this because it strives to provide strong
 API-level stability guarantees, but the `wast` crate has all the
 low-level details and is the implementation of the `wast` crate. Be sure to
-[check out its `README.md`](crates/wast/README.md) for more information.
+[check out its `README.md`](../wast/README.md) for more information.
 
 ## Stability and WebAssembly Features
 

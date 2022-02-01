@@ -27,7 +27,7 @@ class ProfileBuffer final {
   // manager.
   explicit ProfileBuffer(ProfileChunkedBuffer& aBuffer);
 
-  ~ProfileBuffer();
+  ProfileChunkedBuffer& UnderlyingChunkedBuffer() const { return mEntries; }
 
   bool IsThreadSafe() const { return mEntries.IsThreadSafe(); }
 
@@ -51,10 +51,11 @@ class ProfileBuffer final {
   // Stream JSON for samples in the buffer to aWriter, using the supplied
   // UniqueStacks object.
   // Only streams samples for the given thread ID and which were taken at or
-  // after aSinceTime.
-  void StreamSamplesToJSON(SpliceableJSONWriter& aWriter, int aThreadId,
-                           double aSinceTime,
-                           UniqueStacks& aUniqueStacks) const;
+  // after aSinceTime. If ID is 0, ignore the stored thread ID; this should only
+  // be used when the buffer contains only one sample.
+  // Return the thread ID of the streamed sample(s), or 0.
+  int StreamSamplesToJSON(SpliceableJSONWriter& aWriter, int aThreadId,
+                          double aSinceTime, UniqueStacks& aUniqueStacks) const;
 
   void StreamMarkersToJSON(SpliceableJSONWriter& aWriter, int aThreadId,
                            const TimeStamp& aProcessStartTime,
@@ -123,34 +124,32 @@ class ProfileBuffer final {
   uint64_t BufferRangeEnd() const { return mEntries.GetState().mRangeEnd; }
 
  private:
-  // 65536 bytes should be plenty for a single backtrace.
-  static constexpr auto WorkerBufferBytes = MakePowerOfTwo32<65536>();
-
   // Single pre-allocated chunk (to avoid spurious mallocs), used when:
-  // - Duplicating sleeping stacks.
+  // - Duplicating sleeping stacks (hence scExpectedMaximumStackSize).
   // - Adding JIT info.
   // - Streaming stacks to JSON.
   // Mutable because it's accessed from non-multithreaded const methods.
   mutable ProfileBufferChunkManagerSingle mWorkerChunkManager{
-      ProfileBufferChunk::Create(ProfileBufferChunk::SizeofChunkMetadata() +
-                                 WorkerBufferBytes.Value())};
+      ProfileBufferChunk::Create(
+          ProfileBufferChunk::SizeofChunkMetadata() +
+          ProfileBufferChunkManager::scExpectedMaximumStackSize)};
 
-  // Time from launch (ns) when first sampling was recorded.
-  double mFirstSamplingTimeNs = 0.0;
-  // Time from launch (ns) when last sampling was recorded.
-  double mLastSamplingTimeNs = 0.0;
-  // Sampling stats: Interval (ns) between successive samplings.
-  ProfilerStats mIntervalsNs;
-  // Sampling stats: Total duration (ns) of each sampling. (Split detail below.)
-  ProfilerStats mOverheadsNs;
-  // Sampling stats: Time (ns) to acquire the lock before sampling.
-  ProfilerStats mLockingsNs;
-  // Sampling stats: Time (ns) to discard expired data.
-  ProfilerStats mCleaningsNs;
-  // Sampling stats: Time (ns) to collect counter data.
-  ProfilerStats mCountersNs;
-  // Sampling stats: Time (ns) to sample thread stacks.
-  ProfilerStats mThreadsNs;
+  // Time from launch (us) when first sampling was recorded.
+  double mFirstSamplingTimeUs = 0.0;
+  // Time from launch (us) when last sampling was recorded.
+  double mLastSamplingTimeUs = 0.0;
+  // Sampling stats: Interval (us) between successive samplings.
+  ProfilerStats mIntervalsUs;
+  // Sampling stats: Total duration (us) of each sampling. (Split detail below.)
+  ProfilerStats mOverheadsUs;
+  // Sampling stats: Time (us) to acquire the lock before sampling.
+  ProfilerStats mLockingsUs;
+  // Sampling stats: Time (us) to discard expired data.
+  ProfilerStats mCleaningsUs;
+  // Sampling stats: Time (us) to collect counter data.
+  ProfilerStats mCountersUs;
+  // Sampling stats: Time (us) to sample thread stacks.
+  ProfilerStats mThreadsUs;
 };
 
 /**
@@ -161,15 +160,26 @@ class ProfileBuffer final {
  */
 class ProfileBufferCollector final : public ProfilerStackCollector {
  public:
-  ProfileBufferCollector(ProfileBuffer& aBuf, uint64_t aSamplePos)
-      : mBuf(aBuf), mSamplePositionInBuffer(aSamplePos) {}
+  ProfileBufferCollector(ProfileBuffer& aBuf, uint64_t aSamplePos,
+                         uint64_t aBufferRangeStart)
+      : mBuf(aBuf),
+        mSamplePositionInBuffer(aSamplePos),
+        mBufferRangeStart(aBufferRangeStart) {
+    MOZ_ASSERT(
+        mSamplePositionInBuffer >= mBufferRangeStart,
+        "The sample position should always be after the buffer range start");
+  }
 
+  // Position at which the sample starts in the profiler buffer (which may be
+  // different from the buffer in which the sample data is collected here).
   Maybe<uint64_t> SamplePositionInBuffer() override {
     return Some(mSamplePositionInBuffer);
   }
 
+  // Profiler buffer's range start (which may be different from the buffer in
+  // which the sample data is collected here).
   Maybe<uint64_t> BufferRangeStart() override {
-    return Some(mBuf.BufferRangeStart());
+    return Some(mBufferRangeStart);
   }
 
   virtual void CollectNativeLeafAddr(void* aAddr) override;
@@ -179,6 +189,7 @@ class ProfileBufferCollector final : public ProfilerStackCollector {
  private:
   ProfileBuffer& mBuf;
   uint64_t mSamplePositionInBuffer;
+  uint64_t mBufferRangeStart;
 };
 
 }  // namespace baseprofiler

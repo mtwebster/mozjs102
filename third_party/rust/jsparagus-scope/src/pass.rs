@@ -7,16 +7,24 @@
 //! but the goal is to do this analysis as part of the parse phase, even when
 //! no AST is built. So we try to keep AST use separate from the analysis code.
 
-use crate::builder::ScopeDataMapBuilder;
+use crate::builder::{ScopeBuildError, ScopeDataMapAndScriptStencilList, ScopeDataMapBuilder};
+use crate::data::FunctionDeclarationPropertyMap;
 use ast::arena;
 use ast::associated_data::AssociatedData;
+use ast::source_atom_set::CommonSourceAtomSetIndices;
 use ast::{types::*, visit::Pass};
+use std::collections::HashMap;
 use stencil::scope::ScopeDataMap;
+use stencil::script::{ScriptStencilIndex, ScriptStencilList};
 
 /// The result of scope analysis.
-pub struct ScopeDataMapAndFunctionMap<'alloc> {
+pub struct ScopePassResult<'alloc> {
     pub scope_data_map: ScopeDataMap,
-    pub function_map: AssociatedData<&'alloc Function<'alloc>>,
+    pub function_declarations: HashMap<ScriptStencilIndex, &'alloc Function<'alloc>>,
+    pub function_stencil_indices: AssociatedData<ScriptStencilIndex>,
+    pub function_declaration_properties: FunctionDeclarationPropertyMap,
+    pub scripts: ScriptStencilList,
+    pub error: Option<ScopeBuildError>,
 }
 
 /// The top-level struct responsible for extracting the necessary information
@@ -27,23 +35,34 @@ pub struct ScopeDataMapAndFunctionMap<'alloc> {
 #[derive(Debug)]
 pub struct ScopePass<'alloc> {
     builder: ScopeDataMapBuilder,
-    function_map: AssociatedData<&'alloc Function<'alloc>>,
+    function_declarations: HashMap<ScriptStencilIndex, &'alloc Function<'alloc>>,
 }
 
 impl<'alloc> ScopePass<'alloc> {
     pub fn new() -> Self {
         Self {
             builder: ScopeDataMapBuilder::new(),
-            function_map: AssociatedData::new(),
+            function_declarations: HashMap::new(),
         }
     }
 }
 
-impl<'alloc> From<ScopePass<'alloc>> for ScopeDataMapAndFunctionMap<'alloc> {
-    fn from(pass: ScopePass<'alloc>) -> ScopeDataMapAndFunctionMap<'alloc> {
-        ScopeDataMapAndFunctionMap {
-            scope_data_map: pass.builder.into(),
-            function_map: pass.function_map,
+impl<'alloc> From<ScopePass<'alloc>> for ScopePassResult<'alloc> {
+    fn from(pass: ScopePass<'alloc>) -> ScopePassResult<'alloc> {
+        let ScopeDataMapAndScriptStencilList {
+            scope_data_map,
+            function_stencil_indices,
+            function_declaration_properties,
+            scripts,
+            error,
+        } = pass.builder.into();
+        ScopePassResult {
+            scope_data_map,
+            function_declarations: pass.function_declarations,
+            function_stencil_indices,
+            function_declaration_properties,
+            scripts,
+            error,
         }
     }
 }
@@ -105,25 +124,42 @@ impl<'alloc> Pass<'alloc> for ScopePass<'alloc> {
         self.builder.on_non_binding_identifier(ast.value);
     }
 
+    fn visit_enum_expression_variant_this_expression(&mut self) {
+        self.builder
+            .on_non_binding_identifier(CommonSourceAtomSetIndices::this());
+    }
+
     fn enter_enum_statement_variant_function_declaration(&mut self, ast: &'alloc Function<'alloc>) {
+        if !self.builder.is_syntax_only_mode() {
+            self.builder.enter_syntax_only_mode();
+        }
+
         let name = if let Some(ref name) = ast.name {
             name.name.value
         } else {
             panic!("FunctionDeclaration should have name");
         };
-        self.builder.before_function_declaration(name, ast);
-        self.function_map.insert(ast, ast);
+        let fun_index =
+            self.builder
+                .before_function_declaration(name, ast, ast.is_generator, ast.is_async);
+        self.function_declarations.insert(fun_index, ast);
+    }
+
+    fn leave_enum_statement_variant_function_declaration(&mut self, ast: &'alloc Function<'alloc>) {
+        self.builder.after_function_declaration(ast);
     }
 
     fn enter_enum_expression_variant_function_expression(&mut self, ast: &'alloc Function<'alloc>) {
-        self.builder.before_function_expression(ast);
+        if !self.builder.is_syntax_only_mode() {
+            self.builder.enter_syntax_only_mode();
+        }
+
+        self.builder
+            .before_function_expression(ast, ast.is_generator, ast.is_async);
     }
 
-    fn leave_enum_expression_variant_function_expression(
-        &mut self,
-        _ast: &'alloc Function<'alloc>,
-    ) {
-        self.builder.after_function_expression();
+    fn leave_enum_expression_variant_function_expression(&mut self, ast: &'alloc Function<'alloc>) {
+        self.builder.after_function_expression(ast);
     }
 
     fn visit_formal_parameters(&mut self, ast: &'alloc FormalParameters<'alloc>) {
@@ -143,32 +179,53 @@ impl<'alloc> Pass<'alloc> for ScopePass<'alloc> {
         self.builder.after_function_parameters();
     }
 
+    fn enter_enum_method_definition_variant_method(&mut self, ast: &'alloc Method<'alloc>) {
+        self.builder
+            .before_method(ast, ast.is_generator, ast.is_async);
+        // FIXME: Call self.builder.on_function_name
+    }
+
+    fn leave_enum_method_definition_variant_method(&mut self, ast: &'alloc Method<'alloc>) {
+        self.builder.after_method(ast);
+    }
+
     /// Getter doesn't have FormalParameters.
     /// Call builder methods just before body.
     fn visit_getter(&mut self, ast: &'alloc Getter<'alloc>) {
-        self.enter_getter(ast);
-        self.visit_property_name(&ast.property_name);
+        self.builder.before_getter(ast);
+        // FIXME: Call self.builder.on_function_name
 
-        self.builder.before_function_parameters(ast);
-        self.builder.after_function_parameters();
+        self.enter_getter(ast);
+        self.visit_class_element_name(&ast.property_name);
+
+        // FIXME: Pass something that points `()` part of getter.
+        self.builder.on_getter_parameter(ast);
 
         self.visit_function_body(&ast.body);
         self.leave_getter(ast);
+
+        self.builder.after_getter(ast);
     }
 
     /// Setter doesn't have FormalParameters, but single Parameter.
     /// Call builder methods around it.
     fn visit_setter(&mut self, ast: &'alloc Setter<'alloc>) {
-        self.enter_setter(ast);
-        self.visit_property_name(&ast.property_name);
+        self.builder.before_setter(ast);
+        // FIXME: Call self.builder.on_function_name
 
-        self.builder.before_function_parameters(ast);
-        self.builder.before_parameter();
+        self.enter_setter(ast);
+        self.visit_class_element_name(&ast.property_name);
+
+        // FIXME: Pass something that points `(param)` part of setter,
+        // including `(` and `)`.
+        self.builder.before_setter_parameter(&ast.param);
         self.visit_parameter(&ast.param);
-        self.builder.after_function_parameters();
+        self.builder.after_setter_parameter();
 
         self.visit_function_body(&ast.body);
         self.leave_setter(ast);
+
+        self.builder.after_setter(ast);
     }
 
     fn leave_binding_with_default(&mut self, _ast: &'alloc BindingWithDefault<'alloc>) {
@@ -194,6 +251,24 @@ impl<'alloc> Pass<'alloc> for ScopePass<'alloc> {
         self.builder.after_function_body();
     }
 
+    fn enter_enum_expression_variant_arrow_expression(
+        &mut self,
+        is_async: &'alloc bool,
+        params: &'alloc FormalParameters<'alloc>,
+        _body: &'alloc ArrowExpressionBody<'alloc>,
+    ) {
+        self.builder.before_arrow_function(*is_async, params);
+    }
+
+    fn leave_enum_expression_variant_arrow_expression(
+        &mut self,
+        _is_async: &'alloc bool,
+        _params: &'alloc FormalParameters<'alloc>,
+        body: &'alloc ArrowExpressionBody<'alloc>,
+    ) {
+        self.builder.after_arrow_function(body);
+    }
+
     /// Arrow function with expression body.
     /// Use the expression as the node for function body.
     fn enter_enum_arrow_expression_body_variant_expression(
@@ -209,5 +284,86 @@ impl<'alloc> Pass<'alloc> for ScopePass<'alloc> {
         _ast: &'alloc arena::Box<'alloc, Expression<'alloc>>,
     ) {
         self.builder.after_function_body();
+    }
+
+    fn enter_catch_clause(&mut self, _ast: &'alloc CatchClause<'alloc>) {
+        self.builder.before_catch_clause();
+    }
+
+    fn enter_call_expression(&mut self, ast: &'alloc CallExpression<'alloc>) {
+        match &ast.callee {
+            ExpressionOrSuper::Expression(expr) => match &**expr {
+                Expression::IdentifierExpression(IdentifierExpression { name, .. }) => {
+                    if name.value == CommonSourceAtomSetIndices::eval() {
+                        self.builder.on_direct_eval();
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn enter_class_declaration(&mut self, _ast: &'alloc ClassDeclaration<'alloc>) {
+        self.builder.on_class();
+    }
+
+    fn enter_class_expression(&mut self, _ast: &'alloc ClassExpression<'alloc>) {
+        self.builder.on_class();
+    }
+
+    fn enter_enum_statement_variant_with_statement(
+        &mut self,
+        _object: &'alloc arena::Box<'alloc, Expression<'alloc>>,
+        _body: &'alloc arena::Box<'alloc, Statement<'alloc>>,
+    ) {
+        self.builder.on_with();
+    }
+
+    fn visit_enum_unary_operator_variant_delete(&mut self) {
+        self.builder.on_delete();
+    }
+
+    fn enter_enum_statement_variant_for_statement(
+        &mut self,
+        init: &'alloc Option<VariableDeclarationOrExpression<'alloc>>,
+        _test: &'alloc Option<arena::Box<'alloc, Expression<'alloc>>>,
+        _update: &'alloc Option<arena::Box<'alloc, Expression<'alloc>>>,
+        _block: &'alloc arena::Box<'alloc, Statement<'alloc>>,
+    ) {
+        match init {
+            Some(VariableDeclarationOrExpression::VariableDeclaration(decl)) => match decl.kind {
+                VariableDeclarationKind::Let { .. } | VariableDeclarationKind::Const { .. } => {
+                    self.builder.on_lexical_for();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn enter_enum_statement_variant_for_in_statement(
+        &mut self,
+        left: &'alloc VariableDeclarationOrAssignmentTarget<'alloc>,
+        _right: &'alloc arena::Box<'alloc, Expression<'alloc>>,
+        _block: &'alloc arena::Box<'alloc, Statement<'alloc>>,
+    ) {
+        match left {
+            VariableDeclarationOrAssignmentTarget::VariableDeclaration(decl) => match decl.kind {
+                VariableDeclarationKind::Let { .. } | VariableDeclarationKind::Const { .. } => {
+                    self.builder.on_lexical_for();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn enter_enum_statement_variant_switch_statement(
+        &mut self,
+        _discriminant: &'alloc arena::Box<'alloc, Expression<'alloc>>,
+        _cases: &'alloc arena::Vec<'alloc, SwitchCase<'alloc>>,
+    ) {
+        self.builder.on_switch();
     }
 }

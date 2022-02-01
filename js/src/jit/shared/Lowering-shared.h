@@ -22,6 +22,45 @@ class MDefinition;
 class MInstruction;
 class LOsiPoint;
 
+#ifdef ENABLE_WASM_SIMD
+
+// Representation of the result of the shuffle analysis.  See
+// Lowering-shared.cpp for more.
+
+struct Shuffle {
+  enum class Operand {
+    // Both inputs, in the original lhs-rhs order
+    BOTH,
+    // Both inputs, but in rhs-lhs order
+    BOTH_SWAPPED,
+    // Only the lhs input
+    LEFT,
+    // Only the rhs input
+    RIGHT,
+  };
+
+  Operand opd;
+  SimdConstant control;
+  mozilla::Maybe<LWasmPermuteSimd128::Op> permuteOp;  // Single operands
+  mozilla::Maybe<LWasmShuffleSimd128::Op> shuffleOp;  // Double operands
+
+  static Shuffle permute(Operand opd, SimdConstant control,
+                         LWasmPermuteSimd128::Op op) {
+    MOZ_ASSERT(opd == Operand::LEFT || opd == Operand::RIGHT);
+    Shuffle s{opd, control, mozilla::Some(op), mozilla::Nothing()};
+    return s;
+  }
+
+  static Shuffle shuffle(Operand opd, SimdConstant control,
+                         LWasmShuffleSimd128::Op op) {
+    MOZ_ASSERT(opd == Operand::BOTH || opd == Operand::BOTH_SWAPPED);
+    Shuffle s{opd, control, mozilla::Nothing(), mozilla::Some(op)};
+    return s;
+  }
+};
+
+#endif
+
 class LIRGeneratorShared {
  protected:
   MIRGenerator* gen;
@@ -72,6 +111,13 @@ class LIRGeneratorShared {
   static bool ShouldReorderCommutative(MDefinition* lhs, MDefinition* rhs,
                                        MInstruction* ins);
 
+#ifdef ENABLE_WASM_SIMD
+  static Shuffle AnalyzeShuffle(MWasmShuffleSimd128* ins);
+#  ifdef DEBUG
+  static void ReportShuffleSpecialization(const Shuffle& s);
+#  endif
+#endif
+
   // A backend can decide that an instruction should be emitted at its uses,
   // rather than at its definition. To communicate this, set the
   // instruction's virtual register set to 0. When using the instruction,
@@ -97,14 +143,27 @@ class LIRGeneratorShared {
   // allocation must be different from any Temp or Definition also needed for
   // this LInstruction.
   // - atStart variants relax that restriction and allow the input to be in
-  // the same register as any Temp or output Definition used by the
+  // the same register as any output Definition (but not Temps) used by the
   // LInstruction. Note that it doesn't *imply* this will actually happen,
   // but gives a hint to the register allocator that it can do it.
   //
   // TL;DR: Use non-atStart variants only if you need the input value after
-  // writing to any temp or definitions, during code generation of this
-  // LInstruction. Otherwise, use atStart variants, which will lower register
-  // pressure.
+  // writing to any definitions (excluding temps), during code generation of
+  // this LInstruction. Otherwise, use atStart variants, which will lower
+  // register pressure.
+  //
+  // There is an additional constraint.  Consider a MIR node with two
+  // MDefinition* operands, op1 and op2.  If the node reuses the register of op1
+  // for its output then op1 must be used as atStart.  Then, if op1 and op2
+  // represent the same LIR node then op2 must be an atStart use too; otherwise
+  // op2 must be a non-atStart use.  There is however not always a 1-1 mapping
+  // from MDefinition* to LNode*, so to determine whether two MDefinition* map
+  // to the same LNode*, ALWAYS go via the willHaveDifferentLIRNodes()
+  // predicate.  Do not use pointer equality on the MIR nodes.
+  //
+  // Do not add other conditions when using willHaveDifferentLIRNodes().  The
+  // predicate is the source of truth about whether to use atStart or not, no
+  // other conditions may apply in contexts when it is appropriate to use it.
   inline LUse use(MDefinition* mir, LUse policy);
   inline LUse use(MDefinition* mir);
   inline LUse useAtStart(MDefinition* mir);
@@ -120,6 +179,7 @@ class LIRGeneratorShared {
   // "Any" is architecture dependent, and will include registers and stack
   // slots on X86, and only registers on ARM.
   inline LAllocation useAny(MDefinition* mir);
+  inline LAllocation useAnyAtStart(MDefinition* mir);
   inline LAllocation useAnyOrConstant(MDefinition* mir);
   // "Storable" is architecture dependend, and will include registers and
   // constants on X86 and only registers on ARM.  This is a generic "things
@@ -134,6 +194,17 @@ class LIRGeneratorShared {
   inline LAllocation useRegisterOrZero(MDefinition* mir);
   inline LAllocation useRegisterOrNonDoubleConstant(MDefinition* mir);
 
+  // These methods accept either an Int32 or IntPtr value. A constant is used if
+  // the value fits in an int32.
+  inline LAllocation useRegisterOrInt32Constant(MDefinition* mir);
+  inline LAllocation useAnyOrInt32Constant(MDefinition* mir);
+
+  // Like useRegisterOrInt32Constant, but uses a constant only if
+  // |int32val * Scalar::byteSize(type) + offsetAdjustment| doesn't overflow
+  // int32.
+  LAllocation useRegisterOrIndexConstant(MDefinition* mir, Scalar::Type type,
+                                         int32_t offsetAdjustment = 0);
+
   inline LUse useRegisterForTypedLoad(MDefinition* mir, MIRType type);
 
 #ifdef JS_NUNBOX32
@@ -147,6 +218,16 @@ class LIRGeneratorShared {
   // policy to already be set.
   inline void fillBoxUses(LInstruction* lir, size_t n, MDefinition* mir);
 #endif
+
+  // Test whether mir1 and mir2 may give rise to different LIR nodes even if
+  // mir1 == mir2; use it to guide the selection of the use directive for one of
+  // the nodes in the context of a reused input.  See comments above about why
+  // it's important to use this predicate and not pointer equality.
+  //
+  // This predicate may be called before or after the application of a use
+  // directive to the first of the nodes, but it is meaningless to call it after
+  // the application of a directive to the second node.
+  inline bool willHaveDifferentLIRNodes(MDefinition* mir1, MDefinition* mir2);
 
   // These create temporary register requests.
   inline LDefinition temp(LDefinition::Type type = LDefinition::GENERAL,
@@ -164,6 +245,7 @@ class LIRGeneratorShared {
   // unless the arg is of FloatRegister type
   inline LDefinition tempFixed(Register reg);
   inline LDefinition tempFixed(FloatRegister reg);
+  inline LInt64Definition tempInt64Fixed(Register64 reg);
 
   template <size_t Ops, size_t Temps>
   inline void defineFixed(LInstructionHelper<1, Ops, Temps>* lir,
@@ -216,8 +298,10 @@ class LIRGeneratorShared {
   // Returns a box allocation. The use is either typed, a Value, or
   // a constant (if useConstant is true).
   inline LBoxAllocation useBoxOrTypedOrConstant(MDefinition* mir,
-                                                bool useConstant);
-  inline LBoxAllocation useBoxOrTyped(MDefinition* mir);
+                                                bool useConstant,
+                                                bool useAtStart = false);
+  inline LBoxAllocation useBoxOrTyped(MDefinition* mir,
+                                      bool useAtStart = false);
 
   // Returns an int64 allocation for an Int64-typed instruction.
   inline LInt64Allocation useInt64(MDefinition* mir, LUse::Policy policy,
@@ -301,8 +385,7 @@ class LIRGeneratorShared {
   }
 
   LRecoverInfo* getRecoverInfo(MResumePoint* rp);
-  LSnapshot* buildSnapshot(LInstruction* ins, MResumePoint* rp,
-                           BailoutKind kind);
+  LSnapshot* buildSnapshot(MResumePoint* rp, BailoutKind kind);
   bool assignPostSnapshot(MInstruction* mir, LInstruction* ins);
 
   // Marks this instruction as fallible, meaning that before it performs
@@ -315,7 +398,7 @@ class LIRGeneratorShared {
   // function may build a snapshot that captures the result of its own
   // instruction, and as such, should generally be called after define*().
   void assignSafepoint(LInstruction* ins, MInstruction* mir,
-                       BailoutKind kind = Bailout_DuringVMCall);
+                       BailoutKind kind = BailoutKind::DuringVMCall);
 
   // Marks this instruction as needing a wasm safepoint.
   void assignWasmSafepoint(LInstruction* ins, MInstruction* mir);
@@ -326,6 +409,11 @@ class LIRGeneratorShared {
   void lowerConstantFloat32(float f, MInstruction* mir) {
     define(new (alloc()) LFloat32(f), mir);
   }
+  bool canSpecializeWasmCompareAndSelect(MCompare::CompareType compTy,
+                                         MIRType insTy);
+  void lowerWasmCompareAndSelect(MWasmSelect* ins, MDefinition* lhs,
+                                 MDefinition* rhs, MCompare::CompareType compTy,
+                                 JSOp jsop);
 
  public:
   // Whether to generate typed reads for element accesses with hole checks.

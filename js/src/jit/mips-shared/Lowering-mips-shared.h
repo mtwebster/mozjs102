@@ -30,6 +30,8 @@ class LIRGeneratorMIPSShared : public LIRGeneratorShared {
                      MDefinition* lhs, MDefinition* rhs);
   void lowerUrshD(MUrsh* mir);
 
+  void lowerPowOfTwoI(MPow* mir);
+
   void lowerForALU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir,
                    MDefinition* input);
   void lowerForALU(LInstructionHelper<1, 2, 0>* ins, MDefinition* mir,
@@ -45,6 +47,10 @@ class LIRGeneratorMIPSShared : public LIRGeneratorShared {
       LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, Temps>* ins,
       MDefinition* mir, MDefinition* lhs, MDefinition* rhs);
 
+  void lowerForCompareI64AndBranch(MTest* mir, MCompare* comp, JSOp op,
+                                   MDefinition* left, MDefinition* right,
+                                   MBasicBlock* ifTrue, MBasicBlock* ifFalse);
+
   void lowerForFPU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir,
                    MDefinition* src);
   template <size_t Temps>
@@ -53,11 +59,19 @@ class LIRGeneratorMIPSShared : public LIRGeneratorShared {
 
   void lowerForBitAndAndBranch(LBitAndAndBranch* baab, MInstruction* mir,
                                MDefinition* lhs, MDefinition* rhs);
+  void lowerWasmBuiltinTruncateToInt32(MWasmBuiltinTruncateToInt32* ins);
   void lowerDivI(MDiv* div);
   void lowerModI(MMod* mod);
+  void lowerNegI(MInstruction* ins, MDefinition* input);
+  void lowerNegI64(MInstruction* ins, MDefinition* input);
   void lowerMulI(MMul* mul, MDefinition* lhs, MDefinition* rhs);
   void lowerUDiv(MDiv* div);
   void lowerUMod(MMod* mod);
+  void lowerWasmSelectI(MWasmSelect* select);
+  void lowerWasmSelectI64(MWasmSelect* select);
+
+  void lowerBigIntLsh(MBigIntLsh* ins);
+  void lowerBigIntRsh(MBigIntRsh* ins);
 
   LTableSwitch* newLTableSwitch(const LAllocation& in,
                                 const LDefinition& inputCopy,

@@ -65,9 +65,9 @@ use crate::ir;
 use crate::ir::entities::AnyEntity;
 use crate::ir::instructions::{BranchInfo, CallInfo, InstructionFormat, ResolvedConstraint};
 use crate::ir::{
-    types, ArgumentLoc, Block, Constant, FuncRef, Function, GlobalValue, Inst, InstructionData,
-    JumpTable, Opcode, SigRef, StackSlot, StackSlotKind, Type, Value, ValueDef, ValueList,
-    ValueLoc,
+    types, ArgumentLoc, ArgumentPurpose, Block, Constant, FuncRef, Function, GlobalValue, Inst,
+    InstructionData, JumpTable, Opcode, SigRef, StackSlot, StackSlotKind, Type, Value, ValueDef,
+    ValueList, ValueLoc,
 };
 use crate::isa::TargetIsa;
 use crate::iterators::IteratorExtras;
@@ -80,7 +80,6 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::{self, Display, Formatter, Write};
 use log::debug;
-use thiserror::Error;
 
 pub use self::cssa::verify_cssa;
 pub use self::liveness::verify_liveness;
@@ -92,8 +91,7 @@ mod liveness;
 mod locations;
 
 /// A verifier error.
-#[derive(Error, Debug, PartialEq, Eq, Clone)]
-#[error("{}{}: {}", .location, format_context(.context), .message)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct VerifierError {
     /// The entity causing the verifier error.
     pub location: AnyEntity,
@@ -104,11 +102,16 @@ pub struct VerifierError {
     pub message: String,
 }
 
-/// Helper for formatting Verifier::Error context.
-fn format_context(context: &Option<String>) -> String {
-    match context {
-        None => "".to_string(),
-        Some(c) => format!(" ({})", c),
+// This is manually implementing Error and Display instead of using thiserror to reduce the amount
+// of dependencies used by Cranelift.
+impl std::error::Error for VerifierError {}
+
+impl Display for VerifierError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match &self.context {
+            None => write!(f, "{}: {}", self.location, self.message),
+            Some(context) => write!(f, "{} ({}): {}", self.location, context, self.message),
+        }
     }
 }
 
@@ -175,8 +178,12 @@ pub type VerifierStepResult<T> = Result<T, ()>;
 pub type VerifierResult<T> = Result<T, VerifierErrors>;
 
 /// List of verifier errors.
-#[derive(Error, Debug, Default, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct VerifierErrors(pub Vec<VerifierError>);
+
+// This is manually implementing Error and Display instead of using thiserror to reduce the amount
+// of dependencies used by Cranelift.
+impl std::error::Error for VerifierErrors {}
 
 impl VerifierErrors {
     /// Return a new `VerifierErrors` struct.
@@ -749,17 +756,21 @@ impl<'a> Verifier<'a> {
             }
 
             // Exhaustive list so we can't forget to add new formats
-            Unary { .. }
+            AtomicCas { .. }
+            | AtomicRmw { .. }
+            | LoadNoOffset { .. }
+            | StoreNoOffset { .. }
+            | Unary { .. }
             | UnaryConst { .. }
             | UnaryImm { .. }
             | UnaryIeee32 { .. }
             | UnaryIeee64 { .. }
             | UnaryBool { .. }
             | Binary { .. }
-            | BinaryImm { .. }
+            | BinaryImm8 { .. }
+            | BinaryImm64 { .. }
             | Ternary { .. }
-            | InsertLane { .. }
-            | ExtractLane { .. }
+            | TernaryImm8 { .. }
             | Shuffle { .. }
             | IntCompare { .. }
             | IntCompareImm { .. }
@@ -1473,7 +1484,8 @@ impl<'a> Verifier<'a> {
                             ),
                         ));
                     }
-                    if slot.size != abi.value_type.bytes() {
+                    if abi.purpose == ArgumentPurpose::StructArgument(slot.size) {
+                    } else if slot.size != abi.value_type.bytes() {
                         return errors.fatal((
                             inst,
                             self.context(inst),
@@ -1912,20 +1924,20 @@ impl<'a> Verifier<'a> {
                     Ok(())
                 }
             }
-            ir::InstructionData::ExtractLane {
+            ir::InstructionData::BinaryImm8 {
                 opcode: ir::instructions::Opcode::Extractlane,
-                lane,
+                imm: lane,
                 arg,
                 ..
             }
-            | ir::InstructionData::InsertLane {
+            | ir::InstructionData::TernaryImm8 {
                 opcode: ir::instructions::Opcode::Insertlane,
-                lane,
+                imm: lane,
                 args: [arg, _],
                 ..
             } => {
                 // We must be specific about the opcodes above because other instructions are using
-                // the ExtractLane/InsertLane formats.
+                // the same formats.
                 let ty = self.func.dfg.value_type(arg);
                 if u16::from(lane) >= ty.lane_count() {
                     errors.fatal((
@@ -1984,6 +1996,20 @@ impl<'a> Verifier<'a> {
                     AnyEntity::Function,
                     format!("Return value at position {} has an invalid type", i),
                 ))
+            });
+
+        self.func
+            .signature
+            .returns
+            .iter()
+            .enumerate()
+            .for_each(|(i, ret)| {
+                if let ArgumentPurpose::StructArgument(_) = ret.purpose {
+                    errors.report((
+                        AnyEntity::Function,
+                        format!("Return value at position {} can't be an struct argument", i),
+                    ))
+                }
             });
 
         if errors.has_error() {
@@ -2045,10 +2071,7 @@ mod tests {
                 Some(&VerifierError { ref message, .. }) => {
                     if !message.contains($msg) {
                         #[cfg(feature = "std")]
-                        panic!(format!(
-                            "'{}' did not contain the substring '{}'",
-                            message, $msg
-                        ));
+                        panic!("'{}' did not contain the substring '{}'", message, $msg);
                         #[cfg(not(feature = "std"))]
                         panic!("error message did not contain the expected substring");
                     }

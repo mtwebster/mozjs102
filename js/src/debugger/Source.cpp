@@ -14,18 +14,19 @@
 #include <string.h>  // for memcpy
 #include <utility>   // for move
 
-#include "jsapi.h"        // for JS_ReportErrorNumberASCII, JS_CopyStringCharsZ
-#include "jsfriendapi.h"  // for GetErrorMessage, JS_NewUint8Array
+#include "jsapi.h"  // for JS_ReportErrorNumberASCII, JS_CopyStringCharsZ
 
 #include "debugger/Debugger.h"  // for DebuggerSourceReferent, Debugger
 #include "debugger/Script.h"    // for DebuggerScript
 #include "gc/Tracer.h"  // for TraceManuallyBarrieredCrossCompartmentEdge
 #include "js/CompilationAndEvaluation.h"  // for Compile
+#include "js/experimental/TypedData.h"    // for JS_NewUint8Array
+#include "js/friend/ErrorMessages.h"      // for GetErrorMessage, JSMSG_*
+#include "js/SourceText.h"                // for JS::SourceOwnership
 #include "vm/BytecodeUtil.h"              // for JSDVG_SEARCH_STACK
 #include "vm/JSContext.h"                 // for JSContext (ptr only)
 #include "vm/JSObject.h"                  // for JSObject, RequireObject
 #include "vm/JSScript.h"          // for ScriptSource, ScriptSourceObject
-#include "vm/ObjectGroup.h"       // for TenuredObject
 #include "vm/StringType.h"        // for NewStringCopyZ, JSString (ptr only)
 #include "vm/TypedArrayObject.h"  // for TypedArrayObject, JSObject::is
 #include "wasm/WasmCode.h"        // for Metadata
@@ -34,8 +35,9 @@
 #include "wasm/WasmJS.h"          // for WasmInstanceObject
 #include "wasm/WasmTypes.h"       // for Bytes, RootedWasmInstanceObject
 
-#include "vm/JSObject-inl.h"      // for InitClass
-#include "vm/NativeObject-inl.h"  // for NewTenuredObjectWithGivenProto
+#include "debugger/Debugger-inl.h"  // for Debugger::fromJSObject
+#include "vm/JSObject-inl.h"        // for InitClass
+#include "vm/NativeObject-inl.h"    // for NewTenuredObjectWithGivenProto
 
 namespace js {
 class GlobalObject;
@@ -90,6 +92,12 @@ DebuggerSource* DebuggerSource::create(JSContext* cx, HandleObject proto,
   return sourceObj;
 }
 
+Debugger* DebuggerSource::owner() const {
+  MOZ_ASSERT(isInstance());
+  JSObject* dbgobj = &getReservedSlot(OWNER_SLOT).toObject();
+  return Debugger::fromJSObject(dbgobj);
+}
+
 // For internal use only.
 NativeObject* DebuggerSource::getReferentRawObject() const {
   return static_cast<NativeObject*>(getPrivate());
@@ -138,7 +146,7 @@ DebuggerSource* DebuggerSource::check(JSContext* cx, HandleValue thisv) {
 
   DebuggerSource* thisSourceObj = &thisobj->as<DebuggerSource>();
 
-  if (!thisSourceObj->getReferentRawObject()) {
+  if (!thisSourceObj->isInstance()) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_INCOMPATIBLE_PROTO, "Debugger.Source",
                               "method", "prototype object");
@@ -389,14 +397,14 @@ struct DebuggerSourceGetElementMatcher {
 
 bool DebuggerSource::CallData::getElement() {
   DebuggerSourceGetElementMatcher matcher(cx);
+  RootedValue elementValue(cx);
   if (JSObject* element = referent.match(matcher)) {
-    args.rval().setObjectOrNull(element);
-    if (!Debugger::fromChildJSObject(obj)->wrapDebuggeeValue(cx, args.rval())) {
+    elementValue.setObject(*element);
+    if (!obj->owner()->wrapDebuggeeValue(cx, &elementValue)) {
       return false;
     }
-  } else {
-    args.rval().setUndefined();
   }
+  args.rval().set(elementValue);
   return true;
 }
 
@@ -413,7 +421,7 @@ struct DebuggerSourceGetElementPropertyMatcher {
 bool DebuggerSource::CallData::getElementProperty() {
   DebuggerSourceGetElementPropertyMatcher matcher;
   args.rval().set(referent.match(matcher));
-  return Debugger::fromChildJSObject(obj)->wrapDebuggeeValue(cx, args.rval());
+  return obj->owner()->wrapDebuggeeValue(cx, args.rval());
 }
 
 class DebuggerSourceGetIntroductionScriptMatcher {
@@ -454,7 +462,7 @@ class DebuggerSourceGetIntroductionScriptMatcher {
 };
 
 bool DebuggerSource::CallData::getIntroductionScript() {
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
   DebuggerSourceGetIntroductionScriptMatcher matcher(cx, dbg, args.rval());
   return referent.match(matcher);
 }
@@ -651,7 +659,7 @@ bool DebuggerSource::CallData::reparse() {
     return false;
   }
 
-  Debugger* dbg = Debugger::fromChildJSObject(obj);
+  Debugger* dbg = obj->owner();
   RootedObject scriptDO(cx, dbg->wrapScript(cx, script));
   if (!scriptDO) {
     return false;

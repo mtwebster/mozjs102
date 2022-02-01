@@ -16,6 +16,7 @@
 #include "gc/Scheduling.h"
 #include "js/GCAPI.h"
 #include "js/HeapAPI.h"
+#include "js/shadow/Zone.h"  // JS::shadow::Zone
 #include "vm/MallocProvider.h"
 
 namespace JS {
@@ -41,7 +42,7 @@ void MaybeMallocTriggerZoneGC(JSRuntime* rt, ZoneAllocator* zoneAlloc,
 class ZoneAllocator : public JS::shadow::Zone,
                       public js::MallocProvider<JS::Zone> {
  protected:
-  explicit ZoneAllocator(JSRuntime* rt);
+  explicit ZoneAllocator(JSRuntime* rt, Kind kind);
   ~ZoneAllocator();
   void fixupAfterMovingGC();
 
@@ -51,9 +52,9 @@ class ZoneAllocator : public JS::shadow::Zone,
     return reinterpret_cast<ZoneAllocator*>(zone);
   }
 
-  MOZ_MUST_USE void* onOutOfMemory(js::AllocFunction allocFunc,
-                                   arena_id_t arena, size_t nbytes,
-                                   void* reallocPtr = nullptr);
+  [[nodiscard]] void* onOutOfMemory(js::AllocFunction allocFunc,
+                                    arena_id_t arena, size_t nbytes,
+                                    void* reallocPtr = nullptr);
   void reportAllocationOverflow() const;
 
   void adoptMallocBytes(ZoneAllocator* other) {
@@ -65,8 +66,7 @@ class ZoneAllocator : public JS::shadow::Zone,
   }
 
   void updateMemoryCountersOnGCStart();
-  void updateGCStartThresholds(gc::GCRuntime& gc,
-                               JSGCInvocationKind invocationKind,
+  void updateGCStartThresholds(gc::GCRuntime& gc, JS::GCOptions options,
                                const js::AutoLockGC& lock);
   void setGCSliceThresholds(gc::GCRuntime& gc);
   void clearGCSliceThresholds();
@@ -83,7 +83,7 @@ class ZoneAllocator : public JS::shadow::Zone,
     mallocTracker.trackGCMemory(cell, nbytes, use);
 #endif
 
-    maybeMallocTriggerZoneGC();
+    maybeTriggerGCOnMalloc();
   }
 
   void removeCellMemory(js::gc::Cell* cell, size_t nbytes, js::MemoryUse use,
@@ -129,7 +129,7 @@ class ZoneAllocator : public JS::shadow::Zone,
     mallocTracker.incNonGCMemory(mem, nbytes, use);
 #endif
 
-    maybeMallocTriggerZoneGC();
+    maybeTriggerGCOnMalloc();
   }
   void decNonGCMemory(void* mem, size_t nbytes, MemoryUse use, bool wasSwept) {
     MOZ_ASSERT(nbytes);
@@ -158,7 +158,7 @@ class ZoneAllocator : public JS::shadow::Zone,
   }
 
   // Check malloc allocation threshold and trigger a zone GC if necessary.
-  void maybeMallocTriggerZoneGC() {
+  void maybeTriggerGCOnMalloc() {
     maybeTriggerZoneGC(mallocHeapSize, mallocHeapThreshold,
                        JS::GCReason::TOO_MUCH_MALLOC);
   }
@@ -265,7 +265,7 @@ class ZoneAllocPolicy : public MallocProvider<ZoneAllocPolicy> {
     }
   }
 
-  MOZ_MUST_USE bool checkSimulatedOOM() const {
+  [[nodiscard]] bool checkSimulatedOOM() const {
     return !js::oom::ShouldFailWithOOM();
   }
 
@@ -273,9 +273,9 @@ class ZoneAllocPolicy : public MallocProvider<ZoneAllocPolicy> {
 
   // Internal methods called by the MallocProvider implementation.
 
-  MOZ_MUST_USE void* onOutOfMemory(js::AllocFunction allocFunc,
-                                   arena_id_t arena, size_t nbytes,
-                                   void* reallocPtr = nullptr) {
+  [[nodiscard]] void* onOutOfMemory(js::AllocFunction allocFunc,
+                                    arena_id_t arena, size_t nbytes,
+                                    void* reallocPtr = nullptr) {
     return zone()->onOutOfMemory(allocFunc, arena, nbytes, reallocPtr);
   }
   void reportAllocationOverflow() const { zone()->reportAllocationOverflow(); }

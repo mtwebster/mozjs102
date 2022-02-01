@@ -7,7 +7,7 @@
 
 use super::*;
 
-use cocoa::foundation::{NSRange, NSUInteger};
+use cocoa_foundation::foundation::NSUInteger;
 use objc::runtime::{NO, YES};
 
 #[repr(u64)]
@@ -98,6 +98,16 @@ impl TextureDescriptorRef {
 
     pub fn set_mipmap_level_count(&self, count: NSUInteger) {
         unsafe { msg_send![self, setMipmapLevelCount: count] }
+    }
+
+    pub fn set_mipmap_level_count_for_size(&self, size: MTLSize) {
+        let MTLSize {
+            width,
+            height,
+            depth,
+        } = size;
+        let count = (width.max(height).max(depth) as f64).log2().ceil() as u64;
+        self.set_mipmap_level_count(count);
     }
 
     pub fn sample_count(&self) -> NSUInteger {
@@ -224,9 +234,10 @@ impl TextureRef {
         unsafe { msg_send![self, usage] }
     }
 
+    /// [framebufferOnly Apple Docs](https://developer.apple.com/documentation/metal/mtltexture/1515749-framebufferonly?language=objc)
     pub fn framebuffer_only(&self) -> bool {
         unsafe {
-            match msg_send![self, framebufferOnly] {
+            match msg_send![self, isFramebufferOnly] {
                 YES => true,
                 NO => false,
                 _ => unreachable!(),
@@ -237,9 +248,9 @@ impl TextureRef {
     pub fn get_bytes(
         &self,
         bytes: *mut std::ffi::c_void,
+        stride: NSUInteger,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, getBytes:bytes
@@ -252,10 +263,10 @@ impl TextureRef {
     pub fn get_bytes_in_slice(
         &self,
         bytes: *mut std::ffi::c_void,
-        region: MTLRegion,
-        mipmap_level: NSUInteger,
         stride: NSUInteger,
         image_stride: NSUInteger,
+        region: MTLRegion,
+        mipmap_level: NSUInteger,
         slice: NSUInteger,
     ) {
         unsafe {
@@ -272,8 +283,8 @@ impl TextureRef {
         &self,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        stride: NSUInteger,
         bytes: *const std::ffi::c_void,
+        stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, replaceRegion:region
@@ -287,10 +298,10 @@ impl TextureRef {
         &self,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        image_stride: NSUInteger,
-        stride: NSUInteger,
         slice: NSUInteger,
         bytes: *const std::ffi::c_void,
+        stride: NSUInteger,
+        image_stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, replaceRegion:region
@@ -310,8 +321,8 @@ impl TextureRef {
         &self,
         pixel_format: MTLPixelFormat,
         texture_type: MTLTextureType,
-        mipmap_levels: NSRange,
-        slices: NSRange,
+        mipmap_levels: crate::NSRange,
+        slices: crate::NSRange,
     ) -> Texture {
         unsafe {
             msg_send![self, newTextureViewWithPixelFormat:pixel_format

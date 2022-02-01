@@ -1,15 +1,17 @@
 //! Memory buffers.
 //!
-//! # Buffer
-//!
 //! Buffers interpret memory slices as linear contiguous data array.
+//!
 //! They can be used as shader resources, vertex buffers, index buffers or for
 //! specifying the action commands for indirect execution.
 
-use crate::{device, format, Backend, IndexType};
+use crate::{device::OutOfMemory, format::Format};
 
 /// An offset inside a buffer, in bytes.
 pub type Offset = u64;
+
+/// An stride between elements inside a buffer, in bytes.
+pub type Stride = u32;
 
 /// A subrange of the buffer.
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
@@ -38,89 +40,27 @@ impl SubRange {
 pub type State = Access;
 
 /// Error creating a buffer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum CreationError {
     /// Out of either host or device memory.
-    OutOfMemory(device::OutOfMemory),
-
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// Requested buffer usage is not supported.
     ///
     /// Older GL version don't support constant buffers or multiple usage flags.
-    UnsupportedUsage {
-        /// Unsupported usage passed on buffer creation.
-        usage: Usage,
-    },
-}
-
-impl From<device::OutOfMemory> for CreationError {
-    fn from(error: device::OutOfMemory) -> Self {
-        CreationError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for CreationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CreationError::OutOfMemory(err) => write!(fmt, "Failed to create buffer: {}", err),
-            CreationError::UnsupportedUsage { usage } => write!(
-                fmt,
-                "Failed to create buffer: Unsupported usage: {:?}",
-                usage
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CreationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CreationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
+    #[error("Unsupported usage: {0:?}")]
+    UnsupportedUsage(Usage),
 }
 
 /// Error creating a buffer view.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ViewCreationError {
     /// Out of either host or device memory.
-    OutOfMemory(device::OutOfMemory),
-
+    #[error(transparent)]
+    OutOfMemory(#[from] OutOfMemory),
     /// Buffer view format is not supported.
-    UnsupportedFormat(Option<format::Format>),
-}
-
-impl From<device::OutOfMemory> for ViewCreationError {
-    fn from(error: device::OutOfMemory) -> Self {
-        ViewCreationError::OutOfMemory(error)
-    }
-}
-
-impl std::fmt::Display for ViewCreationError {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ViewCreationError::OutOfMemory(err) => {
-                write!(fmt, "Failed to create buffer view: {}", err)
-            }
-            ViewCreationError::UnsupportedFormat(Some(format)) => write!(
-                fmt,
-                "Failed to create buffer view: Unsupported format {:?}",
-                format
-            ),
-            ViewCreationError::UnsupportedFormat(None) => {
-                write!(fmt, "Failed to create buffer view: Unspecified format")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ViewCreationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ViewCreationError::OutOfMemory(err) => Some(err),
-            _ => None,
-        }
-    }
+    #[error("Unsupported format: {0:?}")]
+    UnsupportedFormat(Option<Format>),
 }
 
 bitflags!(
@@ -145,6 +85,21 @@ bitflags!(
         const VERTEX = 0x80;
         ///
         const INDIRECT = 0x100;
+    }
+);
+
+bitflags!(
+    /// Buffer create flags.
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub struct CreateFlags: u32 {
+        /// Specifies the view will be backed using sparse memory binding.
+        const SPARSE_BINDING = 0x0000_0001;
+        /// Specifies the view can be partially backed with sparse memory binding.
+        /// Must have `SPARSE_BINDING` enabled.
+        const SPARSE_RESIDENCY = 0x0000_0002;
+        /// Specifies the view will be backed using sparse memory binding with memory bindings that
+        /// might alias other data. Must have `SPARSE_BINDING` enabled.
+        const SPARSE_ALIASED = 0x0000_0004;
     }
 );
 
@@ -191,17 +146,3 @@ bitflags!(
         const MEMORY_WRITE = 0x10000;
     }
 );
-
-/// Index buffer view for `bind_index_buffer`.
-///
-/// Defines a buffer slice used for acquiring the indices on draw commands.
-/// Indices are used to lookup vertex indices in the vertex buffers.
-#[derive(Debug)]
-pub struct IndexBufferView<'a, B: Backend> {
-    /// The buffer to bind.
-    pub buffer: &'a B::Buffer,
-    /// The subrange of the buffer.
-    pub range: SubRange,
-    /// The type of the table elements (`u16` or `u32`).
-    pub index_type: IndexType,
-}

@@ -11,15 +11,10 @@
 
 #include <stdio.h>
 #include <utility>
-#ifdef XP_WIN
-#  include <process.h>
-#  define getpid _getpid
-#else
-#  include <unistd.h>
-#endif
 
 #include "frontend/SourceNotes.h"  // SrcNote, SrcNoteType, SrcNoteIterator
 #include "gc/Zone.h"
+#include "util/GetPidProvider.h"  // getpid()
 #include "util/Text.h"
 #include "vm/BytecodeUtil.h"
 #include "vm/JSScript.h"
@@ -178,7 +173,7 @@ void LCovSource::writeScript(JSScript* script, const char* scriptName) {
         sn = *iter;
         SrcNoteType type = sn->type();
         if (type == SrcNoteType::SetLine) {
-          lineno = SrcNote::SetLine::getLine(sn);
+          lineno = SrcNote::SetLine::getLine(sn, script->lineno());
         } else if (type == SrcNoteType::NewLine) {
           lineno++;
         }
@@ -469,8 +464,7 @@ void LCovRealm::writeRealmName(JS::Realm* realm) {
     {
       // Hazard analysis cannot tell that the callback does not GC.
       JS::AutoSuppressGCAnalysis nogc;
-      Rooted<Realm*> rootedRealm(cx, realm);
-      (*cx->runtime()->realmNameCallback)(cx, rootedRealm, name, sizeof(name));
+      (*cx->runtime()->realmNameCallback)(cx, realm, name, sizeof(name), nogc);
     }
     for (char* s = name; s < name + sizeof(name) && *s; s++) {
       if (('a' <= *s && *s <= 'z') || ('A' <= *s && *s <= 'Z') ||

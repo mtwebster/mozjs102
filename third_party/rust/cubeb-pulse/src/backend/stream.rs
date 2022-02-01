@@ -13,6 +13,7 @@ use std::{mem, ptr};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_long, c_void};
 use std::slice;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use ringbuf::RingBuffer;
 
 use self::RingBufferConsumer::*;
@@ -124,7 +125,6 @@ impl Drop for Device {
     }
 }
 
-
 enum RingBufferConsumer {
     IntegerRingBufferConsumer(ringbuf::Consumer<i16>),
     FloatRingBufferConsumer(ringbuf::Consumer<f32>)
@@ -206,6 +206,7 @@ impl BufferManager {
             }
         }
     }
+
     fn get_linear_input_data(&mut self, nsamples: usize) -> *const c_void {
         let p: *mut c_void;
         match &mut self.linear_input_buffer {
@@ -221,6 +222,33 @@ impl BufferManager {
         self.pull_input_data(p, nsamples);
 
         return p;
+    }
+
+    pub fn trim(&mut self, final_size: usize) {
+        match &self.linear_input_buffer {
+            LinearInputBuffer::IntegerLinearInputBuffer(b) => {
+                let length = b.len();
+                assert!(final_size <= length);
+                let nframes_to_pop = length - final_size;
+                self.get_linear_input_data(nframes_to_pop);
+            }
+            LinearInputBuffer::FloatLinearInputBuffer(b) => {
+                let length = b.len();
+                assert!(final_size <= length);
+                let nframes_to_pop = length - final_size;
+                self.get_linear_input_data(nframes_to_pop);
+            }
+        }
+    }
+    pub fn available_samples(&mut self) -> usize {
+        match &self.linear_input_buffer {
+            LinearInputBuffer::IntegerLinearInputBuffer(b) => {
+                b.len()
+            }
+            LinearInputBuffer::FloatLinearInputBuffer(b) => {
+                b.len()
+            }
+        }
     }
 }
 
@@ -239,9 +267,10 @@ pub struct PulseStream<'ctx> {
     input_stream: Option<pulse::Stream>,
     data_callback: ffi::cubeb_data_callback,
     state_callback: ffi::cubeb_state_callback,
-    drain_timer: *mut pa_time_event,
+    drain_timer: AtomicPtr<pa_time_event>,
     output_sample_spec: pulse::SampleSpec,
     input_sample_spec: pulse::SampleSpec,
+    output_frame_count: AtomicUsize,
     shutdown: bool,
     volume: f32,
     state: ffi::cubeb_state,
@@ -341,7 +370,19 @@ impl<'ctx> PulseStream<'ctx> {
             if stm.input_stream.is_some() {
                 let nframes = nbytes / stm.output_sample_spec.frame_size();
                 let nsamples_input = nframes * stm.input_sample_spec.channels as usize;
-                let p = stm.input_buffer_manager.as_mut().unwrap().get_linear_input_data(nsamples_input);
+                let input_buffer_manager = stm.input_buffer_manager.as_mut().unwrap();
+
+                if stm.output_frame_count.fetch_add(nframes, Ordering::SeqCst) == 0 {
+                    let buffered_input_frames = input_buffer_manager.available_samples() / stm.input_sample_spec.channels as usize;
+                    if buffered_input_frames > nframes {
+                        // Trim the buffer to ensure minimal roundtrip latency
+                        let popped_frames = buffered_input_frames - nframes;
+                        input_buffer_manager.trim(nframes * stm.input_sample_spec.channels as usize);
+                        cubeb_log!("Dropping {} frames in input buffer.", popped_frames);
+                    }
+                }
+
+                let p = input_buffer_manager.get_linear_input_data(nsamples_input);
                 stm.trigger_user_callback(p, nbytes);
             } else {
                 // Output/playback only operation.
@@ -358,9 +399,10 @@ impl<'ctx> PulseStream<'ctx> {
             data_callback: data_callback,
             state_callback: state_callback,
             user_ptr: user_ptr,
-            drain_timer: ptr::null_mut(),
+            drain_timer: AtomicPtr::new(ptr::null_mut()),
             output_sample_spec: pulse::SampleSpec::default(),
             input_sample_spec: pulse::SampleSpec::default(),
+            output_frame_count: AtomicUsize::new(0),
             shutdown: false,
             volume: PULSE_NO_GAIN,
             state: ffi::CUBEB_STATE_ERROR,
@@ -522,9 +564,10 @@ impl<'ctx> PulseStream<'ctx> {
         self.context.mainloop.lock();
         {
             if let Some(stm) = self.output_stream.take() {
-                if !self.drain_timer.is_null() {
+                let drain_timer = self.drain_timer.load(Ordering::Acquire);
+                if !drain_timer.is_null() {
                     /* there's no pa_rttime_free, so use this instead. */
-                    self.context.mainloop.get_api().time_free(self.drain_timer);
+                    self.context.mainloop.get_api().time_free(drain_timer);
                 }
                 stm.clear_state_callback();
                 stm.clear_write_callback();
@@ -584,7 +627,7 @@ impl<'ctx> StreamOps for PulseStream<'ctx> {
             self.context.mainloop.lock();
             self.shutdown = true;
             // If draining is taking place wait to finish
-            while !self.drain_timer.is_null() {
+            while !self.drain_timer.load(Ordering::Acquire).is_null() {
                 self.context.mainloop.wait();
             }
             self.context.mainloop.unlock();
@@ -592,10 +635,6 @@ impl<'ctx> StreamOps for PulseStream<'ctx> {
         self.cork(CorkState::cork() | CorkState::notify());
 
         Ok(())
-    }
-
-    fn reset_default_device(&mut self) -> Result<()> {
-        Err(not_supported())
     }
 
     fn position(&mut self) -> Result<u64> {
@@ -643,7 +682,22 @@ impl<'ctx> StreamOps for PulseStream<'ctx> {
     }
 
     fn input_latency(&mut self) -> Result<u32> {
-        Err(Error::error())
+        match self.input_stream {
+            None => Err(Error::error()),
+            Some(ref stm) => match stm.get_latency() {
+                Ok(StreamLatency::Positive(w_usec)) => {
+                    let latency = (w_usec * pa_usec_t::from(self.input_sample_spec.rate)
+                        / PA_USEC_PER_SEC) as u32;
+                    Ok(latency)
+                }
+                // Input stream can be negative only if it is attached to a
+                // monitor source device
+                Ok(StreamLatency::Negative(_)) => {
+                    return Ok(0);
+                }
+                Err(_) => Err(Error::error()),
+            },
+        }
     }
 
     fn set_volume(&mut self, volume: f32) -> Result<()> {
@@ -690,6 +744,24 @@ impl<'ctx> StreamOps for PulseStream<'ctx> {
                 } else {
                     Err(Error::error())
                 }
+            }
+        }
+    }
+
+    fn set_name(&mut self, name: &CStr) -> Result<()> {
+        match self.output_stream {
+            None => Err(Error::error()),
+            Some(ref stm) => {
+                self.context.mainloop.lock();
+                    if let Ok(o) = stm.set_name(
+                        name,
+                        stream_success,
+                        self as *const _ as *mut _
+                    ) {
+                        self.context.operation_wait(stm, &o);
+                    }
+                self.context.mainloop.unlock();
+                Ok(())
             }
         }
     }
@@ -903,11 +975,12 @@ impl<'ctx> PulseStream<'ctx> {
             u: *mut c_void,
         ) {
             let stm = unsafe { &mut *(u as *mut PulseStream) };
-            debug_assert_eq!(stm.drain_timer, e);
+            let drain_timer = stm.drain_timer.load(Ordering::Acquire);
+            debug_assert_eq!(drain_timer, e);
             stm.state_change_callback(ffi::CUBEB_STATE_DRAINED);
             /* there's no pa_rttime_free, so use this instead. */
-            a.time_free(stm.drain_timer);
-            stm.drain_timer = ptr::null_mut();
+            a.time_free(drain_timer);
+            stm.drain_timer.store(ptr::null_mut(), Ordering::Release);
             stm.context.mainloop.signal();
         }
 
@@ -999,13 +1072,16 @@ impl<'ctx> PulseStream<'ctx> {
 
                             /* pa_stream_drain is useless, see PA bug# 866. this is a workaround. */
                             /* arbitrary safety margin: double the current latency. */
-                            debug_assert!(self.drain_timer.is_null());
+                            debug_assert!(self.drain_timer.load(Ordering::Acquire).is_null());
                             let stream_ptr = self as *const _ as *mut _;
                             if let Some(ref context) = self.context.context {
-                                self.drain_timer = context.rttime_new(
-                                    pulse::rtclock_now() + 2 * latency,
-                                    drained_cb,
-                                    stream_ptr,
+                                self.drain_timer.store(
+                                    context.rttime_new(
+                                        pulse::rtclock_now() + 2 * latency,
+                                        drained_cb,
+                                        stream_ptr,
+                                    ),
+                                    Ordering::Release,
                                 );
                             }
                             self.shutdown = true;

@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 
+#include "js/ArrayBuffer.h"
 #include "js/CompilationAndEvaluation.h"  // JS::Evaluate
 #include "js/Initialization.h"
 #include "js/RootingAPI.h"
@@ -17,12 +18,22 @@
 
 JSAPITest* JSAPITest::list;
 
-bool JSAPITest::init() {
+bool JSAPITest::init(JSContext* maybeReusableContext) {
+  if (maybeReusableContext && reuseGlobal) {
+    cx = maybeReusableContext;
+    global.init(cx, JS::CurrentGlobalOrNull(cx));
+    return init();
+  }
+
+  MaybeFreeContext(maybeReusableContext);
+
   cx = createContext();
   if (!cx) {
     return false;
   }
+
   js::UseInternalJobQueues(cx);
+
   if (!JS::InitSelfHostedCode(cx)) {
     return false;
   }
@@ -32,18 +43,32 @@ bool JSAPITest::init() {
     return false;
   }
   JS::EnterRealm(cx, global);
-  return true;
+  return init();
+}
+
+JSContext* JSAPITest::maybeForgetContext() {
+  if (!reuseGlobal) {
+    return nullptr;
+  }
+
+  JSContext* reusableCx = cx;
+  global.reset();
+  cx = nullptr;
+  return reusableCx;
+}
+
+/* static */
+void JSAPITest::MaybeFreeContext(JSContext* maybeCx) {
+  if (maybeCx) {
+    JS::LeaveRealm(maybeCx, nullptr);
+    JS_DestroyContext(maybeCx);
+  }
 }
 
 void JSAPITest::uninit() {
-  if (global) {
-    JS::LeaveRealm(cx, nullptr);
-    global = nullptr;
-  }
-  if (cx) {
-    destroyContext();
-    cx = nullptr;
-  }
+  global.reset();
+  MaybeFreeContext(cx);
+  cx = nullptr;
   msgs.clear();
 }
 
@@ -90,7 +115,7 @@ JSObject* JSAPITest::createGlobal(JSPrincipals* principals) {
   JS::RealmOptions options;
   options.creationOptions()
       .setStreamsEnabled(true)
-      .setWeakRefsEnabled(true)
+      .setWeakRefsEnabled(JS::WeakRefSpecifier::EnabledWithCleanupSome)
       .setSharedMemoryAndAtomicsEnabled(true);
   newGlobal = JS_NewGlobalObject(cx, getGlobalClass(), principals,
                                  JS::FireOnNewGlobalHook, options);
@@ -112,6 +137,17 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (filter && strcmp(filter, "--list") == 0) {
+    for (JSAPITest* test = JSAPITest::list; test; test = test->next) {
+      printf("%s\n", test->name());
+    }
+    return 0;
+  }
+
+  // Reinitializing the global for every test is quite slow, due to having to
+  // recompile all self-hosted builtins. Allow tests to opt-in to reusing the
+  // global.
+  JSContext* maybeReusedContext = nullptr;
   for (JSAPITest* test = JSAPITest::list; test; test = test->next) {
     const char* name = test->name();
     if (filter && strstr(name, filter) == nullptr) {
@@ -121,7 +157,7 @@ int main(int argc, char* argv[]) {
     total += 1;
 
     printf("%s\n", name);
-    if (!test->init()) {
+    if (!test->init(maybeReusedContext)) {
       printf("TEST-UNEXPECTED-FAIL | %s | Failed to initialize.\n", name);
       failures++;
       test->uninit();
@@ -139,8 +175,13 @@ int main(int argc, char* argv[]) {
         failures++;
       }
     }
+
+    // Return a non-nullptr pointer if the context & global can safely be
+    // reused for the next test.
+    maybeReusedContext = test->maybeForgetContext();
     test->uninit();
   }
+  JSAPITest::MaybeFreeContext(maybeReusedContext);
 
   MOZ_RELEASE_ASSERT(!JSRuntime::hasLiveRuntimes());
   JS_ShutDown();

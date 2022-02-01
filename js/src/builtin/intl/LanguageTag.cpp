@@ -7,6 +7,7 @@
 #include "builtin/intl/LanguageTag.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Span.h"
 #include "mozilla/TextUtils.h"
@@ -27,6 +28,7 @@
 #include "builtin/intl/CommonFunctions.h"
 #include "ds/Sort.h"
 #include "gc/Tracer.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Result.h"
 #include "js/TracingAPI.h"
 #include "js/Utility.h"
@@ -261,8 +263,7 @@ static bool SortAlphabetically(JSContext* cx,
   return true;
 }
 
-bool LanguageTag::canonicalizeBaseName(JSContext* cx,
-                                       DuplicateVariants duplicateVariants) {
+bool LanguageTag::canonicalizeBaseName(JSContext* cx) {
   // Per 6.2.3 CanonicalizeUnicodeLocaleId, the very first step is to
   // canonicalize the syntax by normalizing the case and ordering all subtags.
   // The canonical syntax form is specified in UTS 35, 3.2.1.
@@ -302,20 +303,17 @@ bool LanguageTag::canonicalizeBaseName(JSContext* cx,
       return false;
     }
 
-    if (duplicateVariants == DuplicateVariants::Reject) {
-      // Reject the Locale identifier if a duplicate variant was found, e.g.
-      // "en-variant-Variant".
-      const UniqueChars* duplicate =
-          std::adjacent_find(variants().begin(), variants().end(),
-                             [](const auto& a, const auto& b) {
-                               return strcmp(a.get(), b.get()) == 0;
-                             });
-      if (duplicate != variants().end()) {
-        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                                  JSMSG_DUPLICATE_VARIANT_SUBTAG,
-                                  duplicate->get());
-        return false;
-      }
+    // Reject the Locale identifier if a duplicate variant was found, e.g.
+    // "en-variant-Variant".
+    const UniqueChars* duplicate = std::adjacent_find(
+        variants().begin(), variants().end(), [](const auto& a, const auto& b) {
+          return strcmp(a.get(), b.get()) == 0;
+        });
+    if (duplicate != variants().end()) {
+      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                                JSMSG_DUPLICATE_VARIANT_SUBTAG,
+                                duplicate->get());
+      return false;
     }
   }
 
@@ -339,7 +337,7 @@ bool LanguageTag::canonicalizeBaseName(JSContext* cx,
   // Replace deprecated language, region, and variant subtags with their
   // preferred mappings.
 
-  if (!updateGrandfatheredMappings(cx)) {
+  if (!updateLegacyMappings(cx)) {
     return false;
   }
 
@@ -348,7 +346,10 @@ bool LanguageTag::canonicalizeBaseName(JSContext* cx,
     performComplexLanguageMappings();
   }
 
-  // No script replacements are currently present.
+  // Replace deprecated script subtags with their preferred values.
+  if (script().present()) {
+    scriptMapping(script_);
+  }
 
   // Replace deprecated region subtags with their preferred values.
   if (region().present()) {
@@ -459,11 +460,11 @@ bool LanguageTag::canonicalizeUnicodeExtension(
   using Attribute = LanguageTagParser::AttributesVector::ElementType;
   using Keyword = LanguageTagParser::KeywordsVector::ElementType;
 
-  bool ok;
+  mozilla::DebugOnly<bool> ok;
   JS_TRY_VAR_OR_RETURN_FALSE(
       cx, ok,
       LanguageTagParser::parseUnicodeExtension(
-          cx, mozilla::MakeSpan(extension, length), attributes, keywords));
+          cx, mozilla::Span(extension, length), attributes, keywords));
   MOZ_ASSERT(ok, "unexpected invalid Unicode extension subtag");
 
   auto attributesLessOrEqual = [extension](const Attribute& a,
@@ -565,8 +566,8 @@ bool LanguageTag::canonicalizeUnicodeExtension(
   using StringSpan = mozilla::Span<const char>;
 
   static auto isTrue = [](StringSpan type) {
-    constexpr char True[] = "true";
-    const size_t TrueLength = strlen(True);
+    static constexpr char True[] = "true";
+    constexpr size_t TrueLength = std::char_traits<char>::length(True);
     return type.size() == TrueLength &&
            std::char_traits<char>::compare(type.data(), True, TrueLength) == 0;
   };
@@ -752,11 +753,11 @@ bool LanguageTag::canonicalizeTransformExtension(
 
   using TField = LanguageTagParser::TFieldVector::ElementType;
 
-  bool ok;
+  mozilla::DebugOnly<bool> ok;
   JS_TRY_VAR_OR_RETURN_FALSE(
       cx, ok,
       LanguageTagParser::parseTransformExtension(
-          cx, mozilla::MakeSpan(extension, length), tag, fields));
+          cx, mozilla::Span(extension, length), tag, fields));
   MOZ_ASSERT(ok, "unexpected invalid transform extension subtag");
 
   auto tfieldLessOrEqual = [extension](const TField& a, const TField& b) {
@@ -797,10 +798,7 @@ bool LanguageTag::canonicalizeTransformExtension(
       return false;
     }
 
-    // ECMA-402 is unclear whether or not duplicate variants are allowed in
-    // transform extensions. Tentatively allow duplicates until
-    // https://github.com/tc39/ecma402/issues/330 has been addressed.
-    if (!tag.canonicalizeBaseName(cx, DuplicateVariants::Accept)) {
+    if (!tag.canonicalizeBaseName(cx)) {
       return false;
     }
 
@@ -964,7 +962,7 @@ static bool AssignFromLocaleId(JSContext* cx, LocaleId& localeId,
   // "und-Latn" becomes "-Latn". Handle this case separately.
   if (localeId[0] == '\0' || localeId[0] == '-') {
     static constexpr char und[] = "und";
-    size_t length = strlen(und);
+    constexpr size_t length = std::char_traits<char>::length(und);
 
     // Insert "und" in front of the locale ID.
     if (!localeId.growBy(length)) {
@@ -1050,35 +1048,14 @@ static bool LikelySubtags(JSContext* cx, LikelySubtags likelySubtags,
     return false;
   }
 
-  // UTS #35 requires that locale ID is maximized before its likely subtags are
-  // removed, so we need to call uloc_addLikelySubtags() for both cases.
-  // See <https://ssl.icu-project.org/trac/ticket/10220> and
-  // <https://ssl.icu-project.org/trac/ticket/12345>.
-
+  // Either add or remove likely subtags to/from the locale ID.
   LocaleId localeLikelySubtags(cx);
-
-  // Add likely subtags to the locale ID. When minimizing we can skip adding the
-  // likely subtags for already maximized tags. (When maximizing we've already
-  // verified above that the tag is missing likely subtags.)
-  bool addLikelySubtags = likelySubtags == LikelySubtags::Add ||
-                          !HasLikelySubtags(LikelySubtags::Add, tag);
-
-  if (addLikelySubtags) {
+  if (likelySubtags == LikelySubtags::Add) {
     if (!CallLikelySubtags<uloc_addLikelySubtags>(cx, locale,
                                                   localeLikelySubtags)) {
       return false;
     }
-  }
-
-  // Now that we've succesfully maximized the locale, we can minimize it.
-  if (likelySubtags == LikelySubtags::Remove) {
-    if (addLikelySubtags) {
-      // Copy the maximized subtags back into |locale|.
-      locale = std::move(localeLikelySubtags);
-      localeLikelySubtags = LocaleId(cx);
-    }
-
-    // Remove likely subtags from the locale ID.
+  } else {
     if (!CallLikelySubtags<uloc_minimizeSubtags>(cx, locale,
                                                  localeLikelySubtags)) {
       return false;

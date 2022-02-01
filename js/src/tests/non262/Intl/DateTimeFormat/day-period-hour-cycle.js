@@ -1,4 +1,4 @@
-// |reftest| skip-if(!this.hasOwnProperty("Intl")||release_or_beta)
+// |reftest| skip-if(!this.hasOwnProperty("Intl"))
 
 const {
     Year, Month, Day, DayPeriod, Hour, Minute, Literal
@@ -80,8 +80,8 @@ const tests = [
         date: new Date("2019-01-01T12:00:00"),
         options: { dayPeriod: "short", minute: "numeric" },
         locales: {
-            en: [Minute("0"), Literal(" ├AM/PM: "), DayPeriod("noon"), Literal("┤")],
-            de: [Minute("0"), Literal(" ├Tageshälfte: "), DayPeriod("mittags"), Literal("┤")],
+            en: [Minute("0"), Literal(" (AM/PM: "), DayPeriod("noon"), Literal(")")],
+            de: [Minute("0"), Literal(" (Tageshälfte: "), DayPeriod("mittags"), Literal(")")],
         },
     },
 ];

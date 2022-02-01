@@ -38,7 +38,7 @@ namespace wasm {
 // the most appropriate representation for Cell::anyref.
 STATIC_ASSERT_ANYREF_IS_JSOBJECT;
 
-typedef GCVector<HeapPtr<JSObject*>, 0, SystemAllocPolicy> TableAnyRefVector;
+using TableAnyRefVector = GCVector<HeapPtr<JSObject*>, 0, SystemAllocPolicy>;
 
 class Table : public ShareableBase<Table> {
   using InstanceSet =
@@ -51,15 +51,16 @@ class Table : public ShareableBase<Table> {
   InstanceSet observers_;
   UniqueFuncRefArray functions_;  // either functions_ has data
   TableAnyRefVector objects_;     //   or objects_, but not both
-  const TableKind kind_;
+  const RefType elemType_;
+  const bool isAsmJS_;
   uint32_t length_;
   const Maybe<uint32_t> maximum_;
 
   template <class>
   friend struct js::MallocProvider;
-  Table(JSContext* cx, const TableDesc& td, HandleWasmTableObject maybeObject,
+  Table(JSContext* cx, const TableDesc& desc, HandleWasmTableObject maybeObject,
         UniqueFuncRefArray functions);
-  Table(JSContext* cx, const TableDesc& td, HandleWasmTableObject maybeObject,
+  Table(JSContext* cx, const TableDesc& desc, HandleWasmTableObject maybeObject,
         TableAnyRefVector&& objects);
 
   void tracePrivate(JSTracer* trc);
@@ -70,21 +71,14 @@ class Table : public ShareableBase<Table> {
                               HandleWasmTableObject maybeObject);
   void trace(JSTracer* trc);
 
-  TableKind kind() const { return kind_; }
-  TableRepr repr() const {
-    switch (kind()) {
-      case TableKind::AnyRef:
-        return TableRepr::Ref;
-      case TableKind::FuncRef:
-      case TableKind::AsmJS:
-        return TableRepr::Func;
-    }
-    MOZ_MAKE_COMPILER_ASSUME_IS_UNREACHABLE("switch is exhaustive");
-  }
+  RefType elemType() const { return elemType_; }
+  TableRepr repr() const { return elemType_.tableRepr(); }
 
-  bool isFunction() const {
-    return kind_ == TableKind::FuncRef || kind_ == TableKind::AsmJS;
+  bool isAsmJS() const {
+    MOZ_ASSERT(elemType_.isFunc());
+    return isAsmJS_;
   }
+  bool isFunction() const { return elemType().isFunc(); }
   uint32_t length() const { return length_; }
   Maybe<uint32_t> maximum() const { return maximum_; }
 
@@ -124,7 +118,7 @@ class Table : public ShareableBase<Table> {
 };
 
 using SharedTable = RefPtr<Table>;
-typedef Vector<SharedTable, 0, SystemAllocPolicy> SharedTableVector;
+using SharedTableVector = Vector<SharedTable, 0, SystemAllocPolicy>;
 
 }  // namespace wasm
 }  // namespace js

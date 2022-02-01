@@ -34,6 +34,8 @@ pub struct Timer<T> {
 
 impl<T> Timer<T> {
     /// Construct a new wheel at the given granularity, starting at the given time.
+    /// # Panics
+    /// When `capacity` is too large to fit in `u32` or `granularity` is zero.
     pub fn new(now: Instant, granularity: Duration, capacity: usize) -> Self {
         assert!(u32::try_from(capacity).is_ok());
         assert!(granularity.as_nanos() > 0);
@@ -89,7 +91,10 @@ impl<T> Timer<T> {
     }
 
     /// Slide forward in time by `n * self.granularity`.
-    #[allow(clippy::cast_possible_truncation)] // guarded by assertion
+    #[allow(unknown_lints, renamed_and_removed_lints, clippy::unknown_clippy_lints)] // Until we require rust 1.45.
+    #[allow(clippy::cast_possible_truncation, clippy::reversed_empty_ranges)]
+    // cast_possible_truncation is ok because we have an assertion guard.
+    // reversed_empty_ranges is to avoid different types on the if/else.
     fn tick(&mut self, n: usize) {
         let new = self.bucket(n);
         let iter = if new < self.cursor {
@@ -105,6 +110,8 @@ impl<T> Timer<T> {
     }
 
     /// Asserts if the time given is in the past or too far in the future.
+    /// # Panics
+    /// When `time` is in the past relative to previous calls.
     pub fn add(&mut self, time: Instant, item: T) {
         assert!(time >= self.now);
         // Skip forward quickly if there is too large a gap.
@@ -112,7 +119,7 @@ impl<T> Timer<T> {
         if time >= (self.now + self.span() + short_span) {
             // Assert that there aren't any items.
             for i in &self.items {
-                assert!(i.is_empty());
+                debug_assert!(i.is_empty());
             }
             self.now = time - short_span;
             self.cursor = 0;
@@ -147,7 +154,7 @@ impl<T> Timer<T> {
         let bucket = self.time_bucket(time);
         let start_index = match self.items[bucket].binary_search_by_key(&time, TimerItem::time) {
             Ok(idx) => idx,
-            _ => return None,
+            Err(_) => return None,
         };
         // start_index is just one of potentially many items with the same time.
         // Search backwards for a match, ...
@@ -235,7 +242,7 @@ impl<T> Timer<T> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::{Duration, Instant, Timer};
     use lazy_static::lazy_static;
 
     lazy_static! {

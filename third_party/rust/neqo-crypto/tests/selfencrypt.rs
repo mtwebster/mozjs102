@@ -1,7 +1,8 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![warn(clippy::pedantic)]
+#![cfg(not(feature = "fuzzing"))]
 
-use neqo_crypto::constants::*;
+use neqo_crypto::constants::{TLS_AES_128_GCM_SHA256, TLS_VERSION_1_3};
 use neqo_crypto::{init, selfencrypt::SelfEncrypt, Error};
 
 #[test]

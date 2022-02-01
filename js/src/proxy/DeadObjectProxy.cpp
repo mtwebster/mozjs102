@@ -8,7 +8,8 @@
 
 #include "jsapi.h"
 
-#include "vm/JSFunction.h"  // XXXefaust Bug 1064662
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "vm/JSFunction.h"            // XXXefaust Bug 1064662
 #include "vm/ProxyObject.h"
 
 using namespace js;
@@ -22,7 +23,7 @@ static void ReportDead(JSContext* cx) {
 
 bool DeadObjectProxy::getOwnPropertyDescriptor(
     JSContext* cx, HandleObject wrapper, HandleId id,
-    MutableHandle<PropertyDescriptor> desc) const {
+    MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc) const {
   ReportDead(cx);
   return false;
 }
@@ -127,7 +128,7 @@ RegExpShared* DeadObjectProxy::regexp_toShared(JSContext* cx,
   return nullptr;
 }
 
-bool js::IsDeadProxyObject(JSObject* obj) {
+bool js::IsDeadProxyObject(const JSObject* obj) {
   return IsDerivedProxyObject(obj, &DeadObjectProxy::singleton);
 }
 

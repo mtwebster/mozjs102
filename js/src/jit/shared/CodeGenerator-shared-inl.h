@@ -9,6 +9,9 @@
 
 #include "jit/shared/CodeGenerator-shared.h"
 
+#include "jit/JitFrames.h"
+#include "jit/ScalarTypeUtils.h"
+
 #include "jit/MacroAssembler-inl.h"
 
 namespace js {
@@ -35,7 +38,13 @@ static inline bool IsConstant(const LInt64Allocation& a) {
 
 static inline int32_t ToInt32(const LAllocation* a) {
   if (a->isConstantValue()) {
-    return a->toConstant()->toInt32();
+    const MConstant* cst = a->toConstant();
+    if (cst->type() == MIRType::Int32) {
+      return cst->toInt32();
+    }
+    intptr_t val = cst->toIntPtr();
+    MOZ_ASSERT(INT32_MIN <= val && val <= INT32_MAX);
+    return int32_t(val);
   }
   if (a->isConstantIndex()) {
     return a->toConstantIndex()->index();
@@ -266,6 +275,17 @@ Address CodeGeneratorShared::ToAddress(const LAllocation* a) const {
   return ToAddress(*a);
 }
 
+// static
+Address CodeGeneratorShared::ToAddress(Register elements,
+                                       const LAllocation* index,
+                                       Scalar::Type type,
+                                       int32_t offsetAdjustment) {
+  int32_t idx = ToInt32(index);
+  int32_t offset;
+  MOZ_ALWAYS_TRUE(ArrayOffsetFitsInInt32(idx, type, offsetAdjustment, &offset));
+  return Address(elements, offset);
+}
+
 int32_t CodeGeneratorShared::ToFramePointerOffset(LAllocation a) const {
   MOZ_ASSERT(useWasmStackArgumentAbi());
   MOZ_ASSERT(a.isArgument());
@@ -295,21 +315,22 @@ void CodeGeneratorShared::restoreLiveIgnore(LInstruction* ins,
   masm.PopRegsInMaskIgnore(safepoint->liveRegs(), ignore);
 }
 
-void CodeGeneratorShared::saveLiveVolatile(LInstruction* ins) {
+LiveRegisterSet CodeGeneratorShared::liveVolatileRegs(LInstruction* ins) {
   MOZ_ASSERT(!ins->isCall());
   LSafepoint* safepoint = ins->safepoint();
   LiveRegisterSet regs;
   regs.set() = RegisterSet::Intersect(safepoint->liveRegs().set(),
                                       RegisterSet::Volatile());
+  return regs;
+}
+
+void CodeGeneratorShared::saveLiveVolatile(LInstruction* ins) {
+  LiveRegisterSet regs = liveVolatileRegs(ins);
   masm.PushRegsInMask(regs);
 }
 
 void CodeGeneratorShared::restoreLiveVolatile(LInstruction* ins) {
-  MOZ_ASSERT(!ins->isCall());
-  LSafepoint* safepoint = ins->safepoint();
-  LiveRegisterSet regs;
-  regs.set() = RegisterSet::Intersect(safepoint->liveRegs().set(),
-                                      RegisterSet::Volatile());
+  LiveRegisterSet regs = liveVolatileRegs(ins);
   masm.PopRegsInMask(regs);
 }
 

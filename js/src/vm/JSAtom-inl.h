@@ -20,7 +20,7 @@
 
 namespace js {
 
-inline jsid AtomToId(JSAtom* atom) {
+MOZ_ALWAYS_INLINE jsid AtomToId(JSAtom* atom) {
   static_assert(JSID_INT_MIN == 0);
 
   uint32_t index;
@@ -72,9 +72,12 @@ inline bool ValueToIdPure(const Value& v, jsid* id) {
 }
 
 template <AllowGC allowGC>
-inline bool ValueToId(
+inline bool PrimitiveValueToId(
     JSContext* cx, typename MaybeRooted<Value, allowGC>::HandleType v,
     typename MaybeRooted<jsid, allowGC>::MutableHandleType idp) {
+  // Non-primitive values should call ToPropertyKey.
+  MOZ_ASSERT(v.isPrimitive());
+
   if (v.isString()) {
     if (v.toString()->isAtom()) {
       idp.set(AtomToId(&v.toString()->asAtom()));
@@ -141,7 +144,7 @@ inline bool IndexToId(JSContext* cx, uint32_t index, MutableHandleId idp) {
 
 static MOZ_ALWAYS_INLINE JSLinearString* IdToString(JSContext* cx, jsid id) {
   if (JSID_IS_STRING(id)) {
-    return JSID_TO_ATOM(id);
+    return id.toAtom();
   }
 
   if (MOZ_LIKELY(JSID_IS_INT(id))) {

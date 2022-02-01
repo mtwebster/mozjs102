@@ -8,7 +8,6 @@
 
 #include "mozilla/EndianUtils.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/ScopeExit.h"
 
 #include <algorithm>
 #include <string.h>
@@ -17,18 +16,19 @@
 #include "jit/BaselineJIT.h"
 #include "jit/CompileWrappers.h"
 #include "jit/JitSpewer.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Printf.h"
 #include "js/TraceLoggerAPI.h"
 #include "threading/LockGuard.h"
+#include "util/GetPidProvider.h"  // getpid()
 #include "util/Text.h"
 #include "vm/Activation.h"  // js::ActivationIterator
 #include "vm/FrameIter.h"   // js::JitFrameIter
+#include "vm/JSContext.h"
 #include "vm/JSScript.h"
 #include "vm/Runtime.h"
 #include "vm/Time.h"
 #include "vm/TraceLoggingGraph.h"
-
-#include "jit/JitFrames-inl.h"
 
 using namespace js;
 
@@ -79,8 +79,10 @@ void js::DestroyTraceLoggerThreadState() {
 }
 
 #ifdef DEBUG
-bool js::CurrentThreadOwnsTraceLoggerThreadStateLock() {
-  return traceLoggerState && traceLoggerState->lock.ownedByCurrentThread();
+void js::AssertCurrentThreadOwnsTraceLoggerThreadStateLock() {
+  if (traceLoggerState) {
+    traceLoggerState->lock.assertOwnedByCurrentThread();
+  }
 }
 #endif
 
@@ -221,7 +223,6 @@ void TraceLoggerThreadState::enableIonLogging() {
   enabledTextIds[TraceLogger_RegisterAllocation] = true;
   enabledTextIds[TraceLogger_GenerateCode] = true;
   enabledTextIds[TraceLogger_Scripts] = true;
-  enabledTextIds[TraceLogger_IonBuilderRestartLoop] = true;
 }
 
 void TraceLoggerThreadState::enableFrontendLogging() {
@@ -1154,7 +1155,7 @@ bool TraceLoggerThreadState::init() {
           "                 EdgeCaseAnalysis, EliminateRedundantChecks,\n"
           "                 AddKeepAliveInstructions, GenerateLIR, "
           "RegisterAllocation,\n"
-          "                 GenerateCode, Scripts, IonBuilderRestartLoop\n"
+          "                 GenerateCode, Scripts\n"
           "\n"
           "  VMSpecific     Output the specific name of the VM call\n"
           "\n"
@@ -1354,7 +1355,7 @@ TraceLoggerThread* TraceLoggerThreadState::forCurrentThread(
       logger->initGraph();
     }
 
-    if (CurrentHelperThread() ? helperThreadEnabled : mainThreadEnabled) {
+    if (cx->isHelperThreadContext() ? helperThreadEnabled : mainThreadEnabled) {
       logger->enable();
     }
   }

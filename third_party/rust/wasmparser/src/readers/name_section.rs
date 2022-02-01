@@ -14,7 +14,8 @@
  */
 
 use super::{
-    BinaryReader, BinaryReaderError, NameType, Naming, Result, SectionIterator, SectionReader,
+    BinaryReader, BinaryReaderError, NameType, Naming, Range, Result, SectionIterator,
+    SectionReader,
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -30,6 +31,10 @@ impl<'a> ModuleName<'a> {
     {
         let mut reader = BinaryReader::new_with_offset(self.data, self.offset);
         reader.read_string()
+    }
+
+    pub fn original_position(&self) -> usize {
+        self.offset
     }
 }
 
@@ -85,6 +90,10 @@ impl<'a> FunctionName<'a> {
     {
         NamingReader::new(self.data, self.offset)
     }
+
+    pub fn original_position(&self) -> usize {
+        self.offset
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -100,6 +109,10 @@ impl<'a> FunctionLocalName<'a> {
         'a: 'b,
     {
         NamingReader::new(self.data, self.offset)
+    }
+
+    pub fn original_position(&self) -> usize {
+        self.offset
     }
 }
 
@@ -152,6 +165,10 @@ impl<'a> LocalName<'a> {
     {
         FunctionLocalReader::new(self.data, self.offset)
     }
+
+    pub fn original_position(&self) -> usize {
+        self.offset
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -159,6 +176,16 @@ pub enum Name<'a> {
     Module(ModuleName<'a>),
     Function(FunctionName<'a>),
     Local(LocalName<'a>),
+    /// An unknown [name subsection](https://webassembly.github.io/spec/core/appendix/custom.html#subsections).
+    Unknown {
+        /// The identifier for this subsection.
+        ty: u32,
+        /// The contents of this subsection.
+        data: &'a [u8],
+        /// The range of bytes, relative to the start of the original data
+        /// stream, that the contents of this subsection reside in.
+        range: Range,
+    },
 }
 
 pub struct NameSectionReader<'a> {
@@ -206,6 +233,11 @@ impl<'a> NameSectionReader<'a> {
             NameType::Module => Name::Module(ModuleName { data, offset }),
             NameType::Function => Name::Function(FunctionName { data, offset }),
             NameType::Local => Name::Local(LocalName { data, offset }),
+            NameType::Unknown(ty) => Name::Unknown {
+                ty,
+                data,
+                range: Range::new(offset, offset + payload_len),
+            },
         })
     }
 }
@@ -220,6 +252,9 @@ impl<'a> SectionReader for NameSectionReader<'a> {
     }
     fn original_position(&self) -> usize {
         NameSectionReader::original_position(self)
+    }
+    fn range(&self) -> Range {
+        self.reader.range()
     }
 }
 

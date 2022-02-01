@@ -19,10 +19,24 @@ use crate::flowgraph::ControlFlowGraph;
 use crate::ir::types::{I32, I64};
 use crate::ir::{self, InstBuilder, MemFlags};
 use crate::isa::TargetIsa;
+
+#[cfg(any(
+    feature = "x86",
+    feature = "arm32",
+    feature = "arm64",
+    feature = "riscv"
+))]
 use crate::predicates;
+#[cfg(any(
+    feature = "x86",
+    feature = "arm32",
+    feature = "arm64",
+    feature = "riscv"
+))]
+use alloc::vec::Vec;
+
 use crate::timing;
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 mod boundary;
 mod call;
@@ -35,7 +49,7 @@ mod table;
 use self::call::expand_call;
 use self::globalvalue::expand_global_value;
 use self::heap::expand_heap_addr;
-use self::libcall::expand_as_libcall;
+pub(crate) use self::libcall::expand_as_libcall;
 use self::table::expand_table_addr;
 
 enum LegalizeInstResult {
@@ -214,6 +228,7 @@ pub fn simple_legalize(func: &mut ir::Function, cfg: &mut ControlFlowGraph, isa:
                 | ir::Opcode::TableAddr
                 | ir::Opcode::Trapnz
                 | ir::Opcode::Trapz
+                | ir::Opcode::ResumableTrapnz
                 | ir::Opcode::BandImm
                 | ir::Opcode::BorImm
                 | ir::Opcode::BxorImm
@@ -261,15 +276,15 @@ fn expand_cond_trap(
 ) {
     // Parse the instruction.
     let trapz;
-    let (arg, code) = match func.dfg[inst] {
+    let (arg, code, opcode) = match func.dfg[inst] {
         ir::InstructionData::CondTrap { opcode, arg, code } => {
             // We want to branch *over* an unconditional trap.
             trapz = match opcode {
                 ir::Opcode::Trapz => true,
-                ir::Opcode::Trapnz => false,
+                ir::Opcode::Trapnz | ir::Opcode::ResumableTrapnz => false,
                 _ => panic!("Expected cond trap: {}", func.dfg.display_inst(inst, None)),
             };
-            (arg, code)
+            (arg, code, opcode)
         }
         _ => panic!("Expected cond trap: {}", func.dfg.display_inst(inst, None)),
     };
@@ -307,7 +322,17 @@ fn expand_cond_trap(
 
     // Insert the new label and the unconditional trap terminator.
     pos.insert_block(new_block_trap);
-    pos.ins().trap(code);
+
+    match opcode {
+        ir::Opcode::Trapz | ir::Opcode::Trapnz => {
+            pos.ins().trap(code);
+        }
+        ir::Opcode::ResumableTrapnz => {
+            pos.ins().resumable_trap(code);
+            pos.ins().jump(new_block_resume, &[]);
+        }
+        _ => unreachable!(),
+    }
 
     // Insert the new label and resume the execution when the trap fails.
     pos.insert_block(new_block_resume);
@@ -634,7 +659,7 @@ fn narrow_load(
     inst: ir::Inst,
     func: &mut ir::Function,
     _cfg: &mut ControlFlowGraph,
-    _isa: &dyn TargetIsa,
+    isa: &dyn TargetIsa,
 ) {
     let mut pos = FuncCursor::new(func).at_inst(inst);
     pos.use_srcloc(inst);
@@ -659,6 +684,10 @@ fn narrow_load(
         ptr,
         offset.try_add_i64(8).expect("load offset overflow"),
     );
+    let (al, ah) = match flags.endianness(isa.endianness()) {
+        ir::Endianness::Little => (al, ah),
+        ir::Endianness::Big => (ah, al),
+    };
     pos.func.dfg.replace(inst).iconcat(al, ah);
 }
 
@@ -667,7 +696,7 @@ fn narrow_store(
     inst: ir::Inst,
     func: &mut ir::Function,
     _cfg: &mut ControlFlowGraph,
-    _isa: &dyn TargetIsa,
+    isa: &dyn TargetIsa,
 ) {
     let mut pos = FuncCursor::new(func).at_inst(inst);
     pos.use_srcloc(inst);
@@ -683,6 +712,10 @@ fn narrow_store(
     };
 
     let (al, ah) = pos.ins().isplit(val);
+    let (al, ah) = match flags.endianness(isa.endianness()) {
+        ir::Endianness::Little => (al, ah),
+        ir::Endianness::Big => (ah, al),
+    };
     pos.ins().store(flags, al, ptr, offset);
     pos.ins().store(
         flags,
@@ -749,12 +782,12 @@ fn narrow_icmp_imm(
     let ty = pos.func.dfg.ctrl_typevar(inst);
     let ty_half = ty.half_width().unwrap();
 
-    let imm_low = pos
-        .ins()
-        .iconst(ty_half, imm & ((1u128 << ty_half.bits()) - 1) as i64);
-    let imm_high = pos
-        .ins()
-        .iconst(ty_half, imm.wrapping_shr(ty_half.bits().into()));
+    let mask = ((1u128 << ty_half.bits()) - 1) as i64;
+    let imm_low = pos.ins().iconst(ty_half, imm & mask);
+    let imm_high = pos.ins().iconst(
+        ty_half,
+        imm.checked_shr(ty_half.bits().into()).unwrap_or(0) & mask,
+    );
     let (arg_low, arg_high) = pos.ins().isplit(arg);
 
     match cond {

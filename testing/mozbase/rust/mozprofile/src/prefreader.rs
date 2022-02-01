@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use crate::preferences::{Pref, PrefValue, Preferences};
 use std::borrow::Borrow;
 use std::borrow::Cow;
@@ -7,7 +11,6 @@ use std::fmt;
 use std::io::{self, Write};
 use std::iter::Iterator;
 use std::mem;
-use std::ops::Deref;
 use std::str;
 
 impl PrefReaderError {
@@ -40,10 +43,7 @@ impl Error for PrefReaderError {
     }
 
     fn cause(&self) -> Option<&dyn Error> {
-        match self.parent {
-            None => None,
-            Some(ref cause) => Some(cause.deref()),
-        }
+        self.parent.as_deref()
     }
 }
 
@@ -243,15 +243,14 @@ impl<'a> PrefTokenizer<'a> {
             TokenType::Comma => PrefToken::Comma(position),
             TokenType::String => PrefToken::String(buf, position),
             TokenType::Int => {
-                let value =
-                    i64::from_str_radix(buf.borrow(), 10).expect("Integer wasn't parsed as an i64");
+                let value = buf.parse::<i64>().expect("Integer wasn't parsed as an i64");
                 PrefToken::Int(value, position)
             }
             TokenType::Bool => {
                 let value = match buf.borrow() {
                     "true" => true,
                     "false" => false,
-                    x => panic!(format!("Boolean wasn't 'true' or 'false' (was {})", x)),
+                    x => panic!("Boolean wasn't 'true' or 'false' (was {})", x),
                 };
                 PrefToken::Bool(value, position)
             }
@@ -301,10 +300,7 @@ impl<'a> PrefTokenizer<'a> {
     }
 
     fn is_space(c: char) -> bool {
-        match c {
-            ' ' | '\t' | '\r' | '\n' => true,
-            _ => false,
-        }
+        matches!(c, ' ' | '\t' | '\r' | '\n')
     }
 
     fn skip_whitespace(&mut self) -> Option<char> {
@@ -379,7 +375,7 @@ impl<'a> PrefTokenizer<'a> {
                 }
             }
         }
-        if first && value >= 0xD800 && value <= 0xDBFF {
+        if first && (0xD800..=0xDBFF).contains(&value) {
             // First part of a surrogate pair
             if self.get_char() != Some('\\') || self.get_char() != Some('u') {
                 return Err(PrefReaderError::new(
@@ -394,13 +390,13 @@ impl<'a> PrefTokenizer<'a> {
             let high_value = (high_surrogate - 0xD800) << 10;
             let low_value = low_surrogate - 0xDC00;
             value = high_value + low_value + 0x10000;
-        } else if first && value >= 0xDC00 && value <= 0xDFFF {
+        } else if first && (0xDC00..=0xDFFF).contains(&value) {
             return Err(PrefReaderError::new(
                 "Lone low surrogate",
                 self.position,
                 None,
             ));
-        } else if !first && (value < 0xDC00 || value > 0xDFFF) {
+        } else if !first && !(0xDC00..=0xDFFF).contains(&value) {
             return Err(PrefReaderError::new(
                 "Invalid low surrogate in surrogate pair",
                 self.position,
@@ -775,7 +771,7 @@ pub fn serialize_token<T: Write>(token: &PrefToken, output: &mut T) -> Result<()
             data_buf.reserve(data.len() + 4);
             data_buf.push_str("/*");
             data_buf.push_str(data.borrow());
-            data_buf.push_str("*");
+            data_buf.push('*');
             &*data_buf
         }
         PrefToken::CommentLine(ref data, _) => {
@@ -786,7 +782,7 @@ pub fn serialize_token<T: Write>(token: &PrefToken, output: &mut T) -> Result<()
         }
         PrefToken::CommentBashLine(ref data, _) => {
             data_buf.reserve(data.len() + 1);
-            data_buf.push_str("#");
+            data_buf.push('#');
             data_buf.push_str(data.borrow());
             &*data_buf
         }
@@ -875,7 +871,7 @@ fn skip_comments<'a>(tokenizer: &mut PrefTokenizer<'a>) -> Option<PrefToken<'a>>
     }
 }
 
-pub fn parse_tokens<'a>(tokenizer: &mut PrefTokenizer<'a>) -> Result<Preferences, PrefReaderError> {
+pub fn parse_tokens(tokenizer: &mut PrefTokenizer<'_>) -> Result<Preferences, PrefReaderError> {
     let mut state = ParserState::Function;
     let mut current_pref = PrefBuilder::new();
     let mut rv = Preferences::new();
