@@ -1,16 +1,16 @@
 # Many of these tests are written with very long lines, but they do not
 # appear to be generated files
-mozjs78 source: source-is-missing js/src/*.js line length is * characters (>*)
+mozjs91 source: source-is-missing js/src/*.js line length is * characters (>*)
 
 # Many of these tests are written with very long lines, but they do not
 # appear to be generated files
-mozjs78 source: source-contains-prebuilt-javascript-object js/src/*.js line length is * characters (>*)
+mozjs91 source: source-contains-prebuilt-javascript-object js/src/*.js line length is * characters (>*)
 
 # Many of these tests are written with very long lines, but this is not a problem
-mozjs78 source: very-long-line-length-in-source-file js/src/*.js line length is * characters (>*)
+mozjs91 source: very-long-line-length-in-source-file js/src/*.js line length is * characters (>*)
 
 # Shipped wasm binaries are only used by tests, and nothing to be worried about
-mozjs78 source: source-contains-prebuilt-wasm-binary js/src/*/tests/*.wasm
+mozjs91 source: source-contains-prebuilt-wasm-binary js/src/*/tests/*.wasm
 
 # This is implicit on the fact that we repack the signed upstream source
-mozjs78 source: orig-tarball-missing-upstream-signature mozjs78_78.*.orig.tar.xz
+mozjs91 source: orig-tarball-missing-upstream-signature mozjs91_91.*.orig.tar.xz
