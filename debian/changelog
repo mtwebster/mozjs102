@@ -1,8 +1,8 @@
-mozjs91 (91.0.0-1) UNRELEASED; urgency=medium
+mozjs91 (91.5.1-1) UNRELEASED; urgency=medium
 
   * New upstream release
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 01 Feb 2022 01:52:22 +0100
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 01 Feb 2022 02:38:20 +0100
 
 mozjs78 (78.15.0-2) unstable; urgency=medium
 
