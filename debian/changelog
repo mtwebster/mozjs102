@@ -1,8 +1,26 @@
-mozjs91 (91.5.1-1) UNRELEASED; urgency=medium
+mozjs91 (91.5.1-1) experimental; urgency=medium
 
+  [ Marco Trevisan (Treviño) ]
   * New upstream release (Closes: #1004739)
+  * debian/patches: Refresh
+  * debian/control: Bump dependency on libicu-dev 69.1
+  * debian/tests.sh: Update python3 path for running JIT tests
+  * debian/patches: Move system-ICU related ones to different topic
+  * jstests: Skip property-escapes tests, unsupported by system ICU
+  * tests: Ignore POSIX/posix mismatch in tests
+  * tests: Use debian provided locale format to check formatted CN dates
+  * tests: Adapt subtags test to debian ICU computed values
+  * tests: Disable failing DateTimeFormat tests with system ICU
+  * DateTimeFormat: Use normal parenthesis instead of ICU "├ ┤"
+  * debian/patches: Also skip Date-time-zones-imported test with embedded ICU
+  * non262/Intl/DateTimeFormat/timeZone_version.js: Update version to match source
+  * debian/control: Remove dependency on libicu, given it's disabled for now
+  * debian/patches/series: Disable system-ICU related patches
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 01 Feb 2022 02:38:20 +0100
+  [ Jeremy Bicha ]
+  * debian/rules: Disable building with system ICU for now
+
+ -- Jeremy Bicha <jeremy.bicha@canonical.com>  Sat, 05 Feb 2022 14:18:20 -0500
 
 mozjs78 (78.15.0-2) unstable; urgency=medium
 
