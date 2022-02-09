@@ -16,7 +16,7 @@ endif
 
 # This can be disabled if the bundled icu overtakes the system version,
 # or for backporting
-#WITH_SYSTEM_ICU = yes
+WITH_SYSTEM_ICU = yes
 
 export DEB_HOST_ARCH
 # mozjs' build process does not seem to be compatible with other shells
