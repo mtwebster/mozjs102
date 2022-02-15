@@ -1,4 +1,4 @@
-mozjs91 (91.6.0-1) UNRELEASED; urgency=medium
+mozjs91 (91.6.0-1) experimental; urgency=medium
 
   [ Marco Trevisan (Treviño) ]
   * New upstream release
@@ -12,7 +12,7 @@ mozjs91 (91.6.0-1) UNRELEASED; urgency=medium
   * Disable non262-Intl-DateTimeFormat-timeZone_version.js-Update-ver.patch
   * Revert "debian/control: Remove dependency on libicu, given it's disabled for now"
 
- -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 15 Feb 2022 19:55:52 +0100
+ -- Marco Trevisan (Treviño) <marco@ubuntu.com>  Tue, 15 Feb 2022 19:56:29 +0100
 
 mozjs91 (91.5.1-1) experimental; urgency=medium
 
