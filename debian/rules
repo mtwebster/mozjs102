@@ -67,6 +67,11 @@ ifneq (,$(findstring $(DEB_BUILD_ARCH),i386))
 	EXCLUDED_TESTS += basic/bug653153.js
 endif
 
+# See: https://bugzilla.mozilla.org/show_bug.cgi?id=1755540
+ifneq (,$(findstring $(DEB_BUILD_ARCH),s390x))
+	EXCLUDED_TESTS += large-arraybuffers/basic.js
+endif
+
 ifneq (,$(findstring $(DEB_HOST_ARCH),mips mipsel mips64el))
 CONFIGURE_FLAGS += --disable-jit
 endif
