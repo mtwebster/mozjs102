@@ -11,7 +11,6 @@ tests-Expect-some-tests-to-fail-on-armel.patch
 tests-Use-DEB_HOST_ARCH_BITS-to-skip-some-tests-on-64-bit.patch
 tests-Expect-a-test-to-fail-on-big-endian.patch
 jstests-skip-non262-Date-time-zones-imported.js.patch
-#non262-Intl-DateTimeFormat-timeZone_version.js-Update-ver.patch
 system-ICU/TestingFunctions-Update-ICU-s-default-tz-when-setting-TZ.patch
 system-ICU/time-zone-path-test-Update-for-what-our-system-ICU-return.patch
 system-ICU/tests-Adapt-formatted-strings-results-to-system-ICU.patch
