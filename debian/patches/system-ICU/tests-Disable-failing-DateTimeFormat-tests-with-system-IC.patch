@@ -9,10 +9,10 @@ Those are regression from mozjs78
  2 files changed, 9 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 3dbde7c..7fea8f8 100644
+index ef37416..eb16f8e 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -646,6 +646,13 @@ skip script non262/Date/time-zones-historic.js
+@@ -650,6 +650,13 @@ skip script non262/Date/time-zones-historic.js
  
  skip script non262/Intl/DateTimeFormat/timeZone_backward_links.js
  
