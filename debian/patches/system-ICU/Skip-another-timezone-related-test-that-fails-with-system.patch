@@ -12,10 +12,10 @@ Forwarded: no
  1 file changed, 2 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 89f9a54..6830d93 100644
+index a16c161..69d1e54 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -648,6 +648,8 @@ skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64el|riscv64/)
+@@ -648,6 +648,8 @@ skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64|riscv64/))
  # https://hg.mozilla.org/mozilla-central/rev/7b1a3a49547d
  skip script non262/Date/time-zones-historic.js
  

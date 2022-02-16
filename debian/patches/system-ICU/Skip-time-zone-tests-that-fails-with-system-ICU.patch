@@ -28,12 +28,12 @@ Bug-Mozilla: https://bugzilla.mozilla.org/show_bug.cgi?id=1346211
  1 file changed, 5 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 806e049..89f9a54 100644
+index eba92d7..a16c161 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
 @@ -643,6 +643,11 @@ skip script non262/Date/time-zones-imported.js
  # https://bugzilla.mozilla.org/show_bug.cgi?id=1755531
- skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64el|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
+ skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
  
 +# This test fails when using system ICU because the related bug has been fixed only when using local ICU
 +# See https://bugzilla.mozilla.org/show_bug.cgi?id=1346211#c7

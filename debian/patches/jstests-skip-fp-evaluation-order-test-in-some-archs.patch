@@ -12,7 +12,7 @@ Forwarded: not-needed
  1 file changed, 4 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 4f3dd53..806e049 100644
+index 4f3dd53..eba92d7 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
 @@ -639,6 +639,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins
@@ -21,7 +21,7 @@ index 4f3dd53..806e049 100644
  
 +# ToNumber isn't working in the same way in all the archs for unsafe integers:
 +# https://bugzilla.mozilla.org/show_bug.cgi?id=1755531
-+skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64el|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
++skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/s390x|arm64|ppc64|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
 +
  ###########################################################
  # Tests disabled due to issues in test262 importer script #
