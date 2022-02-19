@@ -5,6 +5,7 @@ hurd-support.patch
 copy-headers.patch
 tests-increase-timeout.patch
 ia64-support.patch
+Bug-1687417-MIPS32-nojit-silence-an-assert.patch
 tests-Add-the-ability-to-skip-tests-according-to-dpkg-arc.patch
 tests-Expect-some-floating-point-tests-to-fail-on-i386.patch
 tests-Expect-some-tests-to-fail-on-armel.patch

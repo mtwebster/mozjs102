@@ -1,0 +1,28 @@
+From: Lars T Hansen <lhansen@mozilla.com>
+Date: Wed, 15 Sep 2021 06:11:09 +0000
+Subject: Bug 1687417 - MIPS32 nojit, silence an assert
+
+A static_assert is failing but this is not relevant for nojit builds,
+so silence it.
+
+Differential Revision: https://phabricator.services.mozilla.com/D125526
+Origin: Firefox 94, part of commit:https://hg.mozilla.org/mozilla-central/rev/9408195567a2
+---
+ js/src/wasm/WasmFrame.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/js/src/wasm/WasmFrame.cpp b/js/src/wasm/WasmFrame.cpp
+index 9a1de91..495f3bf 100644
+--- a/js/src/wasm/WasmFrame.cpp
++++ b/js/src/wasm/WasmFrame.cpp
+@@ -54,8 +54,10 @@ void DebugFrame::alignmentStaticAsserts() {
+ 
+   static_assert(WasmStackAlignment >= Alignment,
+                 "Aligned by ABI before pushing DebugFrame");
++#ifndef JS_CODEGEN_NONE
+   static_assert((offsetof(DebugFrame, frame_) + sizeof(Frame)) % Alignment == 0,
+                 "Aligned after pushing DebugFrame");
++#endif
+ #ifdef JS_CODEGEN_ARM64
+   // This constraint may or may not be necessary.  If you hit this because
+   // you've changed the frame size then feel free to remove it, but be extra
