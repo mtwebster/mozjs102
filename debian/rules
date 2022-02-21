@@ -65,6 +65,7 @@ EXCLUDED_TESTS :=
 # https://bugzilla.mozilla.org/show_bug.cgi?id=1621900
 ifneq (,$(findstring $(DEB_BUILD_ARCH),i386))
 	EXCLUDED_TESTS += basic/bug653153.js
+	EXCLUDED_TESTS += basic/fdlibm-for-sin-cos-tan-argument.js
 endif
 
 # See: https://bugzilla.mozilla.org/show_bug.cgi?id=1755540
