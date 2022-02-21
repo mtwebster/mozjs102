@@ -11,7 +11,7 @@ changes.
  1 file changed, 100 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 69d1e54..0435426 100644
+index b672b37..6d2b4e1 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
 @@ -650,6 +650,106 @@ skip script non262/Date/time-zones-historic.js
