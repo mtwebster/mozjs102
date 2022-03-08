@@ -1,9 +1,46 @@
+mozjs91 (91.7.0-2) unstable; urgency=medium
+
+  * Include changes from 91.6.0-2 that were accidentally dropped
+
+ -- Jeremy Bicha <jeremy.bicha@canonical.com>  Tue, 08 Mar 2022 16:30:35 -0500
+
 mozjs91 (91.7.0-1) unstable; urgency=medium
 
   * New upstream release
   * Release to unstable
 
  -- Jeremy Bicha <jeremy.bicha@canonical.com>  Tue, 08 Mar 2022 15:40:50 -0500
+
+mozjs91 (91.6.0-2) experimental; urgency=medium
+
+  Team upload
+
+  [ Marco Trevisan (Treviño) ]
+  * d/p/jstests-skip-fp-evaluation-order-test-in-some-archs.patch:
+    Skip fp-evaluation-order.js on all ppc64 architectures
+
+  [ Simon McVittie ]
+  * d/p/Bug-1687417-MIPS32-nojit-silence-an-assert.patch:
+    Add patch from Firefox 94 to fix compilation on mipsel.
+    Thanks to Adrian Bunk
+  * d/p/Fix-math_private.h-for-i386-FTBFS.patch:
+    Add patch from firefox-esr to fix compilation on i386.
+    This partially resolves FTBFS on i386, although there is also a test
+    failure in test262/built-ins/Date/UTC/fp-evaluation-order.js which is
+    not yet resolved.
+    Thanks to Mike Hommey
+  * d/p/jstests-skip-fp-evaluation-order-test-in-some-archs.patch:
+    Add i386 to the architectures where fp-evaluation-order.js is skipped.
+    Reduces severity of: #1006152
+  * d/rules: Skip another test on i386.
+    The result differs very slightly from what was expected, presumably
+    because as long as our baseline doesn't guarantee SSE, we have no way
+    to disable i387 extended precision.
+  * d/p/tests-Accept-out-of-memory-as-close-enough-to-allocation-.patch
+    Add patch to fix FTBFS on machines with relatively limited RAM
+    (Closes: #1006196)
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 21 Feb 2022 21:48:05 +0000
 
 mozjs91 (91.6.0-1) experimental; urgency=medium
 
