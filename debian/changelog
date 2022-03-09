@@ -1,3 +1,13 @@
+mozjs91 (91.7.0-3) experimental; urgency=medium
+
+  * Team upload
+  * Re-upload to experimental, to avoid the experimental version being
+    superseded by the version in unstable, which can't be built until
+    after the icu 70 transition (unless we start building with the
+    bundled icu).
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 09 Mar 2022 12:12:22 +0000
+
 mozjs91 (91.7.0-2) unstable; urgency=medium
 
   * Include changes from 91.6.0-2 that were accidentally dropped
