@@ -1,5 +1,3 @@
-icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
-icu_sources_data-Write-command-output-to-our-stderr.patch
 fix-soname.patch
 hurd-support.patch
 copy-headers.patch
@@ -15,4 +13,6 @@ tests-Expect-a-test-to-fail-on-big-endian.patch
 jstests-skip-non262-Date-time-zones-imported.js.patch
 jstests-skip-fp-evaluation-order-test-in-some-archs.patch
 tests-Accept-out-of-memory-as-close-enough-to-allocation-.patch
-vendoredICU/tests-Skip-comparison-of-tzdata-version-number.patch
+vendored-ICU/icu_sources_data.py-Decouple-from-Mozilla-build-system.patch
+vendored-ICU/icu_sources_data-Write-command-output-to-our-stderr.patch
+vendored-ICU/tests-Skip-comparison-of-tzdata-version-number.patch
