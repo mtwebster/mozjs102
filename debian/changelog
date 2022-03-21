@@ -1,11 +1,19 @@
-mozjs91 (91.7.0-4) UNRELEASED; urgency=medium
+mozjs91 (91.7.0-4) experimental; urgency=medium
 
   * Team upload
   * Build with vendored copy of ICU until the system copy is >= 69.1.
     This decouples the GNOME Shell 42 (libmutter-10.so.0) transition from
     the ICU 70 (or possibly 71) transition.
+  * d/p/series:
+    Don't apply patches to skip tests that failed with system ICU
+    (the patches are still present, and we should reapply them when
+    the system copy catches up)
+  * d/p/vendored-ICU/:
+    Move patches only applicable to vendored ICU into a subdirectory
+  * d/p/vendored-ICU/tests-Skip-comparison-of-tzdata-version-number.patch:
+    Add patch to fix test failure with vendored ICU
 
- -- Simon McVittie <smcv@debian.org>  Mon, 21 Mar 2022 18:37:44 +0000
+ -- Simon McVittie <smcv@debian.org>  Mon, 21 Mar 2022 22:58:44 +0000
 
 mozjs91 (91.7.0-3) experimental; urgency=medium
 

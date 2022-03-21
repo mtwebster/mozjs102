@@ -6,7 +6,7 @@ Source: mozjs91
 Section: libs
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jeremy.bicha@canonical.com>, Tim Lunn <tim@feathertop.org>
+Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@ubuntu.com>, Tim Lunn <tim@feathertop.org>
 Build-Depends: debhelper-compat (= 13),
                gnome-pkg-tools,
                cargo,
