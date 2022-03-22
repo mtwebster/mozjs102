@@ -127,9 +127,6 @@ CXX := $(DEB_HOST_GNU_TYPE)-g++
 endif
 
 override_dh_auto_configure:
-ifneq ($(WITH_SYSTEM_ICU),yes)
-	VERBOSE=1 $(PYTHON3) intl/icu_sources_data.py "$(CURDIR)"
-endif
 	mkdir -p $(BUILDDIR)
 	cd $(BUILDDIR); \
 	if env \
