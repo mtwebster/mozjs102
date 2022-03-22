@@ -1,4 +1,4 @@
-mozjs91 (91.7.0-4) UNRELEASED; urgency=medium
+mozjs91 (91.7.0-4) experimental; urgency=medium
 
   * Team upload
   * Build with vendored copy of ICU until the system copy is >= 69.1.
@@ -8,12 +8,24 @@ mozjs91 (91.7.0-4) UNRELEASED; urgency=medium
     Don't apply patches to skip tests that failed with system ICU
     (the patches are still present, and we should reapply them when
     the system copy catches up)
-  * d/p/vendored-ICU/:
-    Move patches only applicable to vendored ICU into a subdirectory
   * d/p/vendored-ICU/tests-Skip-comparison-of-tzdata-version-number.patch:
     Add patch to fix test failure with vendored ICU
+  * Don't rebuild ICU data from first principles every time.
+    The version of its build system that went upstream in Mozilla
+    generates the data file when a new version is imported, and just
+    converts it from little-endian to big-endian during build if
+    necessary. Doing this resolves two FTBFS issues:
+    - regenerating the data file on a big-endian system breaks
+      build system assumptions in this area, so not doing that fixes
+      s390x and others;
+    - some parts of the vendored ICU library that are needed by
+      icu_sources_data.py, but not needed by a normal build, don't
+      link libatomic often enough for armel, so not doing that fixes
+      armel
+  * Remove downstream patches for icu_sources_data.py, since we no
+    longer run it.
 
- -- Simon McVittie <smcv@debian.org>  Mon, 21 Mar 2022 22:58:44 +0000
+ -- Simon McVittie <smcv@debian.org>  Tue, 22 Mar 2022 13:04:52 +0000
 
 mozjs91 (91.7.0-3) experimental; urgency=medium
 
