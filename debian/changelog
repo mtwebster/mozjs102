@@ -1,4 +1,4 @@
-mozjs91 (91.7.0-4) experimental; urgency=medium
+mozjs91 (91.7.0-4) UNRELEASED; urgency=medium
 
   * Team upload
   * Build with vendored copy of ICU until the system copy is >= 69.1.
