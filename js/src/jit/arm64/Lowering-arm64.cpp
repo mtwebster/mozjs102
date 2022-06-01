@@ -960,8 +960,12 @@ void LIRGenerator::visitCopySign(MCopySign* ins) {
   }
 
   lir->setOperand(0, useRegisterAtStart(lhs));
-  lir->setOperand(1, useRegisterAtStart(rhs));
-  define(lir, ins);
+  lir->setOperand(1, willHaveDifferentLIRNodes(lhs, rhs)
+                         ? useRegister(rhs)
+                         : useRegisterAtStart(rhs));
+  // The copySignDouble and copySignFloat32 are optimized for lhs == output.
+  // It also prevents rhs == output when lhs != output, avoids clobbering.
+  defineReuseInput(lir, ins, 0);
 }
 
 void LIRGenerator::visitExtendInt32ToInt64(MExtendInt32ToInt64* ins) {
