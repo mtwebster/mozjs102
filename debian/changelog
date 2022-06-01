@@ -1,3 +1,9 @@
+mozjs91 (91.10.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 01 Jun 2022 08:48:48 -0400
+
 mozjs91 (91.8.0-1) unstable; urgency=medium
 
   * New upstream release
