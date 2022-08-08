@@ -16,31 +16,31 @@ Forwarded: no
  3 files changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/js/src/tests/non262/Array/regress-157652.js b/js/src/tests/non262/Array/regress-157652.js
-index b21dcc3..307c6bb 100644
+index 5452c78..307c6bb 100644
 --- a/js/src/tests/non262/Array/regress-157652.js
 +++ b/js/src/tests/non262/Array/regress-157652.js
 @@ -1,4 +1,4 @@
--// |reftest| skip-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64/)||Android) -- No test results
+-// |reftest| skip-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64|loongarch64/)||Android) -- No test results
 +// |reftest| skip-if(xulRuntime.debian.DEB_HOST_ARCH_BITS==64||Android) -- No test results
  /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
 diff --git a/js/src/tests/non262/Array/regress-330812.js b/js/src/tests/non262/Array/regress-330812.js
-index adc29b5..d358427 100644
+index cf50ee9..d358427 100644
 --- a/js/src/tests/non262/Array/regress-330812.js
 +++ b/js/src/tests/non262/Array/regress-330812.js
 @@ -1,4 +1,4 @@
--// |reftest| slow-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64/)||Android) -- No test results
+-// |reftest| slow-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64|loongarch64/)||Android) -- No test results
 +// |reftest| slow-if(xulRuntime.debian.DEB_HOST_ARCH_BITS==64||Android) -- No test results
  /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
 diff --git a/js/src/tests/non262/regress/regress-422348.js b/js/src/tests/non262/regress/regress-422348.js
-index e94c397..2476e7d 100644
+index 117e193..2476e7d 100644
 --- a/js/src/tests/non262/regress/regress-422348.js
 +++ b/js/src/tests/non262/regress/regress-422348.js
 @@ -1,4 +1,4 @@
--// |reftest| skip-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64/)) -- On 64-bit, takes forever rather than throwing
+-// |reftest| skip-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64|loongarch64/)) -- On 64-bit, takes forever rather than throwing
 +// |reftest| skip-if(xulRuntime.debian.DEB_HOST_ARCH_BITS==64) -- On 64-bit, takes forever rather than throwing
  /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
  /* This Source Code Form is subject to the terms of the Mozilla Public

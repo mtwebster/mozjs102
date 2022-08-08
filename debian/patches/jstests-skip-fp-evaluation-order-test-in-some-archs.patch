@@ -12,10 +12,10 @@ Forwarded: not-needed
  1 file changed, 4 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 4f3dd53..2cdd969 100644
+index d64f35a..2c749b1 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -639,6 +639,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins
+@@ -637,6 +637,10 @@ fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins
  # This test fails with both System and embedded ICU version
  skip script non262/Date/time-zones-imported.js
  

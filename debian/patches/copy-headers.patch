@@ -9,10 +9,10 @@ Patch ported forward to mozjs52 by Philip Chimento
  1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/python/mozbuild/mozbuild/backend/recursivemake.py b/python/mozbuild/mozbuild/backend/recursivemake.py
-index d964466..0285ad9 100644
+index 858d4d4..8c229e8 100644
 --- a/python/mozbuild/mozbuild/backend/recursivemake.py
 +++ b/python/mozbuild/mozbuild/backend/recursivemake.py
-@@ -1568,9 +1568,9 @@ class RecursiveMakeBackend(MakeBackend):
+@@ -1533,9 +1533,9 @@ class RecursiveMakeBackend(MakeBackend):
                                      " of srcdir-relative or absolute paths."
                                  )
  
@@ -24,7 +24,7 @@ index d964466..0285ad9 100644
                      elif isinstance(f, AbsolutePath):
                          if not f.full_path.lower().endswith((".dll", ".pdb", ".so")):
                              raise Exception(
-@@ -1581,7 +1581,7 @@ class RecursiveMakeBackend(MakeBackend):
+@@ -1546,7 +1546,7 @@ class RecursiveMakeBackend(MakeBackend):
                          install_manifest.add_optional_exists(dest_file)
                          absolute_files.append(f.full_path)
                      else:

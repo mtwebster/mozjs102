@@ -12,7 +12,7 @@ Forwarded: not-needed, Debian-specific
  1 file changed, 14 insertions(+), 1 deletion(-)
 
 diff --git a/js/src/tests/lib/manifest.py b/js/src/tests/lib/manifest.py
-index 79c42a2..8fdc202 100644
+index a9ccf0a..6329308 100644
 --- a/js/src/tests/lib/manifest.py
 +++ b/js/src/tests/lib/manifest.py
 @@ -5,6 +5,7 @@

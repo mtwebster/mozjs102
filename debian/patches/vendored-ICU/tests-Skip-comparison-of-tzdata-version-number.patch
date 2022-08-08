@@ -9,10 +9,10 @@ The test expects the timezone database version number to be reported as
  1 file changed, 3 insertions(+)
 
 diff --git a/js/src/tests/jstests.list b/js/src/tests/jstests.list
-index 2cdd969..aef1b36 100644
+index 2c749b1..a34c3a0 100644
 --- a/js/src/tests/jstests.list
 +++ b/js/src/tests/jstests.list
-@@ -643,6 +643,9 @@ skip script non262/Date/time-zones-imported.js
+@@ -641,6 +641,9 @@ skip script non262/Date/time-zones-imported.js
  # https://bugzilla.mozilla.org/show_bug.cgi?id=1755531
  skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/i386|s390x|arm64|ppc64|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
  

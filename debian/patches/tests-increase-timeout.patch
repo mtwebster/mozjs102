@@ -8,7 +8,7 @@ Bug-Debian: https://bugs.debian.org/878284
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/Makefile.in b/js/src/Makefile.in
-index 46410f3..6171540 100644
+index 6daed72..16db2de 100644
 --- a/js/src/Makefile.in
 +++ b/js/src/Makefile.in
 @@ -53,7 +53,7 @@ check:: check-js-msg
@@ -18,5 +18,5 @@ index 46410f3..6171540 100644
 -		--no-progress --format=automation --timeout 300 \
 +		--no-progress --format=automation --timeout 600 \
  		$(JSTESTS_EXTRA_ARGS) \
- 		$(DIST)/bin/$(JS_SHELL_NAME)$(BIN_SUFFIX)
+ 		$(DIST)/bin/js$(BIN_SUFFIX)
  

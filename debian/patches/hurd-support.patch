@@ -7,15 +7,15 @@ Subject: Hurd support
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/js/src/wasm/WasmSignalHandlers.cpp b/js/src/wasm/WasmSignalHandlers.cpp
-index 4ab2a44..1229c30 100644
+index 4a45905..67d18a9 100644
 --- a/js/src/wasm/WasmSignalHandlers.cpp
 +++ b/js/src/wasm/WasmSignalHandlers.cpp
-@@ -108,7 +108,7 @@ using mozilla::DebugOnly;
- #    define R01_sig(p) ((p)->sc_frame.fixreg[1])
- #    define R32_sig(p) ((p)->sc_frame.srr0)
- #  endif
--#elif defined(__linux__) || defined(__sun)
-+#elif defined(__linux__) || defined(__sun) || defined(__GNU__)
- #  if defined(__linux__)
- #    define EIP_sig(p) ((p)->uc_mcontext.gregs[REG_EIP])
- #    define EBP_sig(p) ((p)->uc_mcontext.gregs[REG_EBP])
+@@ -111,7 +111,7 @@ using mozilla::DebugOnly;
+ #      define R01_sig(p) ((p)->sc_frame.fixreg[1])
+ #      define R32_sig(p) ((p)->sc_frame.srr0)
+ #    endif
+-#  elif defined(__linux__) || defined(__sun)
++#  elif defined(__linux__) || defined(__sun) || defined(__GNU__)
+ #    if defined(__linux__)
+ #      define EIP_sig(p) ((p)->uc_mcontext.gregs[REG_EIP])
+ #      define EBP_sig(p) ((p)->uc_mcontext.gregs[REG_EBP])
