@@ -13,3 +13,5 @@ jstests-skip-non262-Date-time-zones-imported.js.patch
 jstests-skip-fp-evaluation-order-test-in-some-archs.patch
 tests-Accept-out-of-memory-as-close-enough-to-allocation-.patch
 vendored-ICU/tests-Skip-comparison-of-tzdata-version-number.patch
+Bug-1776254-Install-ProfilingCategoryList.h-r-arai.patch
+Bug-1780857-Change-if-to-ifdef-for-DEBUG.-r-jimb.patch
