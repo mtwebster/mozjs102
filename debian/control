@@ -2,11 +2,11 @@
 #
 # Modifications should be made to debian/control.in instead.
 # This file is regenerated automatically in the clean target.
-Source: mozjs91
+Source: mozjs102
 Section: libs
 Priority: optional
 Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
-Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@ubuntu.com>, Tim Lunn <tim@feathertop.org>
+Uploaders: Iain Lane <laney@debian.org>, Jeremy Bicha <jbicha@ubuntu.com>
 Build-Depends: debhelper-compat (= 13),
                gnome-pkg-tools,
                cargo,
@@ -25,11 +25,11 @@ Build-Depends: debhelper-compat (= 13),
                zip
 Rules-Requires-Root: no
 Standards-Version: 4.5.1
-Vcs-Browser: https://salsa.debian.org/gnome-team/mozjs/tree/debian/91/master
-Vcs-Git: https://salsa.debian.org/gnome-team/mozjs.git -b debian/91/master
+Vcs-Browser: https://salsa.debian.org/gnome-team/mozjs/tree/debian/102/master
+Vcs-Git: https://salsa.debian.org/gnome-team/mozjs.git -b debian/102/master
 Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey
 
-Package: libmozjs-91-0
+Package: libmozjs-102-0
 Architecture: any
 Multi-Arch: same
 Depends: ${misc:Depends}, ${shlibs:Depends}, tzdata
@@ -44,10 +44,10 @@ Description: SpiderMonkey JavaScript library
  from web pages: use a security-supported implementation such as Firefox,
  Chrome or WebKitGTK's JavaScriptCore instead.
 
-Package: libmozjs-91-dev
+Package: libmozjs-102-dev
 Architecture: any
 Section: libdevel
-Depends: libmozjs-91-0 (= ${binary:Version}),
+Depends: libmozjs-102-0 (= ${binary:Version}),
          ${misc:Depends},
          ${shlibs:Depends}
 Description: SpiderMonkey JavaScript library - development headers
