@@ -1,3 +1,9 @@
+mozjs102 (102.1.0-2) unstable; urgency=medium
+
+  * Rebuild after NEW acceptance
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 16 Aug 2022 07:34:33 -0400
+
 mozjs102 (102.1.0-1) unstable; urgency=medium
 
   * New upstream release
