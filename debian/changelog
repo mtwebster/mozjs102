@@ -1,9 +1,13 @@
-mozjs102 (102.1.0-3) UNRELEASED; urgency=medium
+mozjs102 (102.2.0-1) UNRELEASED; urgency=medium
+
+  [ Jeremy Bicha ]
+  * New upstream release
 
   [ Mike Homney ]
   * Add patch to remove workaround for old libstdc++ problem,
+    which now causes problems with GCC 12 on arm
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 22 Aug 2022 11:26:41 -0400
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 22 Aug 2022 11:50:54 -0400
 
 mozjs102 (102.1.0-2) unstable; urgency=medium
 
