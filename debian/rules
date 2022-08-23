@@ -127,7 +127,7 @@ CXX := $(DEB_HOST_GNU_TYPE)-g++
 endif
 
 override_dh_auto_configure:
-	mkdir -p $(BUILDDIR)
+	mkdir -p $(BUILDDIR)/dist/cppunittests
 	cd $(BUILDDIR); \
 	if env \
 		CC=$(CC) \
