@@ -15,3 +15,4 @@ tests-Accept-out-of-memory-as-close-enough-to-allocation-.patch
 vendored-ICU/tests-Skip-comparison-of-tzdata-version-number.patch
 Allow-to-build-with-cargo-in-Debian-unstable.patch
 Remove-workaround-for-old-libstdc-problem-which-now-cause.patch
+Bug-1761665-Extend-x86-workaround-to-32-bit-ARM.patch
