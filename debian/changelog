@@ -1,3 +1,13 @@
+mozjs102 (102.2.0-2) unstable; urgency=medium
+
+  [ Simon McVittie ]
+  * d/rules: Pre-create debian/build/dist/cppunittests/ as a directory
+  * d/test.sh: Explicitly mark js executable as executable
+  * Build using gcc-11 on armel
+  * Add patch to avoid "impossible constraints" on armhf (Closes: #1017962)
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 24 Aug 2022 11:39:02 -0400
+
 mozjs102 (102.2.0-1) unstable; urgency=medium
 
   [ Jeremy Bicha ]
