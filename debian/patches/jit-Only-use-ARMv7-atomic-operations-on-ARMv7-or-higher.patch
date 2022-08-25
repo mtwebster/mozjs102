@@ -6,6 +6,7 @@ Debian's armel (ARM EABI softfloat) port has a lower baseline than the
 armhf (ARM EABI hardfloat), currently ARMv5, so we need to fall back
 to the "feeling lucky" atomics on this architecture.
 
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1786619
 Bug-Debian: https://bugs.debian.org/1017961
 Signed-off-by: Simon McVittie <smcv@debian.org>
 ---

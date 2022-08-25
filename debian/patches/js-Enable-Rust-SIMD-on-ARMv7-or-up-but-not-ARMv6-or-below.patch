@@ -1,0 +1,33 @@
+From: Simon McVittie <smcv@debian.org>
+Date: Wed, 24 Aug 2022 20:52:56 +0100
+Subject: js: Enable Rust SIMD on ARMv7 or up, but not ARMv6 or below
+
+Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1786619
+Bug-Debian: https://bugs.debian.org/1017961
+Signed-off-by: Simon McVittie <smcv@debian.org>
+---
+ js/moz.configure | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/js/moz.configure b/js/moz.configure
+index 2aa0a20..2c12257 100644
+--- a/js/moz.configure
++++ b/js/moz.configure
+@@ -569,11 +569,14 @@ option(
+ )
+ 
+ 
+-@depends("--enable-rust-simd", target)
+-def rust_simd(value, target):
++@depends("--enable-rust-simd", target, arm_target)
++def rust_simd(value, target, arm_target):
+     # As of 2019-09-17, the simd-accel feature of encoding_rs has not
+     # been properly set up outside aarch64, armv7, x86 and x86_64.
+-    if target.cpu in ("aarch64", "arm", "x86", "x86_64") and value:
++    if target.cpu in ("aarch64", "x86", "x86_64") and value:
++        return True
++
++    if target.cpu == "arm" and arm_target.arm_arch >= 7 and value:
+         return True
+ 
+ 
