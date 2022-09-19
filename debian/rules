@@ -120,18 +120,10 @@ override_dh_autoreconf:
 # The bundled copy of icu prefers clang, which we need to override to
 # use gcc because clang doesn't support our DEB_CFLAGS_MAINT_APPEND
 ifeq ($(origin CC),default)
-ifeq ($(DEB_HOST_ARCH),armel)
-CC := $(DEB_HOST_GNU_TYPE)-gcc-11
-else
 CC := $(DEB_HOST_GNU_TYPE)-gcc
 endif
-endif
 ifeq ($(origin CXX),default)
-ifeq ($(DEB_HOST_ARCH),armel)
-CXX := $(DEB_HOST_GNU_TYPE)-g++-11
-else
 CXX := $(DEB_HOST_GNU_TYPE)-g++
-endif
 endif
 
 override_dh_auto_configure:
