@@ -18,4 +18,4 @@ Remove-workaround-for-old-libstdc-problem-which-now-cause.patch
 Bug-1761665-Extend-x86-workaround-to-32-bit-ARM.patch
 jit-Only-use-ARMv7-atomic-operations-on-ARMv7-or-higher.patch
 js-Enable-JIT-by-default-on-ARMv7-or-up-but-not-ARMv6-or-.patch
-js-Enable-Rust-SIMD-on-ARMv7-or-up-but-not-ARMv6-or-below.patch
+js-arm-i386-no-simd.patch
