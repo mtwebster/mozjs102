@@ -1,4 +1,6 @@
-mozjs102 (102.3.0-1) UNRELEASED; urgency=medium
+mozjs102 (102.3.0-1) unstable; urgency=medium
+
+  * Team upload
 
   [ Jeremy Bicha ]
   * New upstream release
@@ -8,6 +10,9 @@ mozjs102 (102.3.0-1) UNRELEASED; urgency=medium
   * Add patch to avoid using ARMv7 atomic operations on armel
   * d/p/js-Enable-JIT-by-default-on-ARMv7-or-up-but-not-ARMv6-or-.patch:
     Attempt to solve FTBFS on armel by disabling JIT
+  * Update Lintian overrides
+  * d/copyright: Remove patterns that no longer match anything
+  * Standards-Version: 4.6.1 (no changes required)
 
   [ Adrian Bunk ]
   * d/p/js-arm-i386-no-simd.patch:
@@ -18,7 +23,7 @@ mozjs102 (102.3.0-1) UNRELEASED; urgency=medium
   * Go back to using the default gcc on armel (Closes: #1018047)
   * Exclude basic/bug-1649234-1.js test on armel (Closes: #1017961)
 
- -- Simon McVittie <smcv@debian.org>  Sat, 24 Sep 2022 17:57:58 +0100
+ -- Simon McVittie <smcv@debian.org>  Sat, 24 Sep 2022 20:53:33 +0100
 
 mozjs102 (102.2.0-2) unstable; urgency=medium
 
