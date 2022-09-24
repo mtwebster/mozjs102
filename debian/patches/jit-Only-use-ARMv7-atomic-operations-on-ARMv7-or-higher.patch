@@ -1,129 +1,54 @@
-From: Simon McVittie <smcv@debian.org>
-Date: Tue, 23 Aug 2022 09:21:30 +0100
-Subject: jit: Only use ARMv7 atomic operations on ARMv7 or higher
+From: Mike Hommey <mh+mozilla@glandium.org>
+Date: Mon, 19 Sep 2022 23:21:24 +0100
+Subject: Bug 1786619 - Use fallback atomic operations on ARM < v7. r=jandem
 
-Debian's armel (ARM EABI softfloat) port has a lower baseline than the
-armhf (ARM EABI hardfloat), currently ARMv5, so we need to fall back
-to the "feeling lucky" atomics on this architecture.
-
+Forwarded: https://phabricator.services.mozilla.com/D157612
+Applied-upstream: 107, commit:https://hg.mozilla.org/mozilla-central/rev/fc934c3360f4
+Applied-upstream: 102.4, commit:https://hg.mozilla.org/releases/mozilla-esr102/rev/470147864827
 Bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1786619
 Bug-Debian: https://bugs.debian.org/1017961
-Signed-off-by: Simon McVittie <smcv@debian.org>
 ---
- js/src/jit/GenerateAtomicOperations.py             | 23 +++++++++++++---------
- .../shared/AtomicOperations-feeling-lucky-gcc.h    |  5 ++++-
- 2 files changed, 18 insertions(+), 10 deletions(-)
+ js/src/jit/GenerateAtomicOperations.py                 | 4 +++-
+ js/src/jit/shared/AtomicOperations-feeling-lucky-gcc.h | 7 ++++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/js/src/jit/GenerateAtomicOperations.py b/js/src/jit/GenerateAtomicOperations.py
-index 58affd7..dcd5b98 100644
+index 58affd7..a468d19 100644
 --- a/js/src/jit/GenerateAtomicOperations.py
 +++ b/js/src/jit/GenerateAtomicOperations.py
-@@ -12,6 +12,11 @@ is_64bit = "JS_64BIT" in buildconfig.defines
- cpu_arch = buildconfig.substs["CPU_ARCH"]
- is_gcc = buildconfig.substs["CC_TYPE"] == "gcc"
- 
-+if cpu_arch == "arm":
-+    armv7 = (int(buildconfig.substs["ARM_ARCH"]) >= 7)
-+else:
-+    armv7 = False
-+
- 
- def fmt_insn(s):
-     return '"' + s + '\\n\\t"\n'
-@@ -32,7 +37,7 @@ def gen_seqcst(fun_name):
-             }""" % {
-             "fun_name": fun_name,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         return r"""
-             INLINE_ATTR void %(fun_name)s() {
-                 asm volatile ("dmb sy\n\t" ::: "memory");
-@@ -104,7 +109,7 @@ def gen_load(fun_name, cpp_type, size, barrier):
-             "fun_name": fun_name,
-             "insns": insns,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         insns = ""
-         if barrier:
-             insns += fmt_insn("dmb sy")
-@@ -191,7 +196,7 @@ def gen_store(fun_name, cpp_type, size, barrier):
-             "fun_name": fun_name,
-             "insns": insns,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         insns = ""
-         if barrier:
-             insns += fmt_insn("dmb sy")
-@@ -280,7 +285,7 @@ def gen_exchange(fun_name, cpp_type, size):
-             "fun_name": fun_name,
-             "insns": insns,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         insns = ""
-         insns += fmt_insn("dmb sy")
-         insns += fmt_insn("0:")
-@@ -336,7 +341,7 @@ def gen_cmpxchg(fun_name, cpp_type, size):
-             "cpp_type": cpp_type,
-             "fun_name": fun_name,
-         }
--    if cpu_arch == "arm" and size == 64:
-+    if cpu_arch == "arm" and size == 64 and armv7:
-         return r"""
-             INLINE_ATTR %(cpp_type)s %(fun_name)s(%(cpp_type)s* addr,
-                                              %(cpp_type)s oldval,
-@@ -440,7 +445,7 @@ def gen_cmpxchg(fun_name, cpp_type, size):
-             "fun_name": fun_name,
-             "insns": insns,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         insns = ""
-         insns += fmt_insn("dmb sy")
-         insns += fmt_insn("0:")
-@@ -595,7 +600,7 @@ def gen_fetchop(fun_name, cpp_type, size, op):
-             "fun_name": fun_name,
-             "insns": insns,
-         }
--    if cpu_arch == "arm":
-+    if cpu_arch == "arm" and armv7:
-         insns = ""
-         insns += fmt_insn("dmb sy")
-         insns += fmt_insn("0:")
-@@ -664,7 +669,7 @@ def gen_copy(fun_name, cpp_type, size, unroll, direction):
-                 assert size == 8
-                 insns += fmt_insn("ldr %x[scratch], [%x[src], OFFSET]")
-                 insns += fmt_insn("str %x[scratch], [%x[dst], OFFSET]")
--        elif cpu_arch == "arm":
-+        elif cpu_arch == "arm" and armv7:
-             if size == 1:
-                 insns += fmt_insn("ldrb %[scratch], [%[src], #OFFSET]")
-                 insns += fmt_insn("strb %[scratch], [%[dst], #OFFSET]")
-@@ -721,7 +726,7 @@ namespace jit {
+@@ -721,7 +721,9 @@ namespace jit {
  
  def generate_atomics_header(c_out):
      contents = ""
 -    if cpu_arch in ("x86", "x86_64", "arm", "aarch64"):
-+    if cpu_arch in ("x86", "x86_64", "aarch64") or armv7:
++    if cpu_arch in ("x86", "x86_64", "aarch64") or (
++        cpu_arch == "arm" and int(buildconfig.substs["ARM_ARCH"]) >= 7
++    ):
          contents += "#define JS_HAVE_GENERATED_ATOMIC_OPS 1"
  
          # `fence` performs a full memory barrier.
 diff --git a/js/src/jit/shared/AtomicOperations-feeling-lucky-gcc.h b/js/src/jit/shared/AtomicOperations-feeling-lucky-gcc.h
-index 2e38433..3954202 100644
+index 2e38433..8f700aa 100644
 --- a/js/src/jit/shared/AtomicOperations-feeling-lucky-gcc.h
 +++ b/js/src/jit/shared/AtomicOperations-feeling-lucky-gcc.h
-@@ -31,7 +31,10 @@
+@@ -31,7 +31,8 @@
  // Explicitly exclude tier-1 platforms.
  
  #if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
 -     defined(_M_IX86) || defined(__arm__) || defined(__aarch64__))
-+     defined(_M_IX86) || defined(__aarch64__) || \
-+     defined(__ARM_ARCH_7__) || defined(__ARM_ARCH_7A__) ||  \
-+     defined(__ARM_ARCH_7R__) || defined(__ARM_ARCH_7M__) || \
-+     defined(__ARM_ARCH_7EM__) || defined(_ARM_ARCH_7))
++     defined(_M_IX86) || (defined(__arm__) && __ARM_ARCH >= 7) ||   \
++     defined(__aarch64__))
  #  error "Do not use on a tier-1 platform where inline assembly is available"
  #endif
  
+@@ -56,6 +57,10 @@
+ #  define HAS_64BIT_LOCKFREE
+ #endif
+ 
++#if defined(__arm__)
++#  define HAS_64BIT_ATOMICS
++#endif
++
+ #if defined(__ppc64__) || defined(__PPC64__) || defined(__ppc64le__) || \
+     defined(__PPC64LE__)
+ #  define HAS_64BIT_ATOMICS
