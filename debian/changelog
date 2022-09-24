@@ -1,8 +1,24 @@
 mozjs102 (102.3.0-1) UNRELEASED; urgency=medium
 
+  [ Jeremy Bicha ]
   * New upstream release
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 19 Sep 2022 16:30:27 -0400
+  [ Simon McVittie ]
+  * d/p/jit-Only-use-ARMv7-atomic-operations-on-ARMv7-or-higher.patch:
+  * Add patch to avoid using ARMv7 atomic operations on armel
+  * d/p/js-Enable-JIT-by-default-on-ARMv7-or-up-but-not-ARMv6-or-.patch:
+    Attempt to solve FTBFS on armel by disabling JIT
+
+  [ Adrian Bunk ]
+  * d/p/js-arm-i386-no-simd.patch:
+    Avoid SIMD (SSE/NEON) on 32-bit ARM and x86. It is not in the baseline
+    of our i386/armel/armhf ports.
+  * d/rules: Build with -Wl,--allow-multiple-definition on armel
+    (works around mozjs102's equivalent of mozjs91 bug #1017979)
+  * Go back to using the default gcc on armel (Closes: #1018047)
+  * Exclude basic/bug-1649234-1.js test on armel (Closes: #1017961)
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 24 Sep 2022 17:57:58 +0100
 
 mozjs102 (102.2.0-2) unstable; urgency=medium
 
@@ -10,6 +26,7 @@ mozjs102 (102.2.0-2) unstable; urgency=medium
   * d/rules: Pre-create debian/build/dist/cppunittests/ as a directory
   * d/test.sh: Explicitly mark js executable as executable
   * Build using gcc-11 on armel
+    (works around mozjs102's equivalent of mozjs91 bug #1017979)
   * Add patch to avoid "impossible constraints" on armhf (Closes: #1017962)
 
  -- Jeremy Bicha <jbicha@ubuntu.com>  Wed, 24 Aug 2022 11:39:02 -0400
