@@ -1,3 +1,9 @@
+mozjs102 (102.6.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 12 Dec 2022 15:46:17 -0500
+
 mozjs102 (102.5.0-1) unstable; urgency=medium
 
   * New upstream release
