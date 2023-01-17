@@ -1079,7 +1079,7 @@ mozjs24 (24.2.0-0ubuntu1) trusty; urgency=medium
   * debian/copyright: Upgrade to 1.0 format, add python-which license,
     remove unused MPL-1.1 license.
 
- -- Tim Lunn <tim@feathertop.org>  Wed, 11 Feb 2014 21:55:34 +1100
+ -- Tim Lunn <tim@feathertop.org>  Tue, 11 Feb 2014 21:55:34 +1100
 
 mozjs17 (17.0.0-1ubuntu1) trusty; urgency=medium
 
