@@ -1,8 +1,11 @@
-mozjs102 (102.7.0-1) UNRELEASED; urgency=medium
+mozjs102 (102.7.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Cherry-pick patch to fix build with Python 3.11 (Closes: #1028716)
+  * Re-export upstream signing key without extra signatures
+  * Update standards version to 4.6.2, no changes needed
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 17 Jan 2023 12:33:16 -0500
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 17 Jan 2023 15:57:16 -0500
 
 mozjs102 (102.6.0-1) unstable; urgency=medium
 
