@@ -1,4 +1,4 @@
-// |reftest| slow-if(xulRuntime.XPCOMABI.match(/x86_64|aarch64|ppc64|ppc64le|s390x|mips64|loongarch64/)||Android) -- No test results
+// |reftest| slow-if(xulRuntime.debian.DEB_HOST_ARCH_BITS==64||Android) -- No test results
 /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,7 +8,7 @@
 var BUGNUMBER = 330812;
 var summary = 'Making Array(1<<29).sort() less problematic';
 var actual = 'No Crash';
-var expect = 'No Crash';
+var expect = /No Crash/;
 
 printBugNumber(BUGNUMBER);
 printStatus (summary);
@@ -26,8 +26,8 @@ try
 catch(ex)
 {
   // handle changed 1.9 branch behavior. see bug 422348
-  expect = 'InternalError: allocation size overflow';
+  expect = /InternalError: allocation size overflow|out of memory/;
   actual = ex + '';
 }
 
-reportCompare(expect, actual, summary);
+reportMatch(expect, actual, summary);

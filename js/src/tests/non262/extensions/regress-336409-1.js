@@ -8,7 +8,7 @@
 var BUGNUMBER = 336409;
 var summary = 'Integer overflow in js_obj_toSource';
 var actual = 'No Crash';
-var expect = 'No Crash';
+var expect = /No Crash/;
 
 printBugNumber(BUGNUMBER);
 printStatus (summary);
@@ -42,9 +42,9 @@ try
 }
 catch(ex)
 {
-  expect = 'InternalError: allocation size overflow';
+  expect = /InternalError: allocation size overflow|out of memory/
   actual = ex + '';
   print(actual);
 }
 
-reportCompare(expect, actual, summary);
+reportMatch(expect, actual, summary);

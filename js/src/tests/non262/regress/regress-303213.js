@@ -8,7 +8,7 @@
 var BUGNUMBER = 303213;
 var summary = 'integer overflow in js';
 var actual = 'No Crash';
-var expect = 'No Crash';
+var expect = /No Crash/;
 
 printBugNumber(BUGNUMBER);
 printStatus (summary);
@@ -49,8 +49,8 @@ try
 catch(ex)
 {
   // handle changed 1.9 branch behavior. see bug 422348
-  expect = 'InternalError: allocation size overflow';
+  expect = /InternalError: allocation size overflow|out of memory/;
   actual = ex + '';
 }
  
-reportCompare(expect, actual, summary);
+reportMatch(expect, actual, summary);

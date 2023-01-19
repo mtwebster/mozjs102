@@ -1,15 +1,36 @@
-mozjs102 (102.6.0-0ubuntu0.22.04.1) jammy-security; urgency=medium
+mozjs102 (102.7.0) unstable; urgency=medium
 
-  * SECURITY UPDATE: Backport to Ubuntu 22.04 LTS (LP: #1993214)
-    - CVE-2022-40957: Incoherent instruction cache when building WASM on ARM64
-    - CVE-2022-42928: Memory Corruption in JS Engine
-    - CVE-2022-42932: Memory safety bugs
-    - CVE-2022-45406: Use-after-free of a JavaScript Realm
-    - CVE-2022-45409: Use-after-free in Garbage Collection
-  * Drop jit-Only-use-ARMv7-atomic-operations-on-ARMv7-or-higher.patch:
-    - applied in new release
+  * 102.7.0 testing build
 
- -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 13 Dec 2022 14:57:22 -0500
+ -- Michael Webster <miketwebster@gmail.com>  Thu, 19 Jan 2023 09:34:30 -0500
+
+mozjs102 (102.7.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Cherry-pick patch to fix build with Python 3.11 (Closes: #1028716)
+  * Re-export upstream signing key without extra signatures
+  * Update standards version to 4.6.2, no changes needed
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 17 Jan 2023 15:57:16 -0500
+
+mozjs102 (102.6.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 12 Dec 2022 17:16:33 -0500
+
+mozjs102 (102.5.0-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Tue, 15 Nov 2022 12:28:41 -0500
+
+mozjs102 (102.4.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop ARMv7 atomic operations patch: applied in new release
+
+ -- Jeremy Bicha <jbicha@ubuntu.com>  Mon, 17 Oct 2022 14:03:07 -0400
 
 mozjs102 (102.3.0-1) unstable; urgency=medium
 
@@ -1067,7 +1088,7 @@ mozjs24 (24.2.0-0ubuntu1) trusty; urgency=medium
   * debian/copyright: Upgrade to 1.0 format, add python-which license,
     remove unused MPL-1.1 license.
 
- -- Tim Lunn <tim@feathertop.org>  Wed, 11 Feb 2014 21:55:34 +1100
+ -- Tim Lunn <tim@feathertop.org>  Tue, 11 Feb 2014 21:55:34 +1100
 
 mozjs17 (17.0.0-1ubuntu1) trusty; urgency=medium
 

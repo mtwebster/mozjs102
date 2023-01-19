@@ -5,6 +5,7 @@
 from __future__ import print_function
 
 import io
+import json
 import os
 import posixpath
 import re
@@ -38,13 +39,25 @@ class XULInfo:
         """Return JS that when executed sets up variables so that JS expression
         predicates on XUL build info evaluate properly."""
 
+        debian = {}
+        p = Popen(
+            ['dpkg-architecture', '-a' + os.environ['DEB_HOST_ARCH']],
+            stdout=PIPE,
+            universal_newlines=True,
+        )
+        for line in p.stdout:
+            k, v = line.rstrip('\n').split('=', 1)
+            debian[k] = v
+        p.wait()
+
         return (
-            'var xulRuntime = {{ OS: "{}", XPCOMABI: "{}", shell: true }};'
+            'var xulRuntime = {{ OS: "{}", XPCOMABI: "{}", debian: {}, shell: true }};'
             "var release_or_beta = getBuildConfiguration().release_or_beta;"
             "var isDebugBuild={}; var Android={}; "
             "var browserIsRemote={}".format(
                 self.os,
                 self.abi,
+                json.dumps(debian),
                 str(self.isdebug).lower(),
                 str(self.os == "Android").lower(),
                 str(self.browserIsRemote).lower(),

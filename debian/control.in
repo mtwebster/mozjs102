@@ -1,7 +1,8 @@
 Source: mozjs102
 Section: libs
 Priority: optional
-Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
 Uploaders: @GNOME_TEAM@
 Build-Depends: debhelper-compat (= 13),
                gnome-pkg-tools,
@@ -20,9 +21,9 @@ Build-Depends: debhelper-compat (= 13),
                tzdata,
                zip
 Rules-Requires-Root: no
-Standards-Version: 4.6.2
-Vcs-Browser: https://salsa.debian.org/gnome-team/mozjs/tree/debian/102/master
-Vcs-Git: https://salsa.debian.org/gnome-team/mozjs.git -b debian/102/master
+Standards-Version: 4.6.1
+Vcs-Browser: https://salsa.debian.org/gnome-team/mozjs/tree/ubuntu/102/jammy
+Vcs-Git: https://salsa.debian.org/gnome-team/mozjs.git -b ubuntu/102/jammy
 Homepage: https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey
 
 Package: libmozjs-102-0

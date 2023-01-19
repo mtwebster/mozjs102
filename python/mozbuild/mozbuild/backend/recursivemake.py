@@ -1533,9 +1533,9 @@ class RecursiveMakeBackend(MakeBackend):
                                     " of srcdir-relative or absolute paths."
                                 )
 
-                            install_manifest.add_pattern_link(basepath, wild, dest_dir)
+                            install_manifest.add_pattern_copy(basepath, wild, dest_dir)
                         else:
-                            install_manifest.add_pattern_link(f.srcdir, f, dest_dir)
+                            install_manifest.add_pattern_copy(f.srcdir, f, dest_dir)
                     elif isinstance(f, AbsolutePath):
                         if not f.full_path.lower().endswith((".dll", ".pdb", ".so")):
                             raise Exception(
@@ -1546,7 +1546,7 @@ class RecursiveMakeBackend(MakeBackend):
                         install_manifest.add_optional_exists(dest_file)
                         absolute_files.append(f.full_path)
                     else:
-                        install_manifest.add_link(f.full_path, dest_file)
+                        install_manifest.add_copy(f.full_path, dest_file)
                 else:
                     install_manifest.add_optional_exists(dest_file)
                     objdir_files.append(self._pretty_path(f, backend_file))

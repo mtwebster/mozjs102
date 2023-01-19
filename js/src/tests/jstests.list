@@ -612,6 +612,37 @@ skip script test262/built-ins/TypedArrayConstructors/ctors/no-species.js
 # https://bugzilla.mozilla.org/show_bug.cgi?id=1763606
 skip script test262/built-ins/TypedArray/prototype/sort/sort-tonumber.js
 
+############################
+# Tests disabled by Debian #
+############################
+
+# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=907363
+# We build without SSE because it isn't in our i386 baseline, which means
+# floating-point arithmetic is in i387 extended precision and the rounding
+# is not what these tests expect
+fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script non262/Date/timeclip.js
+fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/language/types/number/S8.5_A2.1.js
+fails-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/^i386$/)) script test262/language/types/number/S8.5_A2.2.js
+
+# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=908481
+# Floating-point corner cases are different on ARM softfloat
+fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script non262/Math/log2-approx.js
+fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/fill/fill-values-conversion-operations-consistent-nan.js
+fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/built-ins/TypedArray/prototype/map/return-new-typedarray-conversion-operation-consistent-nan.js
+fails-if(xulRuntime.debian.DEB_HOST_ARCH.match(/^armel$/)) script test262/language/expressions/division/S11.5.2_A4_T10.js
+
+# Assumes little-endian IEEE representation of floating point numbers
+fails-if(xulRuntime.debian.DEB_HOST_ARCH_ENDIAN=="big") script test262/built-ins/TypedArray/prototype/set/typedarray-arg-set-values-same-buffer-other-type.js
+
+# This test fails with both System and embedded ICU version
+skip script non262/Date/time-zones-imported.js
+
+# ToNumber isn't working in the same way in all the archs for unsafe integers:
+# https://bugzilla.mozilla.org/show_bug.cgi?id=1755531
+skip-if(xulRuntime.debian.DEB_HOST_ARCH_CPU.match(/i386|s390x|arm64|ppc64|riscv64/)) script test262/built-ins/Date/UTC/fp-evaluation-order.js
+
+# This test fails with the embedded ICU version (only)
+skip script non262/Intl/DateTimeFormat/timeZone_version.js
 
 ###########################################################
 # Tests disabled due to issues in test262 importer script #

@@ -380,9 +380,21 @@ static void* ReserveProcessExecutableMemory(size_t bytes) {
   void* p = MozTaggedAnonymousMmap(randomAddr, bytes, PROT_NONE,
                                    MAP_NORESERVE | MAP_PRIVATE | MAP_ANON, -1,
                                    0, "js-executable-memory");
+
+#ifndef __ia64__
   if (p == MAP_FAILED) {
     return nullptr;
   }
+#else
+  if (p == MAP_FAILED) {
+    // the comment above appears to be incorrect on ia64, so retry without the hint
+    p = MozTaggedAnonymousMmap(NULL, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANON,
+                               -1, 0, "js-executable-memory");
+    if (p == MAP_FAILED) {
+      return nullptr;
+    }
+  }
+#endif
   return p;
 }
 

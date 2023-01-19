@@ -111,7 +111,7 @@ using mozilla::DebugOnly;
 #      define R01_sig(p) ((p)->sc_frame.fixreg[1])
 #      define R32_sig(p) ((p)->sc_frame.srr0)
 #    endif
-#  elif defined(__linux__) || defined(__sun)
+#  elif defined(__linux__) || defined(__sun) || defined(__GNU__)
 #    if defined(__linux__)
 #      define EIP_sig(p) ((p)->uc_mcontext.gregs[REG_EIP])
 #      define EBP_sig(p) ((p)->uc_mcontext.gregs[REG_EBP])

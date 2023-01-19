@@ -856,9 +856,9 @@ def generate_atomics_header(c_out):
             "constexpr size_t JS_GENERATED_ATOMICS_WORDSIZE = " + str(wordsize) + ";\n"
         )
 
-        # Work around a GCC issue on 32-bit x86 by adding MOZ_NEVER_INLINE.
-        # See bug 1756347.
-        if is_gcc and cpu_arch == "x86":
+        # Work around a GCC issue on some 32-bit architectures by adding
+        # MOZ_NEVER_INLINE. See bugs 1756347, 1761665.
+        if is_gcc and cpu_arch in ("x86", 'arm'):
             contents = contents.replace("INLINE_ATTR", "MOZ_NEVER_INLINE inline")
         else:
             contents = contents.replace("INLINE_ATTR", "inline")
