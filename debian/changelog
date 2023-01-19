@@ -1,3 +1,9 @@
+mozjs102 (102.7.0) unstable; urgency=medium
+
+  * 102.7.0 testing build
+
+ -- Michael Webster <miketwebster@gmail.com>  Thu, 19 Jan 2023 09:34:30 -0500
+
 mozjs102 (102.7.0-1) unstable; urgency=medium
 
   * New upstream release
