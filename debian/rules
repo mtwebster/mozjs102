@@ -2,7 +2,27 @@
 # -*- makefile -*-
 
 include /usr/share/dpkg/default.mk
-include /usr/share/rustc/architecture.mk
+
+# include /usr/share/rustc/architecture.mk
+# contents of architecture.mk, so rustc doesn't need to be installed just to configure the build.
+include /usr/share/dpkg/architecture.mk
+
+rust_cpu = $(subst i586,i686,\
+$(if $(findstring -riscv64-,-$(2)-),$(subst riscv64,riscv64gc,$(1)),\
+$(if $(findstring -armhf-,-$(2)-),$(subst arm,armv7,$(1)),\
+$(if $(findstring -armel-,-$(2)-),$(subst arm,armv5te,$(1)),\
+$(1)))))
+rust_type_setvar = $(1)_RUST_TYPE ?= $(call rust_cpu,$($(1)_GNU_CPU),$($(1)_ARCH))-unknown-$($(1)_GNU_SYSTEM)
+
+$(foreach machine,BUILD HOST TARGET,\
+  $(eval $(call rust_type_setvar,DEB_$(machine))))
+
+# fallback for older dpkg versions
+ifeq ($(DEB_TARGET_RUST_TYPE),-unknown-)
+  DEB_TARGET_RUST_TYPE = $(DEB_HOST_RUST_TYPE)
+endif
+
+####################### end rustc/architecture.mk
 
 # Disable CET, until JIT is ported too, preventing accidentally
 # building incompatible binaries.
@@ -137,6 +157,7 @@ CXX := $(DEB_HOST_GNU_TYPE)-g++
 endif
 
 override_dh_auto_configure:
+	$(CURDIR)/debian/rustup-init.sh -y
 	mkdir -p $(BUILDDIR)/dist/cppunittests
 	cd $(BUILDDIR); \
 	if env \
@@ -184,3 +205,6 @@ ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
 	SRCDIR=${SRCDIR} BUILDDIR=${BUILDDIR} DEB_HOST_ARCH=${DEB_HOST_ARCH} $(CURDIR)/debian/test.sh $(EXCLUDED_TESTS)
 endif
 endif
+
+# workaround for fix lmde5 build
+override_dh_dwz:
