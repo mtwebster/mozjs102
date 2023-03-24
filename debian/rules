@@ -137,6 +137,7 @@ CXX := $(DEB_HOST_GNU_TYPE)-g++
 endif
 
 override_dh_auto_configure:
+	debian/install_rust.sh -y
 	mkdir -p $(BUILDDIR)/dist/cppunittests
 	cd $(BUILDDIR); \
 	if env \

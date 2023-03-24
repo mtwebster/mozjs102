@@ -6,7 +6,6 @@ XSBC-Original-Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.
 Uploaders: @GNOME_TEAM@
 Build-Depends: debhelper-compat (= 13),
                gnome-pkg-tools,
-               cargo,
                clang,
                autoconf,
                autoconf2.13,
@@ -17,7 +16,6 @@ Build-Depends: debhelper-compat (= 13),
                pkg-config,
                pkg-kde-tools,
                python3-dev,
-               rustc (>= 1.41),
                tzdata,
                zip
 Rules-Requires-Root: no
