@@ -1,3 +1,9 @@
+mozjs102 (102.6.0-1) UNRELEASED; urgency=medium
+
+  * Fix build for Mint and LMDE5
+
+ -- Linux Mint <root@linuxmint.com>  Fri, 24 Mar 2023 13:45:43 -0400
+
 mozjs102 (102.6.0-0ubuntu0.22.04.1) jammy-security; urgency=medium
 
   * SECURITY UPDATE: Backport to Ubuntu 22.04 LTS (LP: #1993214)
