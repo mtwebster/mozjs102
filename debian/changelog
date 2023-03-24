@@ -1,4 +1,4 @@
-mozjs102 (102.6.0-1) UNRELEASED; urgency=medium
+mozjs102 (102.6.0.1) unstable; urgency=medium
 
   * Fix build for Mint and LMDE5
 
